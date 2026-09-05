@@ -17,9 +17,9 @@ export default defineConfig(async ({ command }) => {
 
   if (command === "build") {
     const { nitro } = await import("nitro/vite");
-    // node-server: deployable anywhere that runs Node (Vercel, Railway,
-    // Render, a plain VPS) instead of assuming a specific edge platform.
-    plugins.push(nitro({ preset: "node-server" }));
+    // Deployed on Vercel — this preset packages SSR routes and
+    // createServerFn calls as Vercel serverless functions automatically.
+    plugins.push(nitro({ preset: "vercel" }));
   }
 
   return {
