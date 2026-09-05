@@ -68,6 +68,17 @@ job-site photography instead of stock or illustration, plainspoken copy, and
 deliberately none of the purple-gradient/glassmorphism/sparkle-icon look
 that's become the default "AI-generated" aesthetic.
 
+## SEO / AI discoverability
+
+Same tech as caboshandyman.com, for the same reason: `public/llms.txt` (an
+AI-crawler-readable summary of the product), `public/sitemap.xml` (generated
+via `npm run generate-sitemap`, listing only real marketing pages — not
+`/dashboard/*` or `/api/*`), a `Sitemap:` line in `robots.txt`, and
+`SoftwareApplication` JSON-LD structured data on the homepage. All of this
+currently points at `frontdesk.tools` as a placeholder domain, matching the
+one already used in `src/lib/mock-data.ts`'s widget/quote-link helpers —
+swap it for the real domain once one is registered.
+
 ## Scope
 
 Out of scope for v1: SMS/Instagram DM intake, two-way calendar sync (a

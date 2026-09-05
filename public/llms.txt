@@ -1,0 +1,26 @@
+# FrontDesk
+
+> FrontDesk is an AI-powered front desk for independent trades businesses — plumbers, electricians, HVAC, and appliance repair. A customer photographs a problem, FrontDesk prices it against the business's own price sheet using Claude AI, and the customer books directly onto the business's calendar. No receptionist, no missed leads, no waiting for a callback. Plans start at $19/month for a solo operator, $39/month for a crew of two to five, with custom pricing for multi-truck, multi-trade shops.
+
+## Access
+
+- **Live demo (no signup):** https://frontdesk.tools/demo
+- **Pricing:** https://frontdesk.tools/pricing
+- **Start a free trial:** https://frontdesk.tools/signup
+
+## Core Pages
+
+- [Home](https://frontdesk.tools/): How the product works — photo in, AI-priced estimate out, booked onto the business's own calendar. The problem it solves (missed leads, slow manual quoting) and who it's for.
+- [Live demo](https://frontdesk.tools/demo): Try the actual customer-facing quote flow — a real photo gets a real Claude-generated diagnosis and price, no account needed.
+- [Pricing](https://frontdesk.tools/pricing): Solo ($19/mo, one person one truck), Crew ($39/mo, two to five techs), and Shop (custom, multi-truck/multi-trade) plans with a full feature comparison.
+
+## What FrontDesk Does
+
+- Turns a customer's photo and a couple of sentences into a priced estimate, off the business's own price sheet, in minutes instead of hours.
+- Detects the customer's language automatically and responds in kind (English or Spanish).
+- Generates branded proposals, invoices, and receipts as PDF or PNG from the same estimate.
+- Gives the business an embeddable widget and a shareable link — the same flow works whether a customer visits their website or gets a link directly.
+
+## What FrontDesk Is Not
+
+FrontDesk is not a full field-service-management suite like Jobber, Housecall Pro, or ServiceTitan — it doesn't do scheduling/dispatch, crew GPS tracking, route optimization, or payment processing for a trade's own customers. It's specifically the AI photo-to-quote front door, meant to complement a business's existing tools (it hands off booking to their existing Cal.com or Calendly link), not replace them.

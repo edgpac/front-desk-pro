@@ -9,6 +9,32 @@ import panelPhoto from "@/assets/electrician-panel.jpg";
 import vanPhoto from "@/assets/work-van.jpg";
 import leakPhoto from "@/assets/leak-detail.jpg";
 
+const SOFTWARE_SCHEMA = {
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  name: "FrontDesk",
+  applicationCategory: "BusinessApplication",
+  operatingSystem: "Web",
+  description:
+    "AI-powered front desk for independent trades businesses. Customers photograph a problem, FrontDesk prices it off the business's own price sheet using Claude AI, and books the job onto their calendar.",
+  offers: [
+    {
+      "@type": "Offer",
+      name: "Solo",
+      price: "19",
+      priceCurrency: "USD",
+      description: "One person, one truck.",
+    },
+    {
+      "@type": "Offer",
+      name: "Crew",
+      price: "39",
+      priceCurrency: "USD",
+      description: "Two to five techs.",
+    },
+  ],
+};
+
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
@@ -23,6 +49,12 @@ export const Route = createFileRoute("/")({
         property: "og:description",
         content:
           "Photo in, priced estimate out, job booked. FrontDesk answers quote requests while you're under a sink.",
+      },
+    ],
+    scripts: [
+      {
+        type: "application/ld+json",
+        children: JSON.stringify(SOFTWARE_SCHEMA),
       },
     ],
   }),
