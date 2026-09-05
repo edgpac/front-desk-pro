@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { Plus, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
@@ -6,29 +6,105 @@ import { toast } from "sonner";
 import { PageHeader, Panel } from "@/components/app/DashboardShell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { PRICE_SHEET, type PriceRow } from "@/lib/mock-data";
+import { useAuth } from "@/lib/use-auth";
+import { listMyPriceSheet, saveMyPriceSheet } from "@/lib/price-sheet-server";
+import { formatPrice, PRICE_SHEET, type PriceSheetRow, type PricingType } from "@/lib/mock-data";
 
 export const Route = createFileRoute("/dashboard/price-sheet")({
   component: PriceSheetPage,
 });
 
+const PRICING_TYPES: PricingType[] = ["flat", "hourly", "range"];
+
+function newRow(): PriceSheetRow {
+  return {
+    id: `new-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    task: "New service",
+    category: "General",
+    keywords: [],
+    pricingType: "flat",
+    priceMin: 0,
+    priceMax: 0,
+    hours: 0,
+  };
+}
+
 function PriceSheetPage() {
-  const [rows, setRows] = useState<PriceRow[]>(PRICE_SHEET);
+  const { user, loading: authLoading } = useAuth();
+  const [rows, setRows] = useState<PriceSheetRow[]>(PRICE_SHEET);
+  const [loading, setLoading] = useState(true);
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (authLoading) return;
+    if (!user) {
+      setRows(PRICE_SHEET);
+      setLoading(false);
+      return;
+    }
+    let active = true;
+    listMyPriceSheet()
+      .then((items) => {
+        if (active) setRows(items);
+      })
+      .catch((err) => {
+        toast.error(err instanceof Error ? err.message : "Could not load price sheet.");
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [authLoading, user]);
 
   function removeRow(id: string) {
     setRows((r) => r.filter((row) => row.id !== id));
+    setDirty(true);
   }
 
   function addRow() {
-    setRows((r) => [
-      ...r,
-      { id: `p-${Date.now()}`, service: "New service", category: "General", pricing: "Flat", price: "$0" },
-    ]);
+    setRows((r) => [...r, newRow()]);
+    setDirty(true);
   }
 
-  function updateRow(id: string, patch: Partial<PriceRow>) {
+  function updateRow(id: string, patch: Partial<PriceSheetRow>) {
     setRows((r) => r.map((row) => (row.id === id ? { ...row, ...patch } : row)));
+    setDirty(true);
+  }
+
+  async function saveAll() {
+    if (!user) {
+      toast.success("Saved (sample data — sign up to save your real price sheet)");
+      setDirty(false);
+      return;
+    }
+    setSaving(true);
+    try {
+      await saveMyPriceSheet({
+        data: {
+          items: rows.map((row) => ({
+            task: row.task,
+            category: row.category,
+            keywords: row.keywords,
+            pricingType: row.pricingType,
+            priceMin: row.priceMin,
+            priceMax: row.priceMax,
+            hours: row.hours,
+          })),
+        },
+      });
+      const fresh = await listMyPriceSheet();
+      setRows(fresh);
+      setDirty(false);
+      toast.success("Price sheet saved — the AI will price off these numbers from now on.");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not save price sheet.");
+    } finally {
+      setSaving(false);
+    }
   }
 
   function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
@@ -38,12 +114,24 @@ function PriceSheetPage() {
     e.target.value = "";
   }
 
+  if (loading) {
+    return (
+      <div className="space-y-6 p-6 lg:p-10">
+        <PageHeader eyebrow="Price sheet" title="What FrontDesk quotes off of" description="Loading…" />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6 p-6 lg:p-10">
       <PageHeader
         eyebrow="Price sheet"
         title="What FrontDesk quotes off of"
-        description="These are the numbers the AI uses to price a job. Edit anything, or add a row for a service it doesn't know about yet."
+        description={
+          user
+            ? "These are the exact numbers the AI uses to price a job — one price sheet, no separate copy to keep in sync."
+            : "You're viewing a sample price sheet — sign up to build your own."
+        }
         actions={
           <>
             <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleUpload} />
@@ -57,38 +145,86 @@ function PriceSheetPage() {
       <Panel>
         <ul className="-m-4 divide-y divide-border">
           {rows.map((row) => (
-            <li key={row.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
+            <li key={row.id} className="space-y-2 px-4 py-3">
+              <div className="flex flex-wrap items-center gap-3">
+                <Input
+                  value={row.task}
+                  onChange={(e) => updateRow(row.id, { task: e.target.value })}
+                  className="min-w-[220px] flex-1"
+                  aria-label="Service"
+                />
+                <Input
+                  value={row.category}
+                  onChange={(e) => updateRow(row.id, { category: e.target.value })}
+                  className="w-36"
+                  aria-label="Category"
+                />
+                <select
+                  value={row.pricingType}
+                  onChange={(e) => updateRow(row.id, { pricingType: e.target.value as PricingType })}
+                  className="h-10 rounded-sm border border-border-strong bg-background px-2 text-sm"
+                  aria-label="Pricing type"
+                >
+                  {PRICING_TYPES.map((t) => (
+                    <option key={t} value={t}>
+                      {t === "flat" ? "Flat" : t === "hourly" ? "Hourly" : "Range"}
+                    </option>
+                  ))}
+                </select>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-sm text-muted-foreground">$</span>
+                  <Input
+                    type="number"
+                    value={row.priceMin}
+                    onChange={(e) => updateRow(row.id, { priceMin: e.target.valueAsNumber || 0 })}
+                    className="w-24 text-right"
+                    aria-label="Minimum price"
+                  />
+                </div>
+                {row.pricingType === "range" && (
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-sm text-muted-foreground">–$</span>
+                    <Input
+                      type="number"
+                      value={row.priceMax}
+                      onChange={(e) => updateRow(row.id, { priceMax: e.target.valueAsNumber || 0 })}
+                      className="w-24 text-right"
+                      aria-label="Maximum price"
+                    />
+                  </div>
+                )}
+                <span className="ml-auto num text-sm font-semibold text-foreground">{formatPrice(row)}</span>
+                <button
+                  onClick={() => removeRow(row.id)}
+                  className="rounded-sm p-2 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                  aria-label={`Remove ${row.task}`}
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              </div>
               <Input
-                value={row.service}
-                onChange={(e) => updateRow(row.id, { service: e.target.value })}
-                className="min-w-[220px] flex-1"
-                aria-label="Service"
+                value={row.keywords.join(", ")}
+                onChange={(e) =>
+                  updateRow(row.id, {
+                    keywords: e.target.value
+                      .split(",")
+                      .map((k) => k.trim())
+                      .filter(Boolean),
+                  })
+                }
+                placeholder="Keywords the AI matches against a customer's description (comma-separated)"
+                className="text-xs"
+                aria-label={`Keywords for ${row.task}`}
               />
-              <Input
-                value={row.category}
-                onChange={(e) => updateRow(row.id, { category: e.target.value })}
-                className="w-36"
-                aria-label="Category"
-              />
-              <Input
-                value={row.price}
-                onChange={(e) => updateRow(row.id, { price: e.target.value })}
-                className="w-32"
-                aria-label="Price"
-              />
-              <button
-                onClick={() => removeRow(row.id)}
-                className="ml-auto rounded-sm p-2 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                aria-label={`Remove ${row.service}`}
-              >
-                <Trash2 className="h-4 w-4" />
-              </button>
             </li>
           ))}
         </ul>
-        <div className="mt-3 border-t border-border-strong pt-3">
+        <div className="mt-3 flex items-center justify-between border-t border-border-strong pt-3">
           <Button variant="outline" size="sm" onClick={addRow}>
             <Plus className="mr-2 h-4 w-4" /> Add service
+          </Button>
+          <Button size="sm" onClick={saveAll} disabled={!dirty || saving}>
+            {saving ? "Saving…" : "Save changes"}
           </Button>
         </div>
       </Panel>

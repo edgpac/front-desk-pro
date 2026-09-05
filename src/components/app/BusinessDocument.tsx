@@ -5,7 +5,7 @@ import { ArrowLeft, Download, Printer } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
-import { money, TENANT, type Lead } from "@/lib/mock-data";
+import { money, TENANT, type Lead, type Tenant } from "@/lib/mock-data";
 
 export type DocumentKind = "proposal" | "invoice" | "receipt";
 
@@ -33,17 +33,26 @@ function formatDate(date: Date) {
   return date.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
 }
 
-export function BusinessDocument({ kind, lead }: { kind: DocumentKind; lead: Lead }) {
+export function BusinessDocument({
+  kind,
+  lead,
+  tenant = TENANT,
+}: {
+  kind: DocumentKind;
+  lead: Lead;
+  tenant?: Tenant;
+}) {
   const [paymentMethod, setPaymentMethod] = useState<(typeof PAYMENT_METHODS)[number]>("Cash");
   const [downloading, setDownloading] = useState(false);
   const documentRef = useRef<HTMLDivElement>(null);
 
   const subtotal = lead.lineItems.reduce((sum, i) => sum + i.qty * i.rate, 0);
-  const tax = kind === "proposal" ? 0 : (subtotal * TENANT.taxRate) / 100;
+  const tax = kind === "proposal" ? 0 : (subtotal * tenant.taxRate) / 100;
   const total = subtotal + tax;
 
   const now = new Date();
-  const docNumber = `${PREFIX[kind]}${lead.id.replace("L-", "")}`;
+  const idSuffix = lead.id.startsWith("L-") ? lead.id.replace("L-", "") : lead.id.slice(0, 8).toUpperCase();
+  const docNumber = `${PREFIX[kind]}${idSuffix}`;
   const fileSlug = `${kind}-${docNumber}-${lead.customer.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
 
   async function downloadPng() {
@@ -110,11 +119,11 @@ export function BusinessDocument({ kind, lead }: { kind: DocumentKind; lead: Lea
         >
           <div className="flex items-start justify-between border-b-2 border-ink pb-5">
             <div>
-              <p className="font-display text-lg font-extrabold text-foreground">{TENANT.name}</p>
-              <p className="mt-1 text-sm text-muted-foreground">{TENANT.trade} services</p>
-              <p className="text-sm text-muted-foreground">{TENANT.phone}</p>
-              <p className="text-sm text-muted-foreground">{TENANT.email}</p>
-              <p className="text-sm text-muted-foreground">{TENANT.address}</p>
+              <p className="font-display text-lg font-extrabold text-foreground">{tenant.name}</p>
+              <p className="mt-1 text-sm text-muted-foreground">{tenant.trade} services</p>
+              <p className="text-sm text-muted-foreground">{tenant.phone}</p>
+              <p className="text-sm text-muted-foreground">{tenant.email}</p>
+              <p className="text-sm text-muted-foreground">{tenant.address}</p>
             </div>
             <div className="text-right">
               <p className="font-display text-base font-bold text-foreground">#{docNumber}</p>
@@ -161,10 +170,10 @@ export function BusinessDocument({ kind, lead }: { kind: DocumentKind; lead: Lea
                     {item.qty} {item.unit}
                   </td>
                   <td className="py-3 text-right text-muted-foreground">
-                    {money(item.rate, TENANT.currency)}
+                    {money(item.rate, tenant.currency)}
                   </td>
                   <td className="num py-3 text-right font-semibold text-foreground">
-                    {money(item.qty * item.rate, TENANT.currency)}
+                    {money(item.qty * item.rate, tenant.currency)}
                   </td>
                 </tr>
               ))}
@@ -176,13 +185,13 @@ export function BusinessDocument({ kind, lead }: { kind: DocumentKind; lead: Lea
               {tax > 0 && (
                 <div className="flex justify-between text-sm text-muted-foreground">
                   <span>Subtotal</span>
-                  <span className="num">{money(subtotal, TENANT.currency)}</span>
+                  <span className="num">{money(subtotal, tenant.currency)}</span>
                 </div>
               )}
               {tax > 0 && (
                 <div className="flex justify-between text-sm text-muted-foreground">
-                  <span>Sales tax ({TENANT.taxRate}%)</span>
-                  <span className="num">{money(tax, TENANT.currency)}</span>
+                  <span>Sales tax ({tenant.taxRate}%)</span>
+                  <span className="num">{money(tax, tenant.currency)}</span>
                 </div>
               )}
               <div className="flex justify-between border-t-2 border-ink pt-3 text-base font-bold text-foreground">
@@ -191,12 +200,12 @@ export function BusinessDocument({ kind, lead }: { kind: DocumentKind; lead: Lea
                   {kind === "invoice" && "Amount due"}
                   {kind === "receipt" && "Total"}
                 </span>
-                <span className="num">{money(total, TENANT.currency)}</span>
+                <span className="num">{money(total, tenant.currency)}</span>
               </div>
               {kind === "receipt" && (
                 <div className="flex justify-between border-t border-border pt-1 text-sm font-semibold text-foreground">
                   <span>Paid ({paymentMethod})</span>
-                  <span className="num">{money(total, TENANT.currency)}</span>
+                  <span className="num">{money(total, tenant.currency)}</span>
                 </div>
               )}
             </div>
@@ -211,18 +220,18 @@ export function BusinessDocument({ kind, lead }: { kind: DocumentKind; lead: Lea
             {kind !== "receipt" && (
               <Section title="Payment & warranty">
                 <p>
-                  {TENANT.paymentTerms} {TENANT.warrantyTerms}
+                  {tenant.paymentTerms} {tenant.warrantyTerms}
                 </p>
               </Section>
             )}
             {kind === "receipt" && (
               <Section title="Warranty">
-                <p>{TENANT.warrantyTerms}</p>
+                <p>{tenant.warrantyTerms}</p>
               </Section>
             )}
             <Section title="Contact">
               <p>
-                {TENANT.phone} · {TENANT.email} · {TENANT.hours}
+                {tenant.phone} · {tenant.email} · {tenant.hours}
               </p>
             </Section>
           </div>

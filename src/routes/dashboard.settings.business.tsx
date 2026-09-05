@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { toast } from "sonner";
 
@@ -6,6 +6,8 @@ import { PageHeader, Panel } from "@/components/app/DashboardShell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { useAuth } from "@/lib/use-auth";
+import { getMyTenant, updateMyTenant } from "@/lib/tenant-server";
 import { TENANT, type Tenant } from "@/lib/mock-data";
 
 export const Route = createFileRoute("/dashboard/settings/business")({
@@ -28,7 +30,33 @@ const REQUIRED_FIELDS: (keyof Tenant)[] = [
 ];
 
 function BusinessSettings() {
+  const { user, loading: authLoading } = useAuth();
   const [form, setForm] = useState<Tenant>({ ...TENANT });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (authLoading) return;
+    if (!user) {
+      setForm({ ...TENANT });
+      setLoading(false);
+      return;
+    }
+    let active = true;
+    getMyTenant()
+      .then((tenant) => {
+        if (active) setForm(tenant);
+      })
+      .catch((err) => {
+        toast.error(err instanceof Error ? err.message : "Could not load business settings.");
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [authLoading, user]);
 
   function set<K extends keyof Tenant>(key: K, value: Tenant[K]) {
     setForm((f) => ({ ...f, [key]: value }));
@@ -36,25 +64,63 @@ function BusinessSettings() {
 
   const missing = REQUIRED_FIELDS.filter((key) => !String(form[key] ?? "").trim());
   const taxIsValid = form.taxRate !== null && form.taxRate !== undefined && !Number.isNaN(form.taxRate);
-  const canSave = missing.length === 0 && taxIsValid;
+  const canSave = missing.length === 0 && taxIsValid && !saving;
+
+  async function handleSave(e: React.FormEvent) {
+    e.preventDefault();
+    if (missing.length > 0 || !taxIsValid) return;
+    if (!user) {
+      toast.success("Saved (sample data — sign up to save your real business info)");
+      return;
+    }
+    setSaving(true);
+    try {
+      await updateMyTenant({
+        data: {
+          name: form.name,
+          trade: form.trade,
+          phone: form.phone,
+          email: form.email,
+          address: form.address,
+          area: form.area,
+          hours: form.hours,
+          currency: form.currency,
+          taxRate: form.taxRate,
+          calendarLink: form.calendarLink,
+          paymentTerms: form.paymentTerms,
+          warrantyTerms: form.warrantyTerms,
+        },
+      });
+      toast.success("Saved");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not save business settings.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="space-y-6 p-6 lg:p-10">
+        <PageHeader eyebrow="Settings" title="Business info" description="Loading…" />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 p-6 lg:p-10">
       <PageHeader
         eyebrow="Settings"
         title="Business info"
-        description="Everything here appears on your proposals, invoices, and receipts — all fields are required before you can save."
+        description={
+          user
+            ? "Everything here appears on your proposals, invoices, and receipts — all fields are required before you can save."
+            : "You're viewing sample data — sign up to save your own business info here."
+        }
       />
 
       <Panel>
-        <form
-          className="grid gap-5 sm:grid-cols-2"
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (!canSave) return;
-            toast.success("Saved");
-          }}
-        >
+        <form className="grid gap-5 sm:grid-cols-2" onSubmit={handleSave}>
           <Field label="Business name" required>
             <Input value={form.name} onChange={(e) => set("name", e.target.value)} required />
           </Field>
@@ -149,15 +215,15 @@ function BusinessSettings() {
 
           <div className="sm:col-span-2">
             <Button type="submit" disabled={!canSave}>
-              Save
+              {saving ? "Saving…" : "Save"}
             </Button>
-            {!canSave && (
+            {missing.length > 0 || !taxIsValid ? (
               <p className="mt-2 text-xs text-muted-foreground">
                 {missing.length > 0
                   ? `${missing.length} field${missing.length === 1 ? "" : "s"} still need${missing.length === 1 ? "s" : ""} to be filled in.`
                   : "Enter a valid tax rate (0 is fine) to continue."}
               </p>
-            )}
+            ) : null}
           </div>
         </form>
       </Panel>

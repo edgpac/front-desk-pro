@@ -43,9 +43,16 @@ You need two things in `.env`:
    [supabase.com/dashboard](https://supabase.com/dashboard) (don't reuse a
    project from another app — FrontDesk's users should be their own, not
    shared with anything else). Settings → API on that project gives you the
-   URL, anon/publishable key, and service role key. No custom tables are
-   needed yet — Supabase's built-in `auth.users` covers signup/login as-is.
-   Without this, `/login` and `/signup` will throw on submit.
+   URL, anon/publishable key, and service role key. Without this, `/login`
+   and `/signup` will throw on submit.
+
+   Then run the schema: open the SQL editor on that project and paste in
+   `supabase/migrations/0001_init.sql` (or `supabase db push` if you're using
+   the Supabase CLI locally). It creates `tenants`, `price_sheet_items`,
+   `leads`, `lead_line_items`, and `lead_messages`, all RLS-scoped so a user
+   can only ever see their own tenant's rows, plus a trigger that gives every
+   new signup a tenant row automatically — no manual setup step needed to get
+   the dashboard reading/writing real data.
 3. **Stripe** — API keys from [dashboard.stripe.com/apikeys](https://dashboard.stripe.com/apikeys)
    (use the test keys while developing). For the webhook secret, either
    create a webhook endpoint at dashboard.stripe.com/webhooks pointed at

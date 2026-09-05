@@ -169,25 +169,41 @@ export const LEADS: Lead[] = [
 
 export const getLead = (id: string) => LEADS.find((l) => l.id === id);
 
-export type PriceRow = {
+// One unified shape for the price sheet — used both by the dashboard's
+// editable table and as the AI's pricing input (estimate-server.ts), instead
+// of the two disconnected shapes this used to be split across.
+export type PricingType = "flat" | "hourly" | "range";
+
+export type PriceSheetRow = {
   id: string;
-  service: string;
+  task: string;
   category: string;
-  pricing: "Flat" | "Hourly" | "Range";
-  price: string;
+  keywords: string[];
+  pricingType: PricingType;
+  priceMin: number;
+  priceMax: number;
+  hours: number;
 };
 
-export const PRICE_SHEET: PriceRow[] = [
-  { id: "p1", service: "Service call / diagnostic", category: "General", pricing: "Flat", price: "$89" },
-  { id: "p2", service: "Standard labor rate", category: "General", pricing: "Hourly", price: "$125/hr" },
-  { id: "p3", service: "After-hours labor rate", category: "General", pricing: "Hourly", price: "$185/hr" },
-  { id: "p4", service: "Drain clearing — kitchen line", category: "Drains", pricing: "Flat", price: "$210" },
-  { id: "p5", service: "Drain clearing — main line", category: "Drains", pricing: "Range", price: "$325–$650" },
-  { id: "p6", service: "P-trap rebuild", category: "Drains", pricing: "Flat", price: "$145" },
-  { id: "p7", service: "Water heater — drain valve", category: "Water heaters", pricing: "Flat", price: "$165" },
-  { id: "p8", service: "Water heater — 40gal replacement", category: "Water heaters", pricing: "Range", price: "$1,650–$2,200" },
-  { id: "p9", service: "Toilet reset with new wax ring", category: "Fixtures", pricing: "Flat", price: "$195" },
-  { id: "p10", service: "Hose bibb repair", category: "Fixtures", pricing: "Flat", price: "$135" },
+export function formatPrice(row: Pick<PriceSheetRow, "pricingType" | "priceMin" | "priceMax">, currency = "USD") {
+  if (row.pricingType === "hourly") return `${money(row.priceMin, currency)}/hr`;
+  if (row.pricingType === "range" || row.priceMin !== row.priceMax) {
+    return `${money(row.priceMin, currency)}–${money(row.priceMax, currency)}`;
+  }
+  return money(row.priceMin, currency);
+}
+
+export const PRICE_SHEET: PriceSheetRow[] = [
+  { id: "p1", task: "Service call / diagnostic", category: "General", keywords: ["diagnostic", "service call"], pricingType: "flat", priceMin: 89, priceMax: 89, hours: 0.5 },
+  { id: "p2", task: "Standard labor rate", category: "General", keywords: ["labor"], pricingType: "hourly", priceMin: 125, priceMax: 125, hours: 1 },
+  { id: "p3", task: "After-hours labor rate", category: "General", keywords: ["after hours", "emergency", "labor"], pricingType: "hourly", priceMin: 185, priceMax: 185, hours: 1 },
+  { id: "p4", task: "Drain clearing — kitchen line", category: "Drains", keywords: ["kitchen drain", "clog", "backed up"], pricingType: "flat", priceMin: 210, priceMax: 210, hours: 1 },
+  { id: "p5", task: "Drain clearing — main line", category: "Drains", keywords: ["main line", "sewer", "backup"], pricingType: "range", priceMin: 325, priceMax: 650, hours: 2 },
+  { id: "p6", task: "P-trap rebuild", category: "Drains", keywords: ["p-trap", "drips", "under sink"], pricingType: "flat", priceMin: 145, priceMax: 145, hours: 1 },
+  { id: "p7", task: "Water heater — drain valve", category: "Water heaters", keywords: ["water heater", "drain valve", "dripping"], pricingType: "flat", priceMin: 165, priceMax: 165, hours: 1 },
+  { id: "p8", task: "Water heater — 40gal replacement", category: "Water heaters", keywords: ["water heater", "replacement", "old heater"], pricingType: "range", priceMin: 1650, priceMax: 2200, hours: 3 },
+  { id: "p9", task: "Toilet reset with new wax ring", category: "Fixtures", keywords: ["toilet", "wax ring", "rocking"], pricingType: "flat", priceMin: 195, priceMax: 195, hours: 1 },
+  { id: "p10", task: "Hose bibb repair", category: "Fixtures", keywords: ["hose bibb", "spigot", "outdoor faucet"], pricingType: "flat", priceMin: 135, priceMax: 135, hours: 1 },
 ];
 
 export const FUNNEL = [

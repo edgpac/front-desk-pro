@@ -2,7 +2,7 @@
 
 Legend: ✅ real and working · 🟡 built, but mocked/disconnected from a real backend · ⬜ not built yet
 
-Last updated: September 2026, after the dashboard + documents build-out.
+Last updated: September 2026, after wiring the real Supabase database in place of `mock-data.ts`.
 
 ## Page by page
 
@@ -24,18 +24,23 @@ Last updated: September 2026, after the dashboard + documents build-out.
 | `/onboarding/` | ⬜ | Redirects to `/onboarding/business-info`, which doesn't exist as a file yet. **This redirect is currently broken** — clicking "sign up" today leads to a 404. |
 | `/onboarding/business-info`, `/price-sheet`, `/branding`, `/calendar`, `/done` | ⬜ | None of these five step pages have been built. Only the shell around them exists. |
 
-### Dashboard (currently: one hardcoded demo tenant, "Hale & Sons Plumbing")
+### Dashboard
+
+Every route below now reads real, per-tenant data from Supabase **when signed
+in** — and falls back to the same mock data as before when not, so the
+open, no-login sample dashboard (`DashboardGate`) keeps working exactly as
+it did.
 
 | Route | Status | Notes |
 |---|---|---|
-| `/dashboard` | 🟡 | Real UI (stats, recent activity, widget copy buttons), reading from mock data (`LEADS`, `TENANT`). **Open without login, on purpose** — a "you're looking at sample data" banner labels it clearly, same spirit as `/demo`. Nothing inside costs money or calls a real backend except Stripe checkout, which stays protected server-side regardless of page-level access. |
-| `/dashboard/leads` | 🟡 | Real filtering/search, against mock `LEADS`. |
-| `/dashboard/leads/:id` | 🟡 | Fully editable line items (description/qty/unit/rate, add/remove), status changer, message thread — all real interactions, but local component state only. Nothing is saved anywhere; refresh and it's gone. |
-| `/dashboard/leads/:id/proposal`, `/invoice`, `/receipt` | ✅ UI · 🟡 data | The documents themselves are real — correct math, tax handling, currency, PNG export (html2canvas-pro) and print-to-PDF both verified working. But they render from the same static mock lead, not from whatever you edited on the detail page a moment ago (see "Known disconnects" below). |
-| `/dashboard/price-sheet` | 🟡 | Editable UI, but **writes to a different, disconnected data set** than the one the AI actually prices against — see "Known disconnects." |
+| `/dashboard` | 🟡 | Real UI (stats, recent activity, widget copy buttons). Still reads mock data unconditionally — the overview stats/charts weren't part of this pass, only leads/price-sheet/settings were. |
+| `/dashboard/leads` | ✅ real · 🟡 sample | Signed-in users see their own `leads` table rows via `listMyLeads()`; signed-out visitors see the mock inbox, clearly labeled. |
+| `/dashboard/leads/:id` | ✅ real · 🟡 sample | Line items and status are real, tenant-scoped rows (`saveLeadLineItems`, `updateLeadStatus`) for signed-in users. **AI diagnosis ↔ message thread are now linked**: the reply box auto-drafts a customer-facing message from the diagnosis + live line-item total (Spanish or English, matching the language the customer wrote in — reuses `estimate-server.ts`'s `detectLanguage`). When nothing's been edited, a "Matches AI pricing — nothing edited" badge shows and the drafted message is the entire remaining step: press send. Edit a line item and the badge drops and the draft re-computes the new total immediately — still just one click to send. |
+| `/dashboard/leads/:id/proposal`, `/invoice`, `/receipt` | ✅ | Now read the same real lead + real tenant (`useLeadDocument`) instead of a static mock — editing a lead's line items and then generating a document reflects that edit. Tax rate, currency, and business info come from the signed-in tenant, not a hardcoded one. Fixes "known disconnect #2" below for real users. |
+| `/dashboard/price-sheet` | ✅ real · 🟡 sample | **One unified shape** (`price_sheet_items`: task/category/keywords/pricing type/min/max/hours) used by both the dashboard table and, going forward, the AI's pricing input — fixes "known disconnect #1" below. Signed-in users edit freely and hit "Save changes" (full replace); signed-out visitors edit the same shape against sample rows. |
 | `/dashboard/widget` | 🟡 | Copy-to-clipboard for embed code and shareable link work. The embed code points at `https://cdn.frontdesk.tools/widget.js`, which **doesn't exist** — there's no real embeddable widget script deployed anywhere yet. |
 | `/dashboard/analytics` | 🟡 | Real charts (recharts), rendering mock funnel/weekday data. No real analytics pipeline. |
-| `/dashboard/settings/business` | 🟡 | Fully built — every field a document needs, all required, Save is properly gated. Save doesn't persist anywhere yet; it's a toast. |
+| `/dashboard/settings/business` | ✅ real · 🟡 sample | Signed-in users load and save their real `tenants` row (`getMyTenant`/`updateMyTenant`); signed-out visitors see the same form pre-filled with sample data and a toast instead of a real save. |
 | `/dashboard/settings/billing` | ✅ checkout · 🟡 rest | "Switch to Solo/Crew" starts a real Stripe subscription Checkout session, email pulled server-side from the authenticated Supabase user — nothing to type twice. "Update payment method" and invoice "Download" still honestly show "not wired up yet." |
 
 ### Backend
@@ -46,27 +51,25 @@ Last updated: September 2026, after the dashboard + documents build-out.
 | WhatsApp as a real intake channel | ⬜ | Still not built — Meta's Business API needs its own verification process. What exists now is a sample lead (`L-2845`, Marisol Vega) in the dashboard showing what a WhatsApp-sourced, Spanish-language conversation would look like once it is, so prospects can see the payoff before it's real. |
 | Rate limiting | 🟡 | A single global counter (20 requests/minute across every visitor) — a blunt anti-abuse measure, not a real per-tenant quota or trial enforcement. |
 | Auth / sessions | ✅ | Real Supabase Auth — `src/integrations/supabase/` (client, server-side `requireSupabaseAuth` middleware for gating server functions, client-side `attachSupabaseAuth` that auto-attaches the session token to every server-function call). Ported from a working pattern in the `buildraid` repo, wired to FrontDesk's **own**, separate Supabase project — not shared with any other app. |
-| Database | ⬜ | Still doesn't exist beyond `auth.users`, which Supabase Auth manages for you. Every piece of app *data* (`mock-data.ts`) is still a hardcoded in-memory array — tenants, leads, and price sheets still need real tables. |
+| Database | ✅ core tables · 🟡 not everything reads from it yet | `supabase/migrations/0001_init.sql` defines `tenants`, `price_sheet_items`, `leads`, `lead_line_items`, `lead_messages` — all RLS-scoped to the signed-in user's own tenant, with a trigger that auto-creates a tenant row on signup (no onboarding wizard needed just to get *a* tenant to read/write). `src/lib/tenant-server.ts`, `price-sheet-server.ts`, `leads-server.ts` are the auth-gated server functions the dashboard pages above call. Not yet wired to the database: the `/dashboard` overview stats, `/dashboard/analytics`, and the AI's live pricing input (`estimate-server.ts` still uses `SAMPLE_PRICE_SHEET`, since `/demo` isn't tenant-scoped yet — see game plan item 5). |
 | Billing (Stripe) | ✅ | Real Checkout session creation (`src/lib/stripe-server.ts`, auth-gated) and a real webhook (`src/routes/api.stripe.webhook.tsx`) that verifies Stripe's signature and records the plan on the user via Supabase's admin API. Subscription status lives in Supabase `user_metadata` for now — a real `subscriptions` table is worth it once the rest of the data model exists, but wasn't needed to make this real. |
 | Email/SMS notifications | ⬜ | Doesn't exist — "new lead" alerts aren't sent anywhere. |
 | Legal pages (Privacy Policy, Terms) | ⬜ | Don't exist. Needed before real signups collect real customer data, and required for Play Store submission later. |
 
-## Known disconnects (worth fixing even before new features)
+## Known disconnects
 
-These aren't missing features so much as two things that look connected but aren't:
-
-1. **Two separate price sheets.** `/dashboard/price-sheet` edits `PRICE_SHEET` (shape: service/category/pricing/price — a display list). The actual AI pricing call uses `SAMPLE_PRICE_SHEET` in `estimate-server.ts` (shape: task/keywords/priceMin/priceMax/hours — what the prompt is built from). Editing one does nothing to the other today.
-2. **Editing a lead doesn't reach its documents.** The line-item edits on `/dashboard/leads/:id` are local state; the proposal/invoice/receipt routes independently re-fetch the same static lead. Once there's a real data layer this becomes one shared record instead of two reads of a hardcoded array.
-3. **A real `/demo` estimate never becomes a lead.** Running the AI flow returns a result to the browser and it vanishes — it doesn't get saved anywhere `/dashboard/leads` would show it.
+1. ~~**Two separate price sheets.**~~ ✅ Fixed for real users — `price_sheet_items` is now the one shape both the dashboard table and the AI-facing type (`PriceSheetItem` in `estimate-server.ts`) share structurally. What's *not* done: `estimate-server.ts` itself still calls `SAMPLE_PRICE_SHEET` rather than a tenant's real `price_sheet_items` rows, because the AI flow (`/demo`) isn't tenant-scoped yet — that's game plan item 5 below, the public per-tenant quote page.
+2. ~~**Editing a lead doesn't reach its documents.**~~ ✅ Fixed for real users — line-item edits on `/dashboard/leads/:id` persist to `lead_line_items`, and the proposal/invoice/receipt routes read the same row via `useLeadDocument`, so a document always reflects the latest saved edit.
+3. **A real `/demo` estimate never becomes a lead.** Running the AI flow returns a result to the browser and it vanishes — it doesn't get saved anywhere `/dashboard/leads` would show it. Still open — same root cause as #1: `/demo` has no tenant to attach a lead to yet.
 
 ## The game plan, in dependency order
 
 Everything below the first item is blocked on it, so it's the actual unlock:
 
-1. ~~**Auth.**~~ ✅ Done — real Supabase Auth, `/login`/`/signup` work, `/dashboard/*` is gated. **Still needed next: the database half.** Auth only covers *who* someone is; there are no tables yet for tenants, leads, or price sheets — everything in `mock-data.ts` still needs to become real, per-tenant rows.
-2. **Build the five missing onboarding pages**, writing to a new tenant table (created as part of the database work above). Fixes the broken `/onboarding/` redirect as a side effect.
-3. **Unify the two price sheets** into one real, tenant-owned table that both the dashboard page and `estimate-server.ts` read from.
-4. **Persist a real estimate as a lead.** When `/demo` (or a future public per-tenant quote page) produces a result, save it instead of letting it evaporate.
+1. ~~**Auth.**~~ ✅ Done — real Supabase Auth, `/login`/`/signup` work, `/dashboard/*` is gated.
+2. ~~**Database: tenants, leads, price sheet.**~~ ✅ Done — `supabase/migrations/0001_init.sql` plus the server-function layer (`tenant-server.ts`, `price-sheet-server.ts`, `leads-server.ts`), wired into settings/business, price-sheet, and the leads list/detail/documents pages.
+3. **Build the five missing onboarding pages.** A tenant row now exists automatically from the moment someone signs up (see the `handle_new_user` trigger), so this is now purely about the wizard UI writing to an already-real `tenants` row — no longer blocked on the database. Fixes the broken `/onboarding/` redirect as a side effect.
+4. **Wire `estimate-server.ts` to a tenant's real `price_sheet_items`** instead of `SAMPLE_PRICE_SHEET`, and **persist a real estimate as a lead** — both blocked on the same thing: `/demo` isn't tenant-scoped yet (see item 5).
 5. **Build the public per-tenant quote page** (`/quote/:slug`) — right now `/demo` is the only customer-facing flow, and it's hardcoded to one business, not addressable per real tenant yet.
 6. **Build the actual embeddable widget script** that `/dashboard/widget`'s embed code currently just references but doesn't back.
 7. ~~**Stripe billing.**~~ ✅ Checkout + webhook are real. Still ahead: real trial-day tracking (today's "9 days left" is still decorative) and invoice history pulled from Stripe instead of mock rows.
@@ -77,7 +80,7 @@ Everything below the first item is blocked on it, so it's the actual unlock:
 
 Recap of the earlier decision: this is the **owner's pocket app** — lead inbox, approve/edit an estimate, generate documents, push notifications the moment a lead lands. It is *not* a wrapper around the customer-facing quote flow, which should stay a zero-install web link.
 
-Building it now, before the items above, would mean building a mobile app against data that isn't real yet — so it's correctly sequenced *after* step 1 (auth + database) at minimum, and ideally after step 4 (real leads existing at all). Once that foundation exists, here's what's specifically needed:
+Building it now, before the items above, would mean building a mobile app against data that isn't real yet — so it's correctly sequenced *after* steps 1–2 (auth + database) at minimum, and ideally after step 4 (real leads existing at all). Once that foundation exists, here's what's specifically needed:
 
 - **A real API surface.** A native app (Flutter/React Native) can't call `createServerFn` the way this web app's browser client does — it needs plain JSON HTTP endpoints for login, lead list/detail, and document generation. Some API work is required regardless of which mobile path gets picked.
 - **Push notification infrastructure** — APNs for iOS, FCM for Android — tied to a "new lead created" event, which itself depends on step 4 above existing.

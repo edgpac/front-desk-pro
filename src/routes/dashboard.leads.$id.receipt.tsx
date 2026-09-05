@@ -1,13 +1,18 @@
-import { createFileRoute, notFound } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 
 import { BusinessDocument } from "@/components/app/BusinessDocument";
-import { getLead } from "@/lib/mock-data";
+import { useLeadDocument } from "@/lib/use-lead-document";
 
 export const Route = createFileRoute("/dashboard/leads/$id/receipt")({
-  loader: ({ params }) => {
-    const lead = getLead(params.id);
-    if (!lead) throw notFound();
-    return lead;
-  },
-  component: () => <BusinessDocument kind="receipt" lead={Route.useLoaderData()} />,
+  component: ReceiptPage,
 });
+
+function ReceiptPage() {
+  const { id } = Route.useParams();
+  const { lead, tenant, loading, notFound } = useLeadDocument(id);
+
+  if (loading) return <div className="p-10 text-sm text-muted-foreground">Loading…</div>;
+  if (notFound || !lead) return <div className="p-10 text-sm text-muted-foreground">Lead not found.</div>;
+
+  return <BusinessDocument kind="receipt" lead={lead} tenant={tenant} />;
+}

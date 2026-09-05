@@ -120,16 +120,16 @@ const SPANISH_PATTERNS = [
 // false positives from English text.
 const HEBREW_PATTERN = /[֐-׿]/;
 
-type DetectedLanguage = "es" | "he" | "en";
+export type DetectedLanguage = "es" | "he" | "en";
 
-function detectLanguage(...texts: (string | undefined)[]): DetectedLanguage {
+export function detectLanguage(...texts: (string | undefined)[]): DetectedLanguage {
   const combined = texts.filter(Boolean).join(" ");
   if (HEBREW_PATTERN.test(combined)) return "he";
   if (SPANISH_PATTERNS.some((pattern) => pattern.test(combined))) return "es";
   return "en";
 }
 
-const LANGUAGE_NAME: Record<DetectedLanguage, string> = {
+export const LANGUAGE_NAME: Record<DetectedLanguage, string> = {
   es: "Spanish",
   he: "Hebrew",
   en: "English",
