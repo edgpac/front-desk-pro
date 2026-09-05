@@ -26,7 +26,7 @@ export type Lead = {
   phone: string;
   address: string;
   requested: string;
-  channel: "Widget" | "Quote link" | "Shared link";
+  channel: "Widget" | "Quote link" | "Shared link" | "WhatsApp";
   status: LeadStatus;
   photo: string;
   problem: string;
@@ -43,6 +43,35 @@ export const money = (n: number, currency: string = "USD") =>
   n.toLocaleString("en-US", { style: "currency", currency, maximumFractionDigits: 0 });
 
 export const LEADS: Lead[] = [
+  {
+    id: "L-2845",
+    customer: "Marisol Vega",
+    phone: "(512) 555-0264",
+    address: "812 Nogales Ave, Austin TX",
+    requested: "Today, 8:10 AM",
+    channel: "WhatsApp",
+    status: "new",
+    photo: sinkPhoto,
+    problem: "El fregadero de la cocina gotea debajo y la llave no cierra bien.",
+    diagnosis:
+      "La llave necesita un cartucho nuevo — el goteo constante ya desgastó el sello interno. También hay una fuga menor en la conexión de abajo del fregadero que se puede sellar en la misma visita.",
+    confidence: "High",
+    lineItems: [
+      { id: "a", description: "Cambio de cartucho de la llave", qty: 1, unit: "trabajo", rate: 95 },
+      { id: "b", description: "Reparación de fuga en conexión", qty: 1, unit: "trabajo", rate: 60 },
+    ],
+    followUps: [
+      {
+        role: "customer",
+        text: "¿Cuánto costaría reparar el fregadero? Necesito que alguien venga esta semana.",
+      },
+      {
+        role: "assistant",
+        text: "Según la foto, es un cambio de cartucho y sellar una fuga menor — normalmente $155 en total, con la visita incluida. ¿Le funciona el jueves por la mañana?",
+      },
+      { role: "customer", text: "Sí, el jueves está bien. Gracias!" },
+    ],
+  },
   {
     id: "L-2841",
     customer: "Dana Whitfield",

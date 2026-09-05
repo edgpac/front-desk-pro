@@ -104,6 +104,22 @@ export const SAMPLE_PRICE_SHEET: PriceSheetItem[] = [
 
 const MAX_DESCRIPTION_LENGTH = 2000;
 
+// Ported from Cabos Handyman's api/analyze-parts.js detectSpanish() — a fast,
+// free heuristic (no extra API call) rather than asking Claude to detect
+// language as a separate step.
+const SPANISH_PATTERNS = [
+  /\b(hola|buenos días|buenas tardes|gracias|por favor|necesito|tengo|estoy|puede|cuánto|cuanto|dónde|donde|cuál|cual)\b/i,
+  /\b(servicio|precio|costo|ayuda|problema|roto|reparar|instalar|fuga|gotea|arreglar)\b/i,
+  /[¿¡]/,
+  /ción\b/i,
+  /ñ/i,
+];
+
+function detectSpanish(...texts: (string | undefined)[]): boolean {
+  const combined = texts.filter(Boolean).join(" ");
+  return SPANISH_PATTERNS.some((pattern) => pattern.test(combined));
+}
+
 // Naive in-memory global sliding window — no per-tenant/per-IP request
 // context is wired up at this layer yet, so this only protects against a
 // single instance getting hammered. Revisit once this sits behind real
@@ -161,7 +177,12 @@ function buildPrompt(input: QuoteInput): string {
         .join("\n")}`
     : "";
 
-  return `You are the AI front desk for ${input.businessName}, a trades business. A customer sent a photo and/or description of a problem. Diagnose it and produce a priced estimate the way an experienced tradesperson would after seeing the photo and asking a couple of clarifying questions.
+  const isSpanish = detectSpanish(input.description, ...(input.answers?.map((a) => a.answer) ?? []));
+  const languageInstruction = isSpanish
+    ? `\n\nIMPORTANT: The customer is writing in Spanish. Write every human-readable value in your JSON response — diagnosis, questions, options, line item description/detail — in Spanish. Keep the JSON keys themselves in English exactly as shown (issueType, severity, etc.) — only translate the values.`
+    : "";
+
+  return `You are the AI front desk for ${input.businessName}, a trades business. A customer sent a photo and/or description of a problem. Diagnose it and produce a priced estimate the way an experienced tradesperson would after seeing the photo and asking a couple of clarifying questions.${languageInstruction}
 
 CUSTOMER'S DESCRIPTION: "${input.description}"${answersBlock}
 
@@ -273,6 +294,11 @@ export const getFollowUpAnswer = createServerFn({ method: "POST" })
       .map((m) => `${m.role === "customer" ? "Customer" : "You"}: ${m.text}`)
       .join("\n");
 
+    const isSpanish = detectSpanish(data.question, data.diagnosis, ...data.history.map((m) => m.text));
+    const languageInstruction = isSpanish
+      ? " Reply in Spanish — the conversation so far has been in Spanish."
+      : "";
+
     const prompt = `You are answering a follow-up question on behalf of ${data.businessName} about an estimate you already gave a customer.
 
 DIAGNOSIS GIVEN: ${data.diagnosis}
@@ -282,7 +308,7 @@ ${historyText ? `\nCONVERSATION SO FAR:\n${historyText}` : ""}
 
 CUSTOMER'S QUESTION: "${data.question}"
 
-Answer briefly (2-4 sentences), in plain language, staying consistent with the estimate above. If you don't know something (exact timing, whether a part is in stock), say the business will confirm it, don't invent specifics.`;
+Answer briefly (2-4 sentences), in plain language, staying consistent with the estimate above.${languageInstruction} If you don't know something (exact timing, whether a part is in stock), say the business will confirm it, don't invent specifics.`;
 
     const response = await callClaude({
       model: "claude-haiku-4-5-20251001",

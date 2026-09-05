@@ -42,7 +42,8 @@ Last updated: September 2026, after the dashboard + documents build-out.
 
 | Piece | Status | Notes |
 |---|---|---|
-| `src/lib/estimate-server.ts` (`getQuoteEstimate`, `getFollowUpAnswer`) | ✅ | The one genuinely real backend. Real Claude API calls, tenant-agnostic (takes price sheet/labor rate/business name as input instead of hardcoding one business). |
+| `src/lib/estimate-server.ts` (`getQuoteEstimate`, `getFollowUpAnswer`) | ✅ | The one genuinely real backend. Real Claude API calls, tenant-agnostic (takes price sheet/labor rate/business name as input instead of hardcoding one business). Now detects Spanish (ported from Cabos Handyman's `detectSpanish()`) and responds in kind — diagnosis, questions, and follow-up answers all come back in Spanish when the customer wrote in Spanish. |
+| WhatsApp as a real intake channel | ⬜ | Still not built — Meta's Business API needs its own verification process. What exists now is a sample lead (`L-2845`, Marisol Vega) in the dashboard showing what a WhatsApp-sourced, Spanish-language conversation would look like once it is, so prospects can see the payoff before it's real. |
 | Rate limiting | 🟡 | A single global counter (20 requests/minute across every visitor) — a blunt anti-abuse measure, not a real per-tenant quota or trial enforcement. |
 | Auth / sessions | ✅ | Real Supabase Auth — `src/integrations/supabase/` (client, server-side `requireSupabaseAuth` middleware for gating server functions, client-side `attachSupabaseAuth` that auto-attaches the session token to every server-function call). Ported from a working pattern in the `buildraid` repo, wired to FrontDesk's **own**, separate Supabase project — not shared with any other app. |
 | Database | ⬜ | Still doesn't exist beyond `auth.users`, which Supabase Auth manages for you. Every piece of app *data* (`mock-data.ts`) is still a hardcoded in-memory array — tenants, leads, and price sheets still need real tables. |
