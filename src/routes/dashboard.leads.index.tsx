@@ -9,6 +9,8 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/use-auth";
 import { listMyLeads } from "@/lib/leads-server";
+import { createLead } from "@/lib/public-lead-server";
+import { getMyTenant } from "@/lib/tenant-server";
 import { LEADS, type Lead, type LeadStatus, STATUS_LABEL, lineItemsTotal, money } from "@/lib/mock-data";
 
 export const Route = createFileRoute("/dashboard/leads/")({
@@ -23,6 +25,7 @@ function LeadInbox() {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<LeadStatus | "all">("all");
   const [search, setSearch] = useState("");
+  const [sendingTest, setSendingTest] = useState(false);
 
   useEffect(() => {
     if (authLoading) return;
@@ -47,6 +50,33 @@ function LeadInbox() {
     };
   }, [authLoading, user]);
 
+  async function sendTestLead() {
+    setSendingTest(true);
+    try {
+      const tenant = await getMyTenant();
+      await createLead({
+        data: {
+          tenantSlug: tenant.slug,
+          customerName: "Test Customer",
+          phone: "(555) 555-0100",
+          address: "123 Test St",
+          channel: "Widget",
+          problem: "Testing the lead notification — kitchen faucet is dripping.",
+          diagnosis: "Worn cartridge, straightforward swap. This is a test lead to confirm the notification email works.",
+          confidence: "High",
+          lineItems: [{ description: "Cartridge replacement", qty: 1, unit: "job", rate: 95 }],
+        },
+      });
+      const fresh = await listMyLeads();
+      setAllLeads(fresh);
+      toast.success("Test lead created — check your email for the notification.");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not send a test lead.");
+    } finally {
+      setSendingTest(false);
+    }
+  }
+
   const leads = useMemo(() => {
     return allLeads.filter((l) => filter === "all" || l.status === filter).filter((l) =>
       search.trim()
@@ -63,6 +93,13 @@ function LeadInbox() {
         {...(!user
           ? { description: "You're viewing sample leads — real ones will show up here once you're live." }
           : {})}
+        actions={
+          user ? (
+            <Button variant="outline" size="sm" onClick={() => void sendTestLead()} disabled={sendingTest}>
+              {sendingTest ? "Sending…" : "Send yourself a test lead"}
+            </Button>
+          ) : undefined
+        }
       />
 
       <div className="flex flex-wrap items-center justify-between gap-3">
