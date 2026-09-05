@@ -74,7 +74,7 @@ function Demo() {
                 Want to see the inbox, price sheet and proposal generator before you sign up? Walk through
                 the dashboard with sample data.
               </p>
-              <Button asChild variant="outline" className="mt-4 w-full">
+              <Button asChild className="mt-4 w-full">
                 <Link to="/dashboard">Open the sample dashboard</Link>
               </Button>
             </div>
