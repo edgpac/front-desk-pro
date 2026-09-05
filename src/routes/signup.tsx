@@ -76,9 +76,9 @@ function Signup() {
               <Wordmark />
             </Link>
           </div>
-          <h1 className="mt-10 text-3xl">Start your 14 days.</h1>
+          <h1 className="mt-10 text-3xl">Create your account.</h1>
           <p className="mt-2 text-sm text-muted-foreground">
-            No card up front. You'll be quoting off your own price sheet before the end of the day.
+            No card required. You'll be quoting off your own price sheet before the end of the day.
           </p>
 
           <form className="mt-8 space-y-4" onSubmit={submit}>
@@ -137,7 +137,7 @@ function Signup() {
           </form>
 
           <ul className="mt-6 space-y-2 text-sm text-muted-foreground">
-            {["14 days free", "Cancel from the billing page", "Your pricing stays yours"].map((p) => (
+            {["No trial — subscribe when you're ready", "Cancel from the billing page", "Your pricing stays yours"].map((p) => (
               <li key={p} className="flex gap-2">
                 <Check className="mt-0.5 h-4 w-4 text-success" /> {p}
               </li>

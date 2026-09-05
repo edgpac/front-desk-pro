@@ -27,7 +27,7 @@ export function SiteFooter() {
               </Link>
             </li>
             <li>
-              <Link to="/signup" className="hover:text-ink-foreground">
+              <Link to="/pricing" className="hover:text-ink-foreground">
                 Get started
               </Link>
             </li>

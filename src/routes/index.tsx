@@ -87,7 +87,7 @@ function Landing() {
                 <Link to="/demo">See a live demo</Link>
               </Button>
               <Button asChild size="lg">
-                <Link to="/signup">
+                <Link to="/pricing">
                   Get started <ArrowRight className="ml-1 h-4 w-4" />
                 </Link>
               </Button>
