@@ -11,7 +11,7 @@ export type DocumentKind = "proposal" | "invoice" | "receipt";
 
 const PAYMENT_METHODS = ["Cash", "Card", "Check", "Bank transfer"] as const;
 
-const LABEL: Record<DocumentKind, string> = {
+export const DOCUMENT_LABEL: Record<DocumentKind, string> = {
   proposal: "Proposal",
   invoice: "Invoice",
   receipt: "Receipt",
@@ -22,6 +22,13 @@ const PREFIX: Record<DocumentKind, string> = {
   invoice: "INV-",
   receipt: "R-",
 };
+
+// Shared with the "share document" hook in the lead's message thread, so a
+// proposal/invoice/receipt number always reads the same wherever it shows up.
+export function formatDocNumber(kind: DocumentKind, leadId: string) {
+  const idSuffix = leadId.startsWith("L-") ? leadId.replace("L-", "") : leadId.slice(0, 8).toUpperCase();
+  return `${PREFIX[kind]}${idSuffix}`;
+}
 
 function addDays(date: Date, days: number) {
   const d = new Date(date);
@@ -51,8 +58,7 @@ export function BusinessDocument({
   const total = subtotal + tax;
 
   const now = new Date();
-  const idSuffix = lead.id.startsWith("L-") ? lead.id.replace("L-", "") : lead.id.slice(0, 8).toUpperCase();
-  const docNumber = `${PREFIX[kind]}${idSuffix}`;
+  const docNumber = formatDocNumber(kind, lead.id);
   const fileSlug = `${kind}-${docNumber}-${lead.customer.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
 
   async function downloadPng() {
@@ -137,7 +143,7 @@ export function BusinessDocument({
           </div>
 
           <h1 className="my-8 text-center font-display text-4xl italic text-foreground">
-            {LABEL[kind]}
+            {DOCUMENT_LABEL[kind]}
           </h1>
 
           <div className="flex items-start justify-between border-l-4 border-ink bg-muted px-4 py-3">

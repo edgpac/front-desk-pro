@@ -38,7 +38,7 @@ function BillingSettings() {
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
             <p className="text-lg font-semibold text-foreground">Crew — $39/mo</p>
-            <p className="text-sm text-muted-foreground">Trial ends in 9 days. Cancel anytime.</p>
+            <p className="text-sm text-muted-foreground">Cancel anytime.</p>
           </div>
           <div className="flex flex-wrap gap-2">
             {PLANS.map((plan) => (

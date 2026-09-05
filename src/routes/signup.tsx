@@ -14,14 +14,14 @@ export const Route = createFileRoute("/signup")({
   ssr: false,
   head: () => ({
     meta: [
-      { title: "Start your free trial — FrontDesk" },
+      { title: "Create your account — FrontDesk" },
       {
         name: "description",
         content:
-          "Set up FrontDesk in about 10 minutes: your business details, your price sheet, your logo. 14 days free, no card up front.",
+          "Set up FrontDesk in about 10 minutes: your business details, your price sheet, your logo. No trial — subscribe from the billing page when you're ready.",
       },
-      { property: "og:title", content: "Start your FrontDesk free trial" },
-      { property: "og:description", content: "14 days free, no card up front, about 10 minutes to set up." },
+      { property: "og:title", content: "Create your FrontDesk account" },
+      { property: "og:description", content: "About 10 minutes to set up. No trial — subscribe when you're ready." },
     ],
   }),
   component: Signup,

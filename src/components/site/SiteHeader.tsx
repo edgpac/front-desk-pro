@@ -40,7 +40,7 @@ export function SiteHeader() {
             <Link to="/login">Log in</Link>
           </Button>
           <Button asChild size="sm">
-            <Link to="/signup">Start free trial</Link>
+            <Link to="/signup">Get started</Link>
           </Button>
         </div>
 
@@ -71,7 +71,7 @@ export function SiteHeader() {
                 <Link to="/login">Log in</Link>
               </Button>
               <Button asChild size="sm" className="flex-1">
-                <Link to="/signup">Start free trial</Link>
+                <Link to="/signup">Get started</Link>
               </Button>
             </div>
           </div>

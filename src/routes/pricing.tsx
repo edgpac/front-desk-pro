@@ -12,12 +12,12 @@ export const Route = createFileRoute("/pricing")({
       {
         name: "description",
         content:
-          "$19/mo solo, $39/mo for a crew, custom for multi-truck shops. 14-day free trial, no card up front, cancel anytime.",
+          "$19/mo solo, $39/mo for a crew, custom for multi-truck shops. Try the sample dashboard free, no signup — subscribe when you're ready, cancel anytime.",
       },
       { property: "og:title", content: "FrontDesk pricing — $19/mo solo, $39/mo crew" },
       {
         property: "og:description",
-        content: "One extra booked service call a month covers it. 14 days free, no card up front.",
+        content: "One extra booked service call a month covers it. See it work first — no card required.",
       },
     ],
   }),
@@ -31,7 +31,7 @@ const tiers = [
     per: "/mo",
     for: "One person, one truck.",
     points: ["Unlimited quote requests", "Photo estimates off your price sheet", "Lead inbox", "Branded proposals", "Widget + shareable link"],
-    cta: "Start free trial",
+    cta: "Get started",
     featured: false,
   },
   {
@@ -46,7 +46,7 @@ const tiers = [
       "Analytics and CSV export",
       "Priority quote turnaround",
     ],
-    cta: "Start free trial",
+    cta: "Get started",
     featured: true,
   },
   {
@@ -93,7 +93,8 @@ function Pricing() {
             One flat price. It pays for itself on the first job you'd have missed.
           </h1>
           <p className="mt-4 max-w-xl text-[15px] text-muted-foreground">
-            14 days free, no card up front. Month to month — cancel from the billing page, no phone call.
+            Try the sample dashboard free, no signup. Subscribe when you're ready — month to month,
+            cancel from the billing page, no phone call.
           </p>
         </div>
       </section>

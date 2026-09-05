@@ -83,17 +83,18 @@ function Landing() {
             </p>
 
             <div className="mt-8 flex flex-wrap gap-3">
-              <Button asChild size="lg">
-                <Link to="/signup">
-                  Start free trial <ArrowRight className="ml-1 h-4 w-4" />
-                </Link>
-              </Button>
               <Button asChild size="lg" variant="outline">
                 <Link to="/demo">See a live demo</Link>
               </Button>
+              <Button asChild size="lg">
+                <Link to="/signup">
+                  Get started <ArrowRight className="ml-1 h-4 w-4" />
+                </Link>
+              </Button>
             </div>
             <p className="mt-3 text-xs text-muted-foreground">
-              14 days free. No card up front. Takes about 10 minutes to set up.
+              No trial gimmicks — try the sample dashboard free, subscribe when you're ready. About 10
+              minutes to set up.
             </p>
 
             <dl className="mt-12 grid grid-cols-3 gap-px overflow-hidden border border-border-strong bg-border-strong">
@@ -349,7 +350,7 @@ function Landing() {
           </div>
           <div className="flex gap-3">
             <Button asChild size="lg">
-              <Link to="/signup">Start free trial</Link>
+              <Link to="/signup">Get started</Link>
             </Button>
             <Button asChild size="lg" variant="outline">
               <Link to="/pricing">Compare plans</Link>

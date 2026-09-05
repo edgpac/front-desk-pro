@@ -96,7 +96,7 @@ function Login() {
           <p className="mt-6 text-sm text-muted-foreground">
             No account yet?{" "}
             <Link to="/signup" className="font-semibold text-primary underline-offset-4 hover:underline">
-              Start a free trial
+              Sign up
             </Link>
           </p>
         </div>

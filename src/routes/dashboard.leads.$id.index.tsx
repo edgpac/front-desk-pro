@@ -1,12 +1,14 @@
 import { useEffect, useState } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { ArrowLeft, Calendar, FileText, Plus, RefreshCw, Send, Trash2 } from "lucide-react";
+import { ArrowLeft, Calendar, FileText, Paperclip, Plus, RefreshCw, Send, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { PageHeader, Panel } from "@/components/app/DashboardShell";
 import { StatusPill } from "@/components/app/StatusPill";
+import { DOCUMENT_LABEL, formatDocNumber, type DocumentKind } from "@/components/app/BusinessDocument";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/lib/use-auth";
 import { getMyLead, saveLeadLineItems, updateLeadStatus, addLeadMessage } from "@/lib/leads-server";
 import { getMyTenant } from "@/lib/tenant-server";
@@ -166,6 +168,17 @@ function LeadDetail() {
       }
     }
     toast.success("Sent to the customer's thread");
+  }
+
+  // UI hook for whenever a real outbound channel (WhatsApp/SMS/email) exists —
+  // for now this only adds a reference line to the draft; there's no
+  // attachment or delivery happening yet.
+  function shareDocument(kind: DocumentKind) {
+    if (!lead) return;
+    const docNumber = formatDocNumber(kind, lead.id);
+    const line = `📎 Sharing your ${DOCUMENT_LABEL[kind].toLowerCase()} (${docNumber}) — ${money(total, tenant.currency)} total.`;
+    setManualMessage(message.trim() ? `${message}\n\n${line}` : line);
+    toast.info("Added to the draft — will actually attach the document once a real channel is wired up.");
   }
 
   if (loading) {
@@ -338,16 +351,34 @@ function LeadDetail() {
                 </div>
               ))}
             </div>
-            <p className="mt-3 text-xs text-muted-foreground">
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {(["proposal", "invoice", "receipt"] as DocumentKind[]).map((kind) => (
+                <button
+                  key={kind}
+                  onClick={() => shareDocument(kind)}
+                  className="inline-flex items-center gap-1 rounded-sm border border-border-strong px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
+                >
+                  <Paperclip className="h-3 w-3" /> Share {DOCUMENT_LABEL[kind].toLowerCase()}
+                </button>
+              ))}
+            </div>
+            <p className="mt-2 text-xs text-muted-foreground">
               Drafted from the diagnosis and current total — edit it, or just send.
             </p>
             <div className="mt-1.5 flex gap-2">
-              <Input
+              <Textarea
                 value={message}
                 onChange={(e) => setManualMessage(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && void sendMessage()}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    void sendMessage();
+                  }
+                }}
                 placeholder="Reply to the customer…"
                 aria-label="Message the customer"
+                rows={3}
+                className="text-sm"
               />
               <Button variant="outline" onClick={() => void sendMessage()} disabled={!message.trim()} aria-label="Send">
                 <Send className="h-4 w-4" />
