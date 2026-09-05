@@ -5,7 +5,7 @@ import { SiteHeader } from "@/components/site/SiteHeader";
 import { SiteFooter } from "@/components/site/SiteFooter";
 import { Button } from "@/components/ui/button";
 import heroPhoto from "@/assets/dog-grooming-van.png";
-import panelPhoto from "@/assets/electrician-panel.jpg";
+import panelPhoto from "@/assets/electrical-panel-repair.png";
 import vanPhoto from "@/assets/work-van.jpg";
 import carInteriorPhoto from "@/assets/car-detailing-interior.png";
 
@@ -228,9 +228,9 @@ function Landing() {
               t: "It asks the questions you'd ask",
               d: "Age of the unit, is it dripping or pouring, is there access. When the photo is unclear it follows up instead of guessing — that's how the price ends up close.",
               img: panelPhoto,
-              alt: "Electrician working inside a residential breaker panel",
-              w: 1200,
-              h: 1500,
+              alt: "Electrician repairing wiring inside a breaker panel with a screwdriver",
+              w: 1447,
+              h: 1087,
             },
             {
               n: "03",
