@@ -12,9 +12,9 @@ export const Route = createFileRoute("/pricing")({
       {
         name: "description",
         content:
-          "$19/mo solo, $39/mo for a crew, custom for multi-truck shops. Try the sample dashboard free, no signup — subscribe when you're ready, cancel anytime.",
+          "$8/mo solo, $19/mo for a crew. Try the sample dashboard free, no signup — subscribe when you're ready, cancel anytime.",
       },
-      { property: "og:title", content: "FrontDesk pricing — $19/mo solo, $39/mo crew" },
+      { property: "og:title", content: "FrontDesk pricing — $8/mo solo, $19/mo crew" },
       {
         property: "og:description",
         content: "One extra booked service call a month covers it. See it work first — no card required.",
@@ -27,7 +27,7 @@ export const Route = createFileRoute("/pricing")({
 const tiers = [
   {
     name: "Solo",
-    price: "$19",
+    price: "$8",
     per: "/mo",
     for: "One person, one truck.",
     points: ["Unlimited quote requests", "Photo estimates off your price sheet", "Lead inbox", "Branded proposals", "Widget + shareable link"],
@@ -36,7 +36,7 @@ const tiers = [
   },
   {
     name: "Crew",
-    price: "$39",
+    price: "$19",
     per: "/mo",
     for: "Two to five techs.",
     points: [
@@ -49,27 +49,16 @@ const tiers = [
     cta: "Get started",
     featured: true,
   },
-  {
-    name: "Shop",
-    price: "Custom",
-    per: "",
-    for: "Multi-truck, multiple trades.",
-    points: ["Everything in Crew", "Multiple price sheets", "Per-trade routing", "Onboarding done for you", "Phone support"],
-    cta: "Talk to us",
-    featured: false,
-  },
 ];
 
 const matrix = [
-  { row: "Quote requests", solo: "Unlimited", crew: "Unlimited", shop: "Unlimited" },
-  { row: "Price sheet photo extraction", solo: true, crew: true, shop: true },
-  { row: "Manual price editing", solo: true, crew: true, shop: true },
-  { row: "Hourly labor math", solo: false, crew: true, shop: true },
-  { row: "Branded proposal PDF", solo: true, crew: true, shop: true },
-  { row: "Customer follow-up thread", solo: false, crew: true, shop: true },
-  { row: "Analytics + CSV export", solo: false, crew: true, shop: true },
-  { row: "Multiple price sheets", solo: false, crew: false, shop: true },
-  { row: "Phone support", solo: false, crew: false, shop: true },
+  { row: "Quote requests", solo: "Unlimited", crew: "Unlimited" },
+  { row: "Price sheet photo extraction", solo: true, crew: true },
+  { row: "Manual price editing", solo: true, crew: true },
+  { row: "Hourly labor math", solo: false, crew: true },
+  { row: "Branded proposal PDF", solo: true, crew: true },
+  { row: "Customer follow-up thread", solo: false, crew: true },
+  { row: "Analytics + CSV export", solo: false, crew: true },
 ];
 
 function Cell({ v }: { v: boolean | string }) {
@@ -100,7 +89,7 @@ function Pricing() {
       </section>
 
       <section className="border-b border-border-strong">
-        <div className="mx-auto grid max-w-6xl gap-px bg-border-strong lg:grid-cols-3">
+        <div className="mx-auto grid max-w-6xl gap-px bg-border-strong sm:grid-cols-2">
           {tiers.map((t) => (
             <div
               key={t.name}
@@ -125,7 +114,7 @@ function Pricing() {
               </ul>
               <div className="mt-7 pt-1">
                 <Button asChild className="w-full" variant={t.featured ? "default" : "outline"}>
-                  <Link to={t.cta === "Talk to us" ? "/demo" : "/signup"}>{t.cta}</Link>
+                  <Link to="/signup">{t.cta}</Link>
                 </Button>
               </div>
             </div>
@@ -137,13 +126,12 @@ function Pricing() {
         <div className="mx-auto max-w-6xl px-5 py-14">
           <h2 className="text-2xl">Line by line</h2>
           <div className="mt-6 overflow-x-auto border border-border-strong bg-card">
-            <table className="w-full min-w-[560px] text-left">
+            <table className="w-full min-w-[420px] text-left">
               <thead>
                 <tr className="border-b border-border-strong">
                   <th className="label-caps px-4 py-3 text-muted-foreground">Feature</th>
                   <th className="label-caps px-4 py-3 text-muted-foreground">Solo</th>
                   <th className="label-caps px-4 py-3 text-muted-foreground">Crew</th>
-                  <th className="label-caps px-4 py-3 text-muted-foreground">Shop</th>
                 </tr>
               </thead>
               <tbody>
@@ -155,9 +143,6 @@ function Pricing() {
                     </td>
                     <td className="px-4 py-3">
                       <Cell v={m.crew} />
-                    </td>
-                    <td className="px-4 py-3">
-                      <Cell v={m.shop} />
                     </td>
                   </tr>
                 ))}

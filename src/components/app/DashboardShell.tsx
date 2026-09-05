@@ -183,7 +183,7 @@ export function Panel({
   children,
   className,
 }: {
-  title?: string;
+  title?: ReactNode;
   aside?: ReactNode;
   children: ReactNode;
   className?: string;

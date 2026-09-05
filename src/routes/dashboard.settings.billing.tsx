@@ -12,8 +12,8 @@ export const Route = createFileRoute("/dashboard/settings/billing")({
 });
 
 const PLANS = [
-  { id: "solo" as const, label: "Solo", price: "$19/mo" },
-  { id: "crew" as const, label: "Crew", price: "$39/mo" },
+  { id: "solo" as const, label: "Solo", price: "$8/mo" },
+  { id: "crew" as const, label: "Crew", price: "$19/mo" },
 ];
 
 function BillingSettings() {
@@ -37,7 +37,7 @@ function BillingSettings() {
       <Panel title="Current plan">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
-            <p className="text-lg font-semibold text-foreground">Crew — $39/mo</p>
+            <p className="text-lg font-semibold text-foreground">Crew — $19/mo</p>
             <p className="text-sm text-muted-foreground">Cancel anytime.</p>
           </div>
           <div className="flex flex-wrap gap-2">

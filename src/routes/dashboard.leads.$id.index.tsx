@@ -306,7 +306,14 @@ function LeadDetail() {
           </Panel>
 
           <Panel
-            title="AI diagnosis"
+            title={
+              <span className="inline-flex items-baseline gap-2">
+                AI diagnosis
+                <span className="text-[11px] font-normal normal-case tracking-normal text-muted-foreground">
+                  Double check responses
+                </span>
+              </span>
+            }
             aside={
               <button
                 className="inline-flex items-center gap-1.5 text-xs font-semibold text-primary hover:underline"

@@ -21,14 +21,14 @@ const SOFTWARE_SCHEMA = {
     {
       "@type": "Offer",
       name: "Solo",
-      price: "19",
+      price: "8",
       priceCurrency: "USD",
       description: "One person, one truck.",
     },
     {
       "@type": "Offer",
       name: "Crew",
-      price: "39",
+      price: "19",
       priceCurrency: "USD",
       description: "Two to five techs.",
     },
@@ -345,7 +345,7 @@ function Landing() {
           <div>
             <h2 className="text-3xl">Flat monthly price. Cancel whenever.</h2>
             <p className="mt-2 max-w-lg text-sm text-muted-foreground">
-              $19/mo solo, $39/mo for a crew. One extra booked service call covers it.
+              $8/mo solo, $19/mo for a crew. One extra booked service call covers it.
             </p>
           </div>
           <div className="flex gap-3">
