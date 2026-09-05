@@ -22,6 +22,7 @@ between jobs — not a power user of software.
 - Radix UI primitives
 - Claude (Anthropic) for photo diagnosis and pricing — see
   `src/lib/estimate-server.ts`
+- Supabase for auth — see `src/integrations/supabase/`
 
 ## Local development
 
@@ -29,13 +30,23 @@ Requires [Bun](https://bun.sh).
 
 ```sh
 bun install
-cp .env.example .env   # add your own ANTHROPIC_API_KEY
+cp .env.example .env   # fill in the values below
 bun run dev
 ```
 
-The `/demo` route exercises the real estimate flow against a sample price
-sheet — no signup needed, but it does need a valid `ANTHROPIC_API_KEY` in
-`.env` to return a real diagnosis instead of an error state.
+You need two things in `.env`:
+
+1. **`ANTHROPIC_API_KEY`** — from [console.anthropic.com](https://console.anthropic.com/settings/keys).
+   The `/demo` route exercises the real estimate flow against a sample price
+   sheet without this returns an honest error instead of a real diagnosis.
+2. **A Supabase project** — create a **new** one at
+   [supabase.com/dashboard](https://supabase.com/dashboard) (don't reuse a
+   project from another app — FrontDesk's users should be their own, not
+   shared with anything else). Settings → API on that project gives you the
+   URL and anon/publishable key; put the same values in both the `VITE_`
+   and non-`VITE_` variables in `.env.example`. No custom tables are needed
+   yet — Supabase's built-in `auth.users` covers signup/login as-is.
+   Without this, `/login` and `/signup` will throw on submit.
 
 ## Design direction
 

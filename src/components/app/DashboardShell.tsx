@@ -1,10 +1,11 @@
-import { Link, Outlet, useRouterState } from "@tanstack/react-router";
+import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useState, type ReactNode } from "react";
 import {
   BarChart3,
   CreditCard,
   Inbox,
   LayoutDashboard,
+  LogOut,
   Menu,
   Settings,
   Tags,
@@ -14,6 +15,7 @@ import {
 
 import { Wordmark } from "@/components/brand/Wordmark";
 import { Button } from "@/components/ui/button";
+import { supabase } from "@/integrations/supabase/client";
 import { TENANT } from "@/lib/mock-data";
 import { cn } from "@/lib/utils";
 
@@ -57,6 +59,12 @@ function NavList({ onNavigate }: { onNavigate?: () => void }) {
 
 export function DashboardShell() {
   const [open, setOpen] = useState(false);
+  const navigate = useNavigate();
+
+  async function logOut() {
+    await supabase.auth.signOut();
+    navigate({ to: "/login" });
+  }
 
   return (
     <div className="min-h-screen bg-paper">
@@ -72,11 +80,19 @@ export function DashboardShell() {
         <div className="mt-6">
           <NavList />
         </div>
-        <div className="mt-auto rounded-sm border border-white/10 p-3">
-          <p className="text-xs text-ink-muted">Trial ends in 9 days</p>
-          <Button asChild size="sm" className="mt-2 w-full">
-            <Link to="/dashboard/settings/billing">Pick a plan</Link>
-          </Button>
+        <div className="mt-auto space-y-3">
+          <div className="rounded-sm border border-white/10 p-3">
+            <p className="text-xs text-ink-muted">Trial ends in 9 days</p>
+            <Button asChild size="sm" className="mt-2 w-full">
+              <Link to="/dashboard/settings/billing">Pick a plan</Link>
+            </Button>
+          </div>
+          <button
+            onClick={() => void logOut()}
+            className="flex w-full items-center gap-2 rounded-sm px-3 py-2 text-sm font-medium text-ink-muted transition-colors hover:bg-sidebar-accent/60 hover:text-ink-foreground"
+          >
+            <LogOut className="h-4 w-4" /> Log out
+          </button>
         </div>
       </aside>
 

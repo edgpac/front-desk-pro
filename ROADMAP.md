@@ -13,8 +13,8 @@ Last updated: September 2026, after the dashboard + documents build-out.
 | `/` | ✅ | Static marketing page. No backend needed. |
 | `/pricing` | ✅ | Solo $19 / Crew $39 / Shop Custom. "Start free trial" just navigates to `/signup` — no Stripe checkout yet. |
 | `/demo` | ✅ | The one fully real, end-to-end flow: photo in, real Claude vision + pricing call out (`getQuoteEstimate`), multi-round clarification, follow-up Q&A. Needs `ANTHROPIC_API_KEY` set to actually return results. |
-| `/login` | 🟡 | Real form UI, but the submit handler doesn't check anything — it just navigates to `/dashboard` regardless of what's typed. No authentication exists. |
-| `/signup` | 🟡 | Same story — the form doesn't create an account. It navigates to `/onboarding/business-info`, which currently 404s (see below). |
+| `/login` | ✅ | Real Supabase auth (`signInWithPassword`). Needs a Supabase project's URL/key in `.env` to actually authenticate — see README. |
+| `/signup` | ✅ | Real Supabase auth (`signUp`, with name/phone stored as user metadata until a real tenant table exists). Navigates to `/dashboard` (or `/login` if email confirmation is on) — not to `/onboarding/business-info`, since that still doesn't exist. |
 
 ### Onboarding
 
@@ -28,7 +28,7 @@ Last updated: September 2026, after the dashboard + documents build-out.
 
 | Route | Status | Notes |
 |---|---|---|
-| `/dashboard` | 🟡 | Real UI (stats, recent activity, widget copy buttons), reading from mock data (`LEADS`, `TENANT`). **Not login-gated** — this URL is fully public right now, no session check at all. |
+| `/dashboard` | 🟡 | Real UI (stats, recent activity, widget copy buttons), reading from mock data (`LEADS`, `TENANT`). **Now login-gated** — redirects to `/login` if there's no Supabase session. What's inside is still mock data either way. |
 | `/dashboard/leads` | 🟡 | Real filtering/search, against mock `LEADS`. |
 | `/dashboard/leads/:id` | 🟡 | Fully editable line items (description/qty/unit/rate, add/remove), status changer, message thread — all real interactions, but local component state only. Nothing is saved anywhere; refresh and it's gone. |
 | `/dashboard/leads/:id/proposal`, `/invoice`, `/receipt` | ✅ UI · 🟡 data | The documents themselves are real — correct math, tax handling, currency, PNG export (html2canvas-pro) and print-to-PDF both verified working. But they render from the same static mock lead, not from whatever you edited on the detail page a moment ago (see "Known disconnects" below). |
@@ -44,8 +44,8 @@ Last updated: September 2026, after the dashboard + documents build-out.
 |---|---|---|
 | `src/lib/estimate-server.ts` (`getQuoteEstimate`, `getFollowUpAnswer`) | ✅ | The one genuinely real backend. Real Claude API calls, tenant-agnostic (takes price sheet/labor rate/business name as input instead of hardcoding one business). |
 | Rate limiting | 🟡 | A single global counter (20 requests/minute across every visitor) — a blunt anti-abuse measure, not a real per-tenant quota or trial enforcement. |
-| Auth / sessions | ⬜ | Doesn't exist. No user accounts, no password hashing, no session cookies, nothing. |
-| Database | ⬜ | Doesn't exist. Every piece of "data" in the app (`mock-data.ts`) is a hardcoded in-memory array. |
+| Auth / sessions | ✅ | Real Supabase Auth — `src/integrations/supabase/` (client, server-side `requireSupabaseAuth` middleware for gating server functions, client-side `attachSupabaseAuth` that auto-attaches the session token to every server-function call). Ported from a working pattern in the `buildraid` repo, wired to FrontDesk's **own**, separate Supabase project — not shared with any other app. |
+| Database | ⬜ | Still doesn't exist beyond `auth.users`, which Supabase Auth manages for you. Every piece of app *data* (`mock-data.ts`) is still a hardcoded in-memory array — tenants, leads, and price sheets still need real tables. |
 | Billing (Stripe) | ⬜ | Doesn't exist. |
 | Email/SMS notifications | ⬜ | Doesn't exist — "new lead" alerts aren't sent anywhere. |
 | Legal pages (Privacy Policy, Terms) | ⬜ | Don't exist. Needed before real signups collect real customer data, and required for Play Store submission later. |
@@ -62,8 +62,8 @@ These aren't missing features so much as two things that look connected but aren
 
 Everything below the first item is blocked on it, so it's the actual unlock:
 
-1. **Auth + a real database.** Recommend Supabase — it's already the tool in both `caboshandyman.com` and `cabos-handyman-management`, so it's zero new platform to learn. This single piece turns `mock-data.ts` into real tables (tenants, leads, price sheet items) and makes `/login`, `/signup`, and gating `/dashboard/*` behind a session all possible at once.
-2. **Build the five missing onboarding pages**, writing to the new tenant table from step 1. Fixes the broken `/onboarding/` redirect as a side effect.
+1. ~~**Auth.**~~ ✅ Done — real Supabase Auth, `/login`/`/signup` work, `/dashboard/*` is gated. **Still needed next: the database half.** Auth only covers *who* someone is; there are no tables yet for tenants, leads, or price sheets — everything in `mock-data.ts` still needs to become real, per-tenant rows.
+2. **Build the five missing onboarding pages**, writing to a new tenant table (created as part of the database work above). Fixes the broken `/onboarding/` redirect as a side effect.
 3. **Unify the two price sheets** into one real, tenant-owned table that both the dashboard page and `estimate-server.ts` read from.
 4. **Persist a real estimate as a lead.** When `/demo` (or a future public per-tenant quote page) produces a result, save it instead of letting it evaporate.
 5. **Build the public per-tenant quote page** (`/quote/:slug`) — right now `/demo` is the only customer-facing flow, and it's hardcoded to one business, not addressable per real tenant yet.
