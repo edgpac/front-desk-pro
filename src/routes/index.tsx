@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import heroPhoto from "@/assets/dog-grooming-van.png";
 import panelPhoto from "@/assets/electrician-panel.jpg";
 import vanPhoto from "@/assets/work-van.jpg";
-import leakPhoto from "@/assets/leak-detail.jpg";
+import carInteriorPhoto from "@/assets/car-detailing-interior.png";
 
 const SOFTWARE_SCHEMA = {
   "@context": "https://schema.org",
@@ -218,10 +218,10 @@ function Landing() {
               n: "01",
               t: "They send a photo and two sentences",
               d: "Your branded quote page opens on their phone. Camera, gallery, or just type it out. No account, no forms with twelve fields.",
-              img: leakPhoto,
-              alt: "Customer photo of a leaking water heater fitting",
-              w: 1200,
-              h: 900,
+              img: carInteriorPhoto,
+              alt: "Customer photo of a heavily soiled car interior needing a full detail",
+              w: 1369,
+              h: 1149,
             },
             {
               n: "02",
