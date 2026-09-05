@@ -196,7 +196,7 @@ function PriceSheetPage() {
                 <span className="ml-auto num text-sm font-semibold text-foreground">{formatPrice(row)}</span>
                 <button
                   onClick={() => removeRow(row.id)}
-                  className="rounded-sm p-2 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                  className="rounded-sm p-2.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
                   aria-label={`Remove ${row.task}`}
                 >
                   <Trash2 className="h-4 w-4" />

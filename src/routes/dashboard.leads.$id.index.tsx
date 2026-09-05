@@ -307,7 +307,7 @@ function LeadDetail() {
 
           <Panel
             title={
-              <span className="inline-flex items-baseline gap-2">
+              <span className="flex flex-col gap-0.5">
                 AI diagnosis
                 <span className="text-[11px] font-normal normal-case tracking-normal text-muted-foreground">
                   Double check responses
@@ -385,7 +385,7 @@ function LeadDetail() {
                   </div>
                   <button
                     onClick={() => removeItem(item.id)}
-                    className="rounded-sm p-2 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                    className="rounded-sm p-2.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
                     aria-label={`Remove ${item.description}`}
                   >
                     <Trash2 className="h-4 w-4" />
