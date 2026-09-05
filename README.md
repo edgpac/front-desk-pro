@@ -6,14 +6,18 @@ the job onto their calendar — no receptionist, no waiting for a callback.
 
 ## Product
 
-A web platform for independent trades businesses (plumbers, electricians,
-HVAC, appliance repair) to run an AI-powered quote intake: customers send a
-photo and a couple of sentences, get an instant priced estimate, and book
-directly. The business gets a lead inbox, a branded proposal generator, and
-an embeddable widget + shareable link for their own site and socials.
+A web platform for independent service businesses (plumbers, electricians,
+detailers, and any trade that prices jobs from a photo) to run an
+AI-powered quote intake: customers send a photo and a couple of sentences,
+get an instant priced estimate, and book directly. The business gets a
+lead inbox, a branded proposal generator, and an embeddable widget +
+shareable link for their own site and socials.
 
-**Target user:** a solo or small-crew tradesperson, checking this on a phone
-between jobs — not a power user of software.
+**Target user:** someone newer to running a service business — solo or
+small-crew, any trade, checking this on a phone between jobs — not a power
+user of software. Even more so if you've never had to build a proposal,
+invoice, or receipt before: the AI gives you a starting point instead of a
+blank page.
 
 ## Stack
 

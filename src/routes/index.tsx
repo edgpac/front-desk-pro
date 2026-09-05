@@ -16,7 +16,7 @@ const SOFTWARE_SCHEMA = {
   applicationCategory: "BusinessApplication",
   operatingSystem: "Web",
   description:
-    "AI-powered front desk for independent trades businesses. Customers photograph a problem, FrontDesk prices it off the business's own price sheet using Claude AI, and books the job onto their calendar.",
+    "AI-powered front desk for independent service businesses. Customers photograph a problem, FrontDesk prices it off the business's own price sheet using Claude AI, and books the job onto their calendar.",
   offers: [
     {
       "@type": "Offer",
@@ -42,7 +42,7 @@ export const Route = createFileRoute("/")({
       {
         name: "description",
         content:
-          "Customers send a photo, FrontDesk sends a priced estimate off your own price sheet, and books the job on your calendar. Built for plumbers, electricians, HVAC and appliance repair.",
+          "Customers send a photo, FrontDesk sends a priced estimate off your own price sheet, and books the job on your calendar. Built for plumbers, electricians, detailers, and any service business that quotes from a photo.",
       },
       { property: "og:title", content: "Quote every job before your competition calls back" },
       {
@@ -70,7 +70,7 @@ function Landing() {
       <section className="border-b border-border-strong">
         <div className="mx-auto grid max-w-6xl grid-cols-1 lg:grid-cols-[1.05fr_0.95fr]">
           <div className="border-border-strong px-5 py-14 lg:border-r lg:py-20 lg:pr-12">
-            <p className="label-caps text-primary">For plumbers · electricians · HVAC · appliance repair</p>
+            <p className="label-caps text-primary">For plumbers · electricians · detailers · any trade</p>
             <h1 className="mt-5 text-[2.6rem] leading-[1.03] text-foreground sm:text-6xl">
               Quote the job before
               <br />
