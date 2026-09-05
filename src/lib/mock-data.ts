@@ -179,10 +179,10 @@ export const WEEKDAYS = [
 ];
 
 export const INVOICES = [
-  { id: "INV-1042", date: "Aug 1, 2026", amount: "$79.00", plan: "Crew — monthly" },
-  { id: "INV-1019", date: "Jul 1, 2026", amount: "$79.00", plan: "Crew — monthly" },
-  { id: "INV-0994", date: "Jun 1, 2026", amount: "$49.00", plan: "Solo — monthly" },
-  { id: "INV-0971", date: "May 1, 2026", amount: "$49.00", plan: "Solo — monthly" },
+  { id: "INV-1042", date: "Aug 1, 2026", amount: "$39.00", plan: "Crew — monthly" },
+  { id: "INV-1019", date: "Jul 1, 2026", amount: "$39.00", plan: "Crew — monthly" },
+  { id: "INV-0994", date: "Jun 1, 2026", amount: "$19.00", plan: "Solo — monthly" },
+  { id: "INV-0971", date: "May 1, 2026", amount: "$19.00", plan: "Solo — monthly" },
 ];
 
 export const TENANT = {

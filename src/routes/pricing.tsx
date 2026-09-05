@@ -12,9 +12,9 @@ export const Route = createFileRoute("/pricing")({
       {
         name: "description",
         content:
-          "$49/mo solo, $79/mo for a crew, custom for multi-truck shops. 14-day free trial, no card up front, cancel anytime.",
+          "$19/mo solo, $39/mo for a crew, custom for multi-truck shops. 14-day free trial, no card up front, cancel anytime.",
       },
-      { property: "og:title", content: "FrontDesk pricing — $49/mo solo, $79/mo crew" },
+      { property: "og:title", content: "FrontDesk pricing — $19/mo solo, $39/mo crew" },
       {
         property: "og:description",
         content: "One extra booked service call a month covers it. 14 days free, no card up front.",
@@ -27,7 +27,7 @@ export const Route = createFileRoute("/pricing")({
 const tiers = [
   {
     name: "Solo",
-    price: "$49",
+    price: "$19",
     per: "/mo",
     for: "One person, one truck.",
     points: ["Unlimited quote requests", "Photo estimates off your price sheet", "Lead inbox", "Branded proposals", "Widget + shareable link"],
@@ -36,7 +36,7 @@ const tiers = [
   },
   {
     name: "Crew",
-    price: "$79",
+    price: "$39",
     per: "/mo",
     for: "Two to five techs.",
     points: [
