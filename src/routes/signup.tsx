@@ -137,7 +137,12 @@ function Signup() {
           </form>
 
           <ul className="mt-6 space-y-2 text-sm text-muted-foreground">
-            {["No trial — subscribe when you're ready", "Cancel from the billing page", "Your pricing stays yours"].map((p) => (
+            {[
+              "No trial — subscribe when you're ready",
+              "Cancel from the billing page",
+              "Your pricing stays yours",
+              "Starts empty — this is your real account, not the sample dashboard",
+            ].map((p) => (
               <li key={p} className="flex gap-2">
                 <Check className="mt-0.5 h-4 w-4 text-success" /> {p}
               </li>
