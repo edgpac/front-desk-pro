@@ -184,7 +184,7 @@ function Landing() {
                   icon: ClipboardList,
                   n: "04",
                   t: "Other software just moves the form onto a screen",
-                  d: "You still type every line item and look up your own prices — it just holds the invoice instead of a notepad.",
+                  d: "You still type every line item and look up your own prices yourself — trading a notepad for a screen doesn't make the estimate write itself.",
                 },
               ].map((r) => (
                 <li key={r.n} className="flex gap-5 py-6">
