@@ -1,6 +1,8 @@
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
-import { ArrowLeft, Printer } from "lucide-react";
+import html2canvas from "html2canvas-pro";
+import { ArrowLeft, Download, Printer } from "lucide-react";
+import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { money, TENANT, type Lead } from "@/lib/mock-data";
@@ -33,6 +35,8 @@ function formatDate(date: Date) {
 
 export function BusinessDocument({ kind, lead }: { kind: DocumentKind; lead: Lead }) {
   const [paymentMethod, setPaymentMethod] = useState<(typeof PAYMENT_METHODS)[number]>("Cash");
+  const [downloading, setDownloading] = useState(false);
+  const documentRef = useRef<HTMLDivElement>(null);
 
   const subtotal = lead.lineItems.reduce((sum, i) => sum + i.qty * i.rate, 0);
   const tax = kind === "proposal" ? 0 : (subtotal * TENANT.taxRate) / 100;
@@ -40,6 +44,30 @@ export function BusinessDocument({ kind, lead }: { kind: DocumentKind; lead: Lea
 
   const now = new Date();
   const docNumber = `${PREFIX[kind]}${lead.id.replace("L-", "")}`;
+  const fileSlug = `${kind}-${docNumber}-${lead.customer.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+
+  async function downloadPng() {
+    if (!documentRef.current) return;
+    setDownloading(true);
+    try {
+      const canvas = await html2canvas(documentRef.current, {
+        scale: 3,
+        backgroundColor: "#ffffff",
+        useCORS: true,
+      });
+      const link = document.createElement("a");
+      link.download = `${fileSlug}.png`;
+      link.href = canvas.toDataURL("image/png", 1.0);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (err) {
+      console.error("PNG export failed:", err);
+      toast.error("Couldn't generate the PNG — try Print / Save as PDF instead.");
+    } finally {
+      setDownloading(false);
+    }
+  }
 
   return (
     <div className="bg-paper p-6 lg:p-10 print:bg-white print:p-0">
@@ -67,13 +95,19 @@ export function BusinessDocument({ kind, lead }: { kind: DocumentKind; lead: Lea
                 ))}
               </select>
             )}
+            <Button variant="outline" onClick={() => void downloadPng()} disabled={downloading}>
+              <Download className="mr-2 h-4 w-4" /> {downloading ? "Rendering…" : "Download PNG"}
+            </Button>
             <Button onClick={() => window.print()}>
               <Printer className="mr-2 h-4 w-4" /> Print / Save as PDF
             </Button>
           </div>
         </div>
 
-        <div className="border border-border-strong bg-card p-8 print:border-0 print:p-0 sm:p-12">
+        <div
+          ref={documentRef}
+          className="border border-border-strong bg-card p-8 print:border-0 print:p-0 sm:p-12"
+        >
           <div className="flex items-start justify-between border-b-2 border-ink pb-5">
             <div>
               <p className="font-display text-lg font-extrabold text-foreground">{TENANT.name}</p>
