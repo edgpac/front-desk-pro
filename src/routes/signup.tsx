@@ -18,10 +18,10 @@ export const Route = createFileRoute("/signup")({
       {
         name: "description",
         content:
-          "Set up FrontDesk in about 10 minutes: your business details, your price sheet, your logo. No trial — subscribe from the billing page when you're ready.",
+          "Set up FrontDesk in about 10 minutes: your business details, your price sheet, your logo. No trial — you'll pick a plan as you get set up.",
       },
       { property: "og:title", content: "Create your FrontDesk account" },
-      { property: "og:description", content: "About 10 minutes to set up. No trial — subscribe when you're ready." },
+      { property: "og:description", content: "About 10 minutes to set up. No trial — you'll pick a plan as you get set up." },
     ],
   }),
   component: Signup,
@@ -78,7 +78,8 @@ function Signup() {
           </div>
           <h1 className="mt-10 text-3xl">Create your account.</h1>
           <p className="mt-2 text-sm text-muted-foreground">
-            No card required. You'll be quoting off your own price sheet before the end of the day.
+            No card required to sign up — you'll pick a plan as you start setting things up, then
+            you're quoting off your own price sheet the same day.
           </p>
 
           <form className="mt-8 space-y-4" onSubmit={submit}>
@@ -138,7 +139,7 @@ function Signup() {
 
           <ul className="mt-6 space-y-2 text-sm text-muted-foreground">
             {[
-              "No trial — subscribe when you're ready",
+              "No trial — you'll pick a plan as you get set up",
               "Cancel from the billing page",
               "Your pricing stays yours",
               "Starts empty — this is your real account, not the sample dashboard",

@@ -84,7 +84,7 @@ export function DashboardShell() {
         </div>
         <div className="mt-auto space-y-3">
           <div className="rounded-sm border border-white/10 p-3">
-            <p className="text-xs text-ink-muted">No trial — subscribe when you're ready</p>
+            <p className="text-xs text-ink-muted">No trial — a plan is required</p>
             <Button asChild size="sm" className="mt-2 w-full">
               <Link to="/dashboard/settings/billing">Pick a plan</Link>
             </Button>
