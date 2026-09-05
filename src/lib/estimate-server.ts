@@ -104,9 +104,9 @@ export const SAMPLE_PRICE_SHEET: PriceSheetItem[] = [
 
 const MAX_DESCRIPTION_LENGTH = 2000;
 
-// Ported from Cabos Handyman's api/analyze-parts.js detectSpanish() — a fast,
-// free heuristic (no extra API call) rather than asking Claude to detect
-// language as a separate step.
+// Spanish heuristic ported from Cabos Handyman's api/analyze-parts.js
+// detectSpanish() — fast, free (no extra API call) instead of asking Claude
+// to detect language as a separate step.
 const SPANISH_PATTERNS = [
   /\b(hola|buenos días|buenas tardes|gracias|por favor|necesito|tengo|estoy|puede|cuánto|cuanto|dónde|donde|cuál|cual)\b/i,
   /\b(servicio|precio|costo|ayuda|problema|roto|reparar|instalar|fuga|gotea|arreglar)\b/i,
@@ -115,10 +115,25 @@ const SPANISH_PATTERNS = [
   /ñ/i,
 ];
 
-function detectSpanish(...texts: (string | undefined)[]): boolean {
+// Hebrew uses its own Unicode block, so detection is actually more reliable
+// than the Spanish word-pattern heuristic — no overlap with Latin script, no
+// false positives from English text.
+const HEBREW_PATTERN = /[֐-׿]/;
+
+type DetectedLanguage = "es" | "he" | "en";
+
+function detectLanguage(...texts: (string | undefined)[]): DetectedLanguage {
   const combined = texts.filter(Boolean).join(" ");
-  return SPANISH_PATTERNS.some((pattern) => pattern.test(combined));
+  if (HEBREW_PATTERN.test(combined)) return "he";
+  if (SPANISH_PATTERNS.some((pattern) => pattern.test(combined))) return "es";
+  return "en";
 }
+
+const LANGUAGE_NAME: Record<DetectedLanguage, string> = {
+  es: "Spanish",
+  he: "Hebrew",
+  en: "English",
+};
 
 // Naive in-memory global sliding window — no per-tenant/per-IP request
 // context is wired up at this layer yet, so this only protects against a
@@ -177,10 +192,11 @@ function buildPrompt(input: QuoteInput): string {
         .join("\n")}`
     : "";
 
-  const isSpanish = detectSpanish(input.description, ...(input.answers?.map((a) => a.answer) ?? []));
-  const languageInstruction = isSpanish
-    ? `\n\nIMPORTANT: The customer is writing in Spanish. Write every human-readable value in your JSON response — diagnosis, questions, options, line item description/detail — in Spanish. Keep the JSON keys themselves in English exactly as shown (issueType, severity, etc.) — only translate the values.`
-    : "";
+  const language = detectLanguage(input.description, ...(input.answers?.map((a) => a.answer) ?? []));
+  const languageInstruction =
+    language !== "en"
+      ? `\n\nIMPORTANT: The customer is writing in ${LANGUAGE_NAME[language]}. Write every human-readable value in your JSON response — diagnosis, questions, options, line item description/detail — in ${LANGUAGE_NAME[language]}. Keep the JSON keys themselves in English exactly as shown (issueType, severity, etc.) — only translate the values.`
+      : "";
 
   return `You are the AI front desk for ${input.businessName}, a trades business. A customer sent a photo and/or description of a problem. Diagnose it and produce a priced estimate the way an experienced tradesperson would after seeing the photo and asking a couple of clarifying questions.${languageInstruction}
 
@@ -294,10 +310,11 @@ export const getFollowUpAnswer = createServerFn({ method: "POST" })
       .map((m) => `${m.role === "customer" ? "Customer" : "You"}: ${m.text}`)
       .join("\n");
 
-    const isSpanish = detectSpanish(data.question, data.diagnosis, ...data.history.map((m) => m.text));
-    const languageInstruction = isSpanish
-      ? " Reply in Spanish — the conversation so far has been in Spanish."
-      : "";
+    const language = detectLanguage(data.question, data.diagnosis, ...data.history.map((m) => m.text));
+    const languageInstruction =
+      language !== "en"
+        ? ` Reply in ${LANGUAGE_NAME[language]} — the conversation so far has been in ${LANGUAGE_NAME[language]}.`
+        : "";
 
     const prompt = `You are answering a follow-up question on behalf of ${data.businessName} about an estimate you already gave a customer.
 
