@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { supabase } from "@/integrations/supabase/client";
-import vanPhoto from "@/assets/work-van.jpg";
+import heroMockup from "@/assets/aircraft-detailing-mockup.png";
 
 export const Route = createFileRoute("/login")({
   ssr: false,
@@ -103,11 +103,11 @@ function Login() {
       </div>
       <div className="hidden bg-ink lg:block">
         <img
-          src={vanPhoto}
-          alt="Work van parked in a driveway at the end of a shift"
+          src={heroMockup}
+          alt="FrontDesk dashboard on a tablet, showing a priced estimate for an aircraft detailing job"
           loading="lazy"
-          width={1400}
-          height={900}
+          width={1178}
+          height={1335}
           className="h-full w-full object-cover"
         />
       </div>
