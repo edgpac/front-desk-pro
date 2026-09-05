@@ -15,6 +15,7 @@ import {
   saveLeadLineItems,
   updateLeadStatus,
   updateLeadContact,
+  updateLeadDiagnosis,
   addLeadMessage,
 } from "@/lib/leads-server";
 import { getMyTenant } from "@/lib/tenant-server";
@@ -51,12 +52,15 @@ function LeadDetail() {
   const [lineItems, setLineItems] = useState<LineItem[]>([]);
   const [thread, setThread] = useState<{ role: "customer" | "assistant"; text: string }[]>([]);
   const [contact, setContact] = useState({ customer: "", phone: "", address: "" });
+  const [diagnosis, setDiagnosis] = useState("");
+  const [originalDiagnosis, setOriginalDiagnosis] = useState("");
   // null = "untouched" — the box tracks the AI-drafted suggestion live. Once
   // the user types, it holds their exact text until they send or explicitly
   // revert, at which point it goes back to null so it starts tracking again.
   const [manualMessage, setManualMessage] = useState<string | null>(null);
   const [savingLineItems, setSavingLineItems] = useState(false);
   const [savingContact, setSavingContact] = useState(false);
+  const [savingDiagnosis, setSavingDiagnosis] = useState(false);
 
   useEffect(() => {
     if (authLoading) return;
@@ -73,6 +77,8 @@ function LeadDetail() {
       setLineItems(mockLead.lineItems);
       setThread(mockLead.followUps);
       setContact({ customer: mockLead.customer, phone: mockLead.phone, address: mockLead.address });
+      setDiagnosis(mockLead.diagnosis);
+      setOriginalDiagnosis(mockLead.diagnosis);
       setTenant(TENANT);
       setLoading(false);
       return;
@@ -87,6 +93,8 @@ function LeadDetail() {
         setLineItems(realLead.lineItems);
         setThread(realLead.followUps);
         setContact({ customer: realLead.customer, phone: realLead.phone, address: realLead.address });
+        setDiagnosis(realLead.diagnosis);
+        setOriginalDiagnosis(realLead.diagnosis);
         setTenant(realTenant);
       })
       .catch(() => {
@@ -102,15 +110,18 @@ function LeadDetail() {
 
   const total = lineItemsTotal(lineItems);
   const isEdited = aiSnapshot ? !lineItemsMatch(lineItems, aiSnapshot) : false;
+  const diagnosisEdited = diagnosis !== originalDiagnosis;
 
   // The message draft is derived straight from the diagnosis + whatever the
   // line items currently total — so when the AI gets the job right, there's
   // nothing to edit here either: the price is already correct, and sending
-  // it is the only action left.
+  // it is the only action left. Correcting the diagnosis text below feeds
+  // straight into this draft and into the proposal/invoice documents, since
+  // both read the same field.
   const suggestedReply = lead
     ? buildSuggestedReply({
         problem: lead.problem,
-        diagnosis: lead.diagnosis,
+        diagnosis,
         total,
         currency: tenant.currency,
       })
@@ -172,6 +183,24 @@ function LeadDetail() {
       toast.error(err instanceof Error ? err.message : "Could not save contact info.");
     } finally {
       setSavingContact(false);
+    }
+  }
+
+  async function saveDiagnosis() {
+    if (!user) {
+      setOriginalDiagnosis(diagnosis);
+      toast.success("Saved (sample data — sign up to save your real leads)");
+      return;
+    }
+    setSavingDiagnosis(true);
+    try {
+      await updateLeadDiagnosis({ data: { id, diagnosis } });
+      setOriginalDiagnosis(diagnosis);
+      toast.success("Diagnosis saved");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not save diagnosis.");
+    } finally {
+      setSavingDiagnosis(false);
     }
   }
 
@@ -294,8 +323,24 @@ function LeadDetail() {
                   Matches AI pricing — nothing edited
                 </span>
               )}
+              {diagnosisEdited && (
+                <span className="ml-2 rounded-sm bg-muted px-1.5 py-0.5 text-[11px] font-semibold text-muted-foreground">
+                  Diagnosis edited by you
+                </span>
+              )}
             </p>
-            <p className="mt-2 text-sm leading-relaxed text-foreground">{lead.diagnosis}</p>
+            <Textarea
+              value={diagnosis}
+              onChange={(e) => setDiagnosis(e.target.value)}
+              className="mt-2 text-sm leading-relaxed"
+              rows={4}
+              aria-label="AI diagnosis"
+            />
+            <div className="mt-2 flex justify-end">
+              <Button size="sm" variant="outline" onClick={() => void saveDiagnosis()} disabled={savingDiagnosis}>
+                {savingDiagnosis ? "Saving…" : "Save diagnosis"}
+              </Button>
+            </div>
           </Panel>
 
           <Panel title="Line items — edit before sending">

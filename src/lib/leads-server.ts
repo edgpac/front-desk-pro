@@ -154,6 +154,20 @@ export const updateLeadStatus = createServerFn({ method: "POST" })
     return { ok: true as const };
   });
 
+export const updateLeadDiagnosis = createServerFn({ method: "POST" })
+  .validator((input: { id: string; diagnosis: string }) => input)
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context, data }) => {
+    const tenantId = await getTenantId(context.supabase, context.userId);
+    const { error } = await context.supabase
+      .from("leads")
+      .update({ diagnosis: data.diagnosis })
+      .eq("tenant_id", tenantId)
+      .eq("id", data.id);
+    if (error) throw new Error(`Could not save diagnosis: ${error.message}`);
+    return { ok: true as const };
+  });
+
 export const updateLeadContact = createServerFn({ method: "POST" })
   .validator((input: { id: string; customerName: string; phone: string; address: string }) => input)
   .middleware([requireSupabaseAuth])
