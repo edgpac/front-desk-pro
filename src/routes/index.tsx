@@ -6,7 +6,7 @@ import { SiteFooter } from "@/components/site/SiteFooter";
 import { Button } from "@/components/ui/button";
 import heroPhoto from "@/assets/dog-grooming-van.png";
 import panelPhoto from "@/assets/electrical-panel-repair.png";
-import vanPhoto from "@/assets/work-van.jpg";
+import vanPhoto from "@/assets/work-van.png";
 import carInteriorPhoto from "@/assets/car-detailing-interior.png";
 
 const SOFTWARE_SCHEMA = {
@@ -72,7 +72,7 @@ function Landing() {
           <div className="border-border-strong px-5 py-14 lg:border-r lg:py-20 lg:pr-12">
             <p className="label-caps text-primary">For plumbers · electricians · detailers · any trade</p>
             <h1 className="mt-5 text-[2.6rem] leading-[1.03] text-foreground sm:text-6xl">
-              Quick quote before
+              Quote the job before
               <br />
               the next guy calls back.
             </h1>
@@ -238,8 +238,8 @@ function Landing() {
               d: "Flat rates, hourly labor, ranges — whatever you actually charge. Estimate lands in their thread and in your inbox, with a booking link attached.",
               img: vanPhoto,
               alt: "A service van wrapped with the FrontDesk logo, tagline, and a send-photo, get-quote, book-the-job icon strip",
-              w: 1400,
-              h: 1050,
+              w: 1448,
+              h: 1086,
             },
           ].map((step, i) => (
             <div
