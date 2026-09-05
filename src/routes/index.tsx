@@ -198,9 +198,9 @@ function Landing() {
               t: "Priced off your sheet, booked on your calendar",
               d: "Flat rates, hourly labor, ranges — whatever you actually charge. Estimate lands in their thread and in your inbox, with a booking link attached.",
               img: vanPhoto,
-              alt: "Work van parked in a suburban driveway at the end of the day",
+              alt: "A service van wrapped with the FrontDesk logo, tagline, and a send-photo, get-quote, book-the-job icon strip",
               w: 1400,
-              h: 900,
+              h: 1050,
             },
           ].map((step, i) => (
             <div

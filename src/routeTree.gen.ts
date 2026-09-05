@@ -10,16 +10,33 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as DashboardRouteImport } from './routes/dashboard'
 import { Route as DemoRouteImport } from './routes/demo'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as OnboardingRouteImport } from './routes/onboarding'
 import { Route as PricingRouteImport } from './routes/pricing'
 import { Route as SignupRouteImport } from './routes/signup'
+import { Route as DashboardIndexRouteImport } from './routes/dashboard.index'
+import { Route as DashboardAnalyticsRouteImport } from './routes/dashboard.analytics'
+import { Route as DashboardLeadsRouteImport } from './routes/dashboard.leads'
+import { Route as DashboardPriceSheetRouteImport } from './routes/dashboard.price-sheet'
+import { Route as DashboardWidgetRouteImport } from './routes/dashboard.widget'
 import { Route as OnboardingIndexRouteImport } from './routes/onboarding.index'
+import { Route as DashboardLeadsIndexRouteImport } from './routes/dashboard.leads.index'
+import { Route as DashboardLeadsIdRouteImport } from './routes/dashboard.leads.$id'
+import { Route as DashboardSettingsBillingRouteImport } from './routes/dashboard.settings.billing'
+import { Route as DashboardSettingsBusinessRouteImport } from './routes/dashboard.settings.business'
+import { Route as DashboardLeadsIdIndexRouteImport } from './routes/dashboard.leads.$id.index'
+import { Route as DashboardLeadsIdProposalRouteImport } from './routes/dashboard.leads.$id.proposal'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DashboardRoute = DashboardRouteImport.update({
+  id: '/dashboard',
+  path: '/dashboard',
   getParentRoute: () => rootRouteImport,
 } as any)
 const DemoRoute = DemoRouteImport.update({
@@ -47,20 +64,90 @@ const SignupRoute = SignupRouteImport.update({
   path: '/signup',
   getParentRoute: () => rootRouteImport,
 } as any)
+const DashboardIndexRoute = DashboardIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => DashboardRoute,
+} as any)
+const DashboardAnalyticsRoute = DashboardAnalyticsRouteImport.update({
+  id: '/analytics',
+  path: '/analytics',
+  getParentRoute: () => DashboardRoute,
+} as any)
+const DashboardLeadsRoute = DashboardLeadsRouteImport.update({
+  id: '/leads',
+  path: '/leads',
+  getParentRoute: () => DashboardRoute,
+} as any)
+const DashboardPriceSheetRoute = DashboardPriceSheetRouteImport.update({
+  id: '/price-sheet',
+  path: '/price-sheet',
+  getParentRoute: () => DashboardRoute,
+} as any)
+const DashboardWidgetRoute = DashboardWidgetRouteImport.update({
+  id: '/widget',
+  path: '/widget',
+  getParentRoute: () => DashboardRoute,
+} as any)
 const OnboardingIndexRoute = OnboardingIndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => OnboardingRoute,
 } as any)
+const DashboardLeadsIndexRoute = DashboardLeadsIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => DashboardLeadsRoute,
+} as any)
+const DashboardLeadsIdRoute = DashboardLeadsIdRouteImport.update({
+  id: '/$id',
+  path: '/$id',
+  getParentRoute: () => DashboardLeadsRoute,
+} as any)
+const DashboardSettingsBillingRoute =
+  DashboardSettingsBillingRouteImport.update({
+    id: '/settings/billing',
+    path: '/settings/billing',
+    getParentRoute: () => DashboardRoute,
+  } as any)
+const DashboardSettingsBusinessRoute =
+  DashboardSettingsBusinessRouteImport.update({
+    id: '/settings/business',
+    path: '/settings/business',
+    getParentRoute: () => DashboardRoute,
+  } as any)
+const DashboardLeadsIdIndexRoute = DashboardLeadsIdIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => DashboardLeadsIdRoute,
+} as any)
+const DashboardLeadsIdProposalRoute =
+  DashboardLeadsIdProposalRouteImport.update({
+    id: '/proposal',
+    path: '/proposal',
+    getParentRoute: () => DashboardLeadsIdRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/dashboard': typeof DashboardRouteWithChildren
   '/demo': typeof DemoRoute
   '/login': typeof LoginRoute
   '/onboarding': typeof OnboardingRouteWithChildren
   '/pricing': typeof PricingRoute
   '/signup': typeof SignupRoute
+  '/dashboard/analytics': typeof DashboardAnalyticsRoute
+  '/dashboard/leads': typeof DashboardLeadsRouteWithChildren
+  '/dashboard/price-sheet': typeof DashboardPriceSheetRoute
+  '/dashboard/widget': typeof DashboardWidgetRoute
+  '/dashboard/': typeof DashboardIndexRoute
   '/onboarding/': typeof OnboardingIndexRoute
+  '/dashboard/leads/$id': typeof DashboardLeadsIdRouteWithChildren
+  '/dashboard/settings/billing': typeof DashboardSettingsBillingRoute
+  '/dashboard/settings/business': typeof DashboardSettingsBusinessRoute
+  '/dashboard/leads/': typeof DashboardLeadsIndexRoute
+  '/dashboard/leads/$id/proposal': typeof DashboardLeadsIdProposalRoute
+  '/dashboard/leads/$id/': typeof DashboardLeadsIdIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -68,43 +155,104 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/pricing': typeof PricingRoute
   '/signup': typeof SignupRoute
+  '/dashboard/analytics': typeof DashboardAnalyticsRoute
+  '/dashboard/price-sheet': typeof DashboardPriceSheetRoute
+  '/dashboard/widget': typeof DashboardWidgetRoute
+  '/dashboard': typeof DashboardIndexRoute
   '/onboarding': typeof OnboardingIndexRoute
+  '/dashboard/settings/billing': typeof DashboardSettingsBillingRoute
+  '/dashboard/settings/business': typeof DashboardSettingsBusinessRoute
+  '/dashboard/leads': typeof DashboardLeadsIndexRoute
+  '/dashboard/leads/$id/proposal': typeof DashboardLeadsIdProposalRoute
+  '/dashboard/leads/$id': typeof DashboardLeadsIdIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/dashboard': typeof DashboardRouteWithChildren
   '/demo': typeof DemoRoute
   '/login': typeof LoginRoute
   '/onboarding': typeof OnboardingRouteWithChildren
   '/pricing': typeof PricingRoute
   '/signup': typeof SignupRoute
+  '/dashboard/analytics': typeof DashboardAnalyticsRoute
+  '/dashboard/leads': typeof DashboardLeadsRouteWithChildren
+  '/dashboard/price-sheet': typeof DashboardPriceSheetRoute
+  '/dashboard/widget': typeof DashboardWidgetRoute
+  '/dashboard/': typeof DashboardIndexRoute
   '/onboarding/': typeof OnboardingIndexRoute
+  '/dashboard/leads/$id': typeof DashboardLeadsIdRouteWithChildren
+  '/dashboard/settings/billing': typeof DashboardSettingsBillingRoute
+  '/dashboard/settings/business': typeof DashboardSettingsBusinessRoute
+  '/dashboard/leads/': typeof DashboardLeadsIndexRoute
+  '/dashboard/leads/$id/proposal': typeof DashboardLeadsIdProposalRoute
+  '/dashboard/leads/$id/': typeof DashboardLeadsIdIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/dashboard'
     | '/demo'
     | '/login'
     | '/onboarding'
     | '/pricing'
     | '/signup'
+    | '/dashboard/analytics'
+    | '/dashboard/leads'
+    | '/dashboard/price-sheet'
+    | '/dashboard/widget'
+    | '/dashboard/'
     | '/onboarding/'
+    | '/dashboard/leads/$id'
+    | '/dashboard/settings/billing'
+    | '/dashboard/settings/business'
+    | '/dashboard/leads/'
+    | '/dashboard/leads/$id/proposal'
+    | '/dashboard/leads/$id/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/demo' | '/login' | '/pricing' | '/signup' | '/onboarding'
-  id:
-    | '__root__'
+  to:
     | '/'
     | '/demo'
     | '/login'
+    | '/pricing'
+    | '/signup'
+    | '/dashboard/analytics'
+    | '/dashboard/price-sheet'
+    | '/dashboard/widget'
+    | '/dashboard'
+    | '/onboarding'
+    | '/dashboard/settings/billing'
+    | '/dashboard/settings/business'
+    | '/dashboard/leads'
+    | '/dashboard/leads/$id/proposal'
+    | '/dashboard/leads/$id'
+  id:
+    | '__root__'
+    | '/'
+    | '/dashboard'
+    | '/demo'
+    | '/login'
     | '/onboarding'
     | '/pricing'
     | '/signup'
+    | '/dashboard/analytics'
+    | '/dashboard/leads'
+    | '/dashboard/price-sheet'
+    | '/dashboard/widget'
+    | '/dashboard/'
     | '/onboarding/'
+    | '/dashboard/leads/$id'
+    | '/dashboard/settings/billing'
+    | '/dashboard/settings/business'
+    | '/dashboard/leads/'
+    | '/dashboard/leads/$id/proposal'
+    | '/dashboard/leads/$id/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  DashboardRoute: typeof DashboardRouteWithChildren
   DemoRoute: typeof DemoRoute
   LoginRoute: typeof LoginRoute
   OnboardingRoute: typeof OnboardingRouteWithChildren
@@ -119,6 +267,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/dashboard': {
+      id: '/dashboard'
+      path: '/dashboard'
+      fullPath: '/dashboard'
+      preLoaderRoute: typeof DashboardRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/demo': {
@@ -156,6 +311,41 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SignupRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/dashboard/': {
+      id: '/dashboard/'
+      path: '/'
+      fullPath: '/dashboard/'
+      preLoaderRoute: typeof DashboardIndexRouteImport
+      parentRoute: typeof DashboardRoute
+    }
+    '/dashboard/analytics': {
+      id: '/dashboard/analytics'
+      path: '/analytics'
+      fullPath: '/dashboard/analytics'
+      preLoaderRoute: typeof DashboardAnalyticsRouteImport
+      parentRoute: typeof DashboardRoute
+    }
+    '/dashboard/leads': {
+      id: '/dashboard/leads'
+      path: '/leads'
+      fullPath: '/dashboard/leads'
+      preLoaderRoute: typeof DashboardLeadsRouteImport
+      parentRoute: typeof DashboardRoute
+    }
+    '/dashboard/price-sheet': {
+      id: '/dashboard/price-sheet'
+      path: '/price-sheet'
+      fullPath: '/dashboard/price-sheet'
+      preLoaderRoute: typeof DashboardPriceSheetRouteImport
+      parentRoute: typeof DashboardRoute
+    }
+    '/dashboard/widget': {
+      id: '/dashboard/widget'
+      path: '/widget'
+      fullPath: '/dashboard/widget'
+      preLoaderRoute: typeof DashboardWidgetRouteImport
+      parentRoute: typeof DashboardRoute
+    }
     '/onboarding/': {
       id: '/onboarding/'
       path: '/'
@@ -163,8 +353,101 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof OnboardingIndexRouteImport
       parentRoute: typeof OnboardingRoute
     }
+    '/dashboard/leads/': {
+      id: '/dashboard/leads/'
+      path: '/'
+      fullPath: '/dashboard/leads/'
+      preLoaderRoute: typeof DashboardLeadsIndexRouteImport
+      parentRoute: typeof DashboardLeadsRoute
+    }
+    '/dashboard/leads/$id': {
+      id: '/dashboard/leads/$id'
+      path: '/$id'
+      fullPath: '/dashboard/leads/$id'
+      preLoaderRoute: typeof DashboardLeadsIdRouteImport
+      parentRoute: typeof DashboardLeadsRoute
+    }
+    '/dashboard/settings/billing': {
+      id: '/dashboard/settings/billing'
+      path: '/settings/billing'
+      fullPath: '/dashboard/settings/billing'
+      preLoaderRoute: typeof DashboardSettingsBillingRouteImport
+      parentRoute: typeof DashboardRoute
+    }
+    '/dashboard/settings/business': {
+      id: '/dashboard/settings/business'
+      path: '/settings/business'
+      fullPath: '/dashboard/settings/business'
+      preLoaderRoute: typeof DashboardSettingsBusinessRouteImport
+      parentRoute: typeof DashboardRoute
+    }
+    '/dashboard/leads/$id/': {
+      id: '/dashboard/leads/$id/'
+      path: '/'
+      fullPath: '/dashboard/leads/$id/'
+      preLoaderRoute: typeof DashboardLeadsIdIndexRouteImport
+      parentRoute: typeof DashboardLeadsIdRoute
+    }
+    '/dashboard/leads/$id/proposal': {
+      id: '/dashboard/leads/$id/proposal'
+      path: '/proposal'
+      fullPath: '/dashboard/leads/$id/proposal'
+      preLoaderRoute: typeof DashboardLeadsIdProposalRouteImport
+      parentRoute: typeof DashboardLeadsIdRoute
+    }
   }
 }
+
+interface DashboardLeadsIdRouteChildren {
+  DashboardLeadsIdProposalRoute: typeof DashboardLeadsIdProposalRoute
+  DashboardLeadsIdIndexRoute: typeof DashboardLeadsIdIndexRoute
+}
+
+const DashboardLeadsIdRouteChildren: DashboardLeadsIdRouteChildren = {
+  DashboardLeadsIdProposalRoute: DashboardLeadsIdProposalRoute,
+  DashboardLeadsIdIndexRoute: DashboardLeadsIdIndexRoute,
+}
+
+const DashboardLeadsIdRouteWithChildren =
+  DashboardLeadsIdRoute._addFileChildren(DashboardLeadsIdRouteChildren)
+
+interface DashboardLeadsRouteChildren {
+  DashboardLeadsIdRoute: typeof DashboardLeadsIdRouteWithChildren
+  DashboardLeadsIndexRoute: typeof DashboardLeadsIndexRoute
+}
+
+const DashboardLeadsRouteChildren: DashboardLeadsRouteChildren = {
+  DashboardLeadsIdRoute: DashboardLeadsIdRouteWithChildren,
+  DashboardLeadsIndexRoute: DashboardLeadsIndexRoute,
+}
+
+const DashboardLeadsRouteWithChildren = DashboardLeadsRoute._addFileChildren(
+  DashboardLeadsRouteChildren,
+)
+
+interface DashboardRouteChildren {
+  DashboardAnalyticsRoute: typeof DashboardAnalyticsRoute
+  DashboardLeadsRoute: typeof DashboardLeadsRouteWithChildren
+  DashboardPriceSheetRoute: typeof DashboardPriceSheetRoute
+  DashboardWidgetRoute: typeof DashboardWidgetRoute
+  DashboardIndexRoute: typeof DashboardIndexRoute
+  DashboardSettingsBillingRoute: typeof DashboardSettingsBillingRoute
+  DashboardSettingsBusinessRoute: typeof DashboardSettingsBusinessRoute
+}
+
+const DashboardRouteChildren: DashboardRouteChildren = {
+  DashboardAnalyticsRoute: DashboardAnalyticsRoute,
+  DashboardLeadsRoute: DashboardLeadsRouteWithChildren,
+  DashboardPriceSheetRoute: DashboardPriceSheetRoute,
+  DashboardWidgetRoute: DashboardWidgetRoute,
+  DashboardIndexRoute: DashboardIndexRoute,
+  DashboardSettingsBillingRoute: DashboardSettingsBillingRoute,
+  DashboardSettingsBusinessRoute: DashboardSettingsBusinessRoute,
+}
+
+const DashboardRouteWithChildren = DashboardRoute._addFileChildren(
+  DashboardRouteChildren,
+)
 
 interface OnboardingRouteChildren {
   OnboardingIndexRoute: typeof OnboardingIndexRoute
@@ -180,6 +463,7 @@ const OnboardingRouteWithChildren = OnboardingRoute._addFileChildren(
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  DashboardRoute: DashboardRouteWithChildren,
   DemoRoute: DemoRoute,
   LoginRoute: LoginRoute,
   OnboardingRoute: OnboardingRouteWithChildren,

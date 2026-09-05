@@ -85,6 +85,7 @@ export function QuoteFlow({
   const [askingFollowUp, setAskingFollowUp] = useState(false);
   const [phone, setPhone] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
+  const descriptionRef = useRef<HTMLTextAreaElement>(null);
 
   const accentStyle = accent ? { backgroundColor: accent, borderColor: accent } : undefined;
 
@@ -218,14 +219,26 @@ export function QuoteFlow({
           </p>
 
           <div className="mt-4 grid gap-2 sm:grid-cols-3">
-            <Button variant="outline" className="justify-start" onClick={() => fileRef.current?.click()}>
-              <Camera className="mr-2 h-4 w-4" /> Take a photo
+            <Button
+              variant="outline"
+              className="w-full justify-start"
+              onClick={() => fileRef.current?.click()}
+            >
+              <Camera className="mr-2 h-4 w-4 shrink-0" /> Take a photo
             </Button>
-            <Button variant="outline" className="justify-start" onClick={() => fileRef.current?.click()}>
-              <ImageIcon className="mr-2 h-4 w-4" /> Choose from gallery
+            <Button
+              variant="outline"
+              className="w-full justify-start"
+              onClick={() => fileRef.current?.click()}
+            >
+              <ImageIcon className="mr-2 h-4 w-4 shrink-0" /> Choose from gallery
             </Button>
-            <Button variant="ghost" className="justify-start" onClick={() => {}}>
-              <MessageSquare className="mr-2 h-4 w-4" /> No photo? Just describe it below
+            <Button
+              variant="outline"
+              className="w-full justify-start"
+              onClick={() => descriptionRef.current?.focus()}
+            >
+              <MessageSquare className="mr-2 h-4 w-4 shrink-0" /> Skip the photo
             </Button>
             <input
               ref={fileRef}
@@ -276,6 +289,7 @@ export function QuoteFlow({
             </label>
             <Textarea
               id="qf-desc"
+              ref={descriptionRef}
               rows={3}
               value={description}
               onChange={(e) => setDescription(e.target.value)}
