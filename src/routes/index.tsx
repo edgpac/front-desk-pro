@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { ArrowRight, Clock, FileText, PhoneOff } from "lucide-react";
+import { ArrowRight, ClipboardList, Clock, FileText, PhoneOff } from "lucide-react";
 
 import { SiteHeader } from "@/components/site/SiteHeader";
 import { SiteFooter } from "@/components/site/SiteFooter";
@@ -179,6 +179,12 @@ function Landing() {
                   n: "03",
                   t: "Your pricing lives in your head",
                   d: "Nobody else in the crew can quote. Numbers drift job to job and margin quietly leaks.",
+                },
+                {
+                  icon: ClipboardList,
+                  n: "04",
+                  t: "Other software just moves the form onto a screen",
+                  d: "You still type every line item and look up your own prices — it just holds the invoice instead of a notepad.",
                 },
               ].map((r) => (
                 <li key={r.n} className="flex gap-5 py-6">
