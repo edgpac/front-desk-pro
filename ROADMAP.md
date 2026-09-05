@@ -28,7 +28,7 @@ Last updated: September 2026, after the dashboard + documents build-out.
 
 | Route | Status | Notes |
 |---|---|---|
-| `/dashboard` | 🟡 | Real UI (stats, recent activity, widget copy buttons), reading from mock data (`LEADS`, `TENANT`). **Now login-gated** — redirects to `/login` if there's no Supabase session. What's inside is still mock data either way. |
+| `/dashboard` | 🟡 | Real UI (stats, recent activity, widget copy buttons), reading from mock data (`LEADS`, `TENANT`). **Open without login, on purpose** — a "you're looking at sample data" banner labels it clearly, same spirit as `/demo`. Nothing inside costs money or calls a real backend except Stripe checkout, which stays protected server-side regardless of page-level access. |
 | `/dashboard/leads` | 🟡 | Real filtering/search, against mock `LEADS`. |
 | `/dashboard/leads/:id` | 🟡 | Fully editable line items (description/qty/unit/rate, add/remove), status changer, message thread — all real interactions, but local component state only. Nothing is saved anywhere; refresh and it's gone. |
 | `/dashboard/leads/:id/proposal`, `/invoice`, `/receipt` | ✅ UI · 🟡 data | The documents themselves are real — correct math, tax handling, currency, PNG export (html2canvas-pro) and print-to-PDF both verified working. But they render from the same static mock lead, not from whatever you edited on the detail page a moment ago (see "Known disconnects" below). |

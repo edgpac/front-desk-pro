@@ -16,6 +16,7 @@ import {
 import { Wordmark } from "@/components/brand/Wordmark";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/lib/use-auth";
 import { TENANT } from "@/lib/mock-data";
 import { cn } from "@/lib/utils";
 
@@ -60,6 +61,7 @@ function NavList({ onNavigate }: { onNavigate?: () => void }) {
 export function DashboardShell() {
   const [open, setOpen] = useState(false);
   const navigate = useNavigate();
+  const { user } = useAuth();
 
   async function logOut() {
     await supabase.auth.signOut();
@@ -87,12 +89,21 @@ export function DashboardShell() {
               <Link to="/dashboard/settings/billing">Pick a plan</Link>
             </Button>
           </div>
-          <button
-            onClick={() => void logOut()}
-            className="flex w-full items-center gap-2 rounded-sm px-3 py-2 text-sm font-medium text-ink-muted transition-colors hover:bg-sidebar-accent/60 hover:text-ink-foreground"
-          >
-            <LogOut className="h-4 w-4" /> Log out
-          </button>
+          {user ? (
+            <button
+              onClick={() => void logOut()}
+              className="flex w-full items-center gap-2 rounded-sm px-3 py-2 text-sm font-medium text-ink-muted transition-colors hover:bg-sidebar-accent/60 hover:text-ink-foreground"
+            >
+              <LogOut className="h-4 w-4" /> Log out
+            </button>
+          ) : (
+            <Link
+              to="/login"
+              className="flex w-full items-center gap-2 rounded-sm px-3 py-2 text-sm font-medium text-ink-muted transition-colors hover:bg-sidebar-accent/60 hover:text-ink-foreground"
+            >
+              <LogOut className="h-4 w-4" /> Log in
+            </Link>
+          )}
         </div>
       </aside>
 
@@ -122,6 +133,18 @@ export function DashboardShell() {
                 <NavList onNavigate={() => setOpen(false)} />
               </div>
             </div>
+          </div>
+        )}
+
+        {!user && (
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-primary/30 bg-primary/10 px-4 py-2.5 text-sm">
+            <span className="text-foreground">
+              <strong className="font-semibold">You're looking at sample data</strong> — this isn't a real
+              account.
+            </span>
+            <Link to="/signup" className="font-semibold text-primary hover:underline">
+              Sign up to connect your own →
+            </Link>
           </div>
         )}
 
