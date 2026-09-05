@@ -22,6 +22,7 @@ import { Route as DashboardLeadsRouteImport } from './routes/dashboard.leads'
 import { Route as DashboardPriceSheetRouteImport } from './routes/dashboard.price-sheet'
 import { Route as DashboardWidgetRouteImport } from './routes/dashboard.widget'
 import { Route as OnboardingIndexRouteImport } from './routes/onboarding.index'
+import { Route as ApiStripeWebhookRouteImport } from './routes/api.stripe.webhook'
 import { Route as DashboardLeadsIndexRouteImport } from './routes/dashboard.leads.index'
 import { Route as DashboardLeadsIdRouteImport } from './routes/dashboard.leads.$id'
 import { Route as DashboardSettingsBillingRouteImport } from './routes/dashboard.settings.billing'
@@ -96,6 +97,11 @@ const OnboardingIndexRoute = OnboardingIndexRouteImport.update({
   path: '/',
   getParentRoute: () => OnboardingRoute,
 } as any)
+const ApiStripeWebhookRoute = ApiStripeWebhookRouteImport.update({
+  id: '/api/stripe/webhook',
+  path: '/api/stripe/webhook',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const DashboardLeadsIndexRoute = DashboardLeadsIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -154,6 +160,7 @@ export interface FileRoutesByFullPath {
   '/dashboard/widget': typeof DashboardWidgetRoute
   '/dashboard/': typeof DashboardIndexRoute
   '/onboarding/': typeof OnboardingIndexRoute
+  '/api/stripe/webhook': typeof ApiStripeWebhookRoute
   '/dashboard/leads/$id': typeof DashboardLeadsIdRouteWithChildren
   '/dashboard/settings/billing': typeof DashboardSettingsBillingRoute
   '/dashboard/settings/business': typeof DashboardSettingsBusinessRoute
@@ -174,6 +181,7 @@ export interface FileRoutesByTo {
   '/dashboard/widget': typeof DashboardWidgetRoute
   '/dashboard': typeof DashboardIndexRoute
   '/onboarding': typeof OnboardingIndexRoute
+  '/api/stripe/webhook': typeof ApiStripeWebhookRoute
   '/dashboard/settings/billing': typeof DashboardSettingsBillingRoute
   '/dashboard/settings/business': typeof DashboardSettingsBusinessRoute
   '/dashboard/leads': typeof DashboardLeadsIndexRoute
@@ -197,6 +205,7 @@ export interface FileRoutesById {
   '/dashboard/widget': typeof DashboardWidgetRoute
   '/dashboard/': typeof DashboardIndexRoute
   '/onboarding/': typeof OnboardingIndexRoute
+  '/api/stripe/webhook': typeof ApiStripeWebhookRoute
   '/dashboard/leads/$id': typeof DashboardLeadsIdRouteWithChildren
   '/dashboard/settings/billing': typeof DashboardSettingsBillingRoute
   '/dashboard/settings/business': typeof DashboardSettingsBusinessRoute
@@ -222,6 +231,7 @@ export interface FileRouteTypes {
     | '/dashboard/widget'
     | '/dashboard/'
     | '/onboarding/'
+    | '/api/stripe/webhook'
     | '/dashboard/leads/$id'
     | '/dashboard/settings/billing'
     | '/dashboard/settings/business'
@@ -242,6 +252,7 @@ export interface FileRouteTypes {
     | '/dashboard/widget'
     | '/dashboard'
     | '/onboarding'
+    | '/api/stripe/webhook'
     | '/dashboard/settings/billing'
     | '/dashboard/settings/business'
     | '/dashboard/leads'
@@ -264,6 +275,7 @@ export interface FileRouteTypes {
     | '/dashboard/widget'
     | '/dashboard/'
     | '/onboarding/'
+    | '/api/stripe/webhook'
     | '/dashboard/leads/$id'
     | '/dashboard/settings/billing'
     | '/dashboard/settings/business'
@@ -282,6 +294,7 @@ export interface RootRouteChildren {
   OnboardingRoute: typeof OnboardingRouteWithChildren
   PricingRoute: typeof PricingRoute
   SignupRoute: typeof SignupRoute
+  ApiStripeWebhookRoute: typeof ApiStripeWebhookRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -376,6 +389,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/onboarding/'
       preLoaderRoute: typeof OnboardingIndexRouteImport
       parentRoute: typeof OnboardingRoute
+    }
+    '/api/stripe/webhook': {
+      id: '/api/stripe/webhook'
+      path: '/api/stripe/webhook'
+      fullPath: '/api/stripe/webhook'
+      preLoaderRoute: typeof ApiStripeWebhookRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/dashboard/leads/': {
       id: '/dashboard/leads/'
@@ -511,6 +531,7 @@ const rootRouteChildren: RootRouteChildren = {
   OnboardingRoute: OnboardingRouteWithChildren,
   PricingRoute: PricingRoute,
   SignupRoute: SignupRoute,
+  ApiStripeWebhookRoute: ApiStripeWebhookRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -43,10 +43,22 @@ You need two things in `.env`:
    [supabase.com/dashboard](https://supabase.com/dashboard) (don't reuse a
    project from another app — FrontDesk's users should be their own, not
    shared with anything else). Settings → API on that project gives you the
-   URL and anon/publishable key; put the same values in both the `VITE_`
-   and non-`VITE_` variables in `.env.example`. No custom tables are needed
-   yet — Supabase's built-in `auth.users` covers signup/login as-is.
+   URL, anon/publishable key, and service role key. No custom tables are
+   needed yet — Supabase's built-in `auth.users` covers signup/login as-is.
    Without this, `/login` and `/signup` will throw on submit.
+3. **Stripe** — API keys from [dashboard.stripe.com/apikeys](https://dashboard.stripe.com/apikeys)
+   (use the test keys while developing). For the webhook secret, either
+   create a webhook endpoint at dashboard.stripe.com/webhooks pointed at
+   `<your-deployed-url>/api/stripe/webhook` once deployed, or run
+   `stripe listen --forward-to localhost:8080/api/stripe/webhook` locally,
+   which prints a temporary signing secret. Without this, the "Switch to
+   Solo/Crew" buttons on the billing page fail with a clear error instead of
+   starting checkout.
+
+Checkout itself never asks for an email — it's pulled server-side from the
+already-authenticated Supabase session (see `src/lib/stripe-server.ts`), so
+there's no separate email field to keep in sync with the account someone
+actually logged in with.
 
 ## Design direction
 

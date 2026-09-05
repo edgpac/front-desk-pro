@@ -1,15 +1,35 @@
+import { useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { toast } from "sonner";
 
 import { PageHeader, Panel } from "@/components/app/DashboardShell";
 import { Button } from "@/components/ui/button";
+import { createCheckoutSession } from "@/lib/stripe-server";
 import { INVOICES } from "@/lib/mock-data";
 
 export const Route = createFileRoute("/dashboard/settings/billing")({
   component: BillingSettings,
 });
 
+const PLANS = [
+  { id: "solo" as const, label: "Solo", price: "$19/mo" },
+  { id: "crew" as const, label: "Crew", price: "$39/mo" },
+];
+
 function BillingSettings() {
+  const [checkingOut, setCheckingOut] = useState<"solo" | "crew" | null>(null);
+
+  async function startCheckout(plan: "solo" | "crew") {
+    setCheckingOut(plan);
+    try {
+      const { url } = await createCheckoutSession({ data: { plan } });
+      window.location.href = url;
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Couldn't start checkout.");
+      setCheckingOut(null);
+    }
+  }
+
   return (
     <div className="space-y-6 p-6 lg:p-10">
       <PageHeader eyebrow="Settings" title="Billing" />
@@ -20,10 +40,22 @@ function BillingSettings() {
             <p className="text-lg font-semibold text-foreground">Crew — $39/mo</p>
             <p className="text-sm text-muted-foreground">Trial ends in 9 days. Cancel anytime.</p>
           </div>
-          <Button variant="outline" onClick={() => toast.info("Plan comparison isn't wired up yet.")}>
-            Change plan
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            {PLANS.map((plan) => (
+              <Button
+                key={plan.id}
+                variant="outline"
+                onClick={() => void startCheckout(plan.id)}
+                disabled={checkingOut !== null}
+              >
+                {checkingOut === plan.id ? "Redirecting…" : `Switch to ${plan.label} — ${plan.price}`}
+              </Button>
+            ))}
+          </div>
         </div>
+        <p className="mt-3 text-xs text-muted-foreground">
+          Checkout uses the email on your FrontDesk account — no need to type it again.
+        </p>
       </Panel>
 
       <Panel

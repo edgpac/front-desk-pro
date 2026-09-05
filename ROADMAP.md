@@ -36,7 +36,7 @@ Last updated: September 2026, after the dashboard + documents build-out.
 | `/dashboard/widget` | 🟡 | Copy-to-clipboard for embed code and shareable link work. The embed code points at `https://cdn.frontdesk.tools/widget.js`, which **doesn't exist** — there's no real embeddable widget script deployed anywhere yet. |
 | `/dashboard/analytics` | 🟡 | Real charts (recharts), rendering mock funnel/weekday data. No real analytics pipeline. |
 | `/dashboard/settings/business` | 🟡 | Fully built — every field a document needs, all required, Save is properly gated. Save doesn't persist anywhere yet; it's a toast. |
-| `/dashboard/settings/billing` | 🟡 | Mock plan/invoice display. "Change plan," "Update payment method," and "Download" all honestly show "not wired up yet" — no Stripe integration exists. |
+| `/dashboard/settings/billing` | ✅ checkout · 🟡 rest | "Switch to Solo/Crew" starts a real Stripe subscription Checkout session, email pulled server-side from the authenticated Supabase user — nothing to type twice. "Update payment method" and invoice "Download" still honestly show "not wired up yet." |
 
 ### Backend
 
@@ -46,7 +46,7 @@ Last updated: September 2026, after the dashboard + documents build-out.
 | Rate limiting | 🟡 | A single global counter (20 requests/minute across every visitor) — a blunt anti-abuse measure, not a real per-tenant quota or trial enforcement. |
 | Auth / sessions | ✅ | Real Supabase Auth — `src/integrations/supabase/` (client, server-side `requireSupabaseAuth` middleware for gating server functions, client-side `attachSupabaseAuth` that auto-attaches the session token to every server-function call). Ported from a working pattern in the `buildraid` repo, wired to FrontDesk's **own**, separate Supabase project — not shared with any other app. |
 | Database | ⬜ | Still doesn't exist beyond `auth.users`, which Supabase Auth manages for you. Every piece of app *data* (`mock-data.ts`) is still a hardcoded in-memory array — tenants, leads, and price sheets still need real tables. |
-| Billing (Stripe) | ⬜ | Doesn't exist. |
+| Billing (Stripe) | ✅ | Real Checkout session creation (`src/lib/stripe-server.ts`, auth-gated) and a real webhook (`src/routes/api.stripe.webhook.tsx`) that verifies Stripe's signature and records the plan on the user via Supabase's admin API. Subscription status lives in Supabase `user_metadata` for now — a real `subscriptions` table is worth it once the rest of the data model exists, but wasn't needed to make this real. |
 | Email/SMS notifications | ⬜ | Doesn't exist — "new lead" alerts aren't sent anywhere. |
 | Legal pages (Privacy Policy, Terms) | ⬜ | Don't exist. Needed before real signups collect real customer data, and required for Play Store submission later. |
 
@@ -68,7 +68,7 @@ Everything below the first item is blocked on it, so it's the actual unlock:
 4. **Persist a real estimate as a lead.** When `/demo` (or a future public per-tenant quote page) produces a result, save it instead of letting it evaporate.
 5. **Build the public per-tenant quote page** (`/quote/:slug`) — right now `/demo` is the only customer-facing flow, and it's hardcoded to one business, not addressable per real tenant yet.
 6. **Build the actual embeddable widget script** that `/dashboard/widget`'s embed code currently just references but doesn't back.
-7. **Stripe billing** — real trial tracking, plan changes, invoice history.
+7. ~~**Stripe billing.**~~ ✅ Checkout + webhook are real. Still ahead: real trial-day tracking (today's "9 days left" is still decorative) and invoice history pulled from Stripe instead of mock rows.
 8. **Email/SMS notifications** for new leads.
 9. **Privacy Policy and Terms of Service** — needed before any of this touches a real customer's data, and non-negotiable for Play Store submission.
 
