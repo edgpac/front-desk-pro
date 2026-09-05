@@ -2,7 +2,7 @@
 
 Legend: ✅ real and working · 🟡 built, but mocked/disconnected from a real backend · ⬜ not built yet
 
-Last updated: September 2026, after a full word-for-word/code audit and restructuring the game plan into numbered phases toward an actual public launch (domain + Play Store).
+Last updated: September 2026, after discovering the site is already deployed live on Vercel (the first audit pass only checked for a local CLI link and wrongly said "never deployed") and correcting Phase 0 to reflect that — deploy is done, real environment variables are the actual remaining gap.
 
 ## Page by page
 
@@ -70,19 +70,22 @@ it `~~done~~` ✅ here rather than tracking progress anywhere else.
 
 ### Phase 0 — Go live (nothing below matters until this exists)
 
-Audited September 2026: **this project has never been deployed.** No Vercel
-project is linked (`.vercel/project.json` doesn't exist — only local build
-output), no real environment variables exist anywhere but as blanks in
-`.env.example`, and `frontdesk.tools` doesn't currently resolve to anything.
-Everything real that's been built so far has only ever run against
-`localhost`. This phase turns "a codebase" into "a live product with a URL" —
-fast, and worth doing before Phase 1 rather than after, so every phase from
-here on is tested against the real thing instead of a local simulation.
+Corrected September 2026: the first audit pass wrongly said "never deployed" —
+it only checked for a local Vercel CLI link (`.vercel/project.json`), which
+stays empty even for a real deployment made through Vercel's GitHub
+integration (import repo → auto-deploy on every push, no local CLI involved).
+**The site is actually already live** at
+`https://front-desk-pro-ten.vercel.app` and serving real 200s on `/`,
+`/pricing`, `/dashboard`. Verified against the live URL directly: signup/login
+throw "Missing VITE_SUPABASE_URL or VITE_SUPABASE_PUBLISHABLE_KEY" — so the
+deploy itself is done, but **none of the real environment variables are set
+on Vercel yet**. That's the actual remaining Phase 0 work.
 
-1. **Confirm which of these already exist vs. still need creating**: a real Supabase project (with `supabase/migrations/0001_init.sql` actually run against it), a real Stripe account (test mode is fine to start), an Anthropic API key, and ownership of a real domain (`frontdesk.tools` or otherwise).
-2. **Deploy to Vercel for the first time** (`vite.config.ts` is already configured with the `vercel` Nitro preset for this) with all real environment variables set from the list above, plus `SITE_URL` pointed at the real deployed URL.
-3. **Point the real domain at the deployment** and update `SITE_URL`, the sitemap, `llms.txt`, and the JSON-LD schema's placeholder URLs to match.
-4. **Smoke-test the live URL end to end**: sign up, log in, run `/demo`, start a Stripe checkout in test mode, confirm the webhook fires against the real deployed webhook URL (not `stripe listen` to localhost anymore).
+1. ~~**Deploy to Vercel.**~~ ✅ Done — already live via Vercel's GitHub integration, auto-deploying on push to `main`.
+2. **Create the real Supabase project** and run `supabase/migrations/0001_init.sql` against it (in progress).
+3. **Set every real environment variable on Vercel** (Project Settings → Environment Variables): `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SERVICE_ROLE_KEY` (from the Supabase project above), `ANTHROPIC_API_KEY`, `STRIPE_SECRET_KEY` + `STRIPE_WEBHOOK_SECRET` (from a real Stripe webhook endpoint pointed at the live URL, not `stripe listen`), and `SITE_URL` set to the real deployed URL.
+4. **Get a real domain and point it at the deployment** — `frontdesk.tools` doesn't currently resolve to anything; confirm whether it's actually owned yet, then add it in Vercel's domain settings and update `SITE_URL`, the sitemap, `llms.txt`, and the JSON-LD schema's placeholder URLs to match.
+5. **Smoke-test the live URL end to end**: sign up, log in, run `/demo`, start a Stripe checkout in test mode, confirm the webhook fires against the real deployed webhook URL (not `stripe listen` to localhost anymore).
 
 ### Phase 1 — Close the self-serve loop
 
@@ -91,25 +94,25 @@ for *their* customers to actually submit a photo against *their* price sheet —
 the core product loop isn't closed for a real, unassisted business yet. This
 phase closes it.
 
-5. ~~**Auth.**~~ ✅ Done — real Supabase Auth, `/login`/`/signup` work, `/dashboard/*` is gated.
-6. ~~**Database: tenants, leads, price sheet.**~~ ✅ Done — `supabase/migrations/0001_init.sql` plus the server-function layer (`tenant-server.ts`, `price-sheet-server.ts`, `leads-server.ts`), wired into settings/business, price-sheet, and the leads list/detail/documents pages.
-7. **Build the five missing onboarding pages.** A tenant row now exists automatically from the moment someone signs up (see the `handle_new_user` trigger), so this is purely about the wizard UI writing to an already-real `tenants` row. Fixes the broken `/onboarding/` redirect as a side effect (confirmed still broken — `/onboarding/business-info` has no route file, so it 404s today).
-8. **Wire `estimate-server.ts` to a tenant's real `price_sheet_items`** instead of `SAMPLE_PRICE_SHEET`, and **persist a real estimate as a lead** — both blocked on the same thing: nothing is tenant-scoped yet (see step 9).
-9. **Build the public per-tenant quote page** (`/quote/:slug`) — right now `/demo` is the only customer-facing flow, and it's hardcoded to one sample business, not addressable per real tenant.
-10. **Build the actual embeddable widget script** that `/dashboard/widget`'s embed code currently just references (`https://cdn.frontdesk.tools/widget.js`) but doesn't back.
-11. ~~**Stripe billing.**~~ ✅ Checkout + webhook are real, and trial-day tracking is a non-issue by decision — there's no trial. Still ahead: invoice history pulled from Stripe instead of mock rows.
+6. ~~**Auth.**~~ ✅ Done — real Supabase Auth, `/login`/`/signup` work, `/dashboard/*` is gated.
+7. ~~**Database: tenants, leads, price sheet.**~~ ✅ Done — `supabase/migrations/0001_init.sql` plus the server-function layer (`tenant-server.ts`, `price-sheet-server.ts`, `leads-server.ts`), wired into settings/business, price-sheet, and the leads list/detail/documents pages.
+8. **Build the five missing onboarding pages.** A tenant row now exists automatically from the moment someone signs up (see the `handle_new_user` trigger), so this is purely about the wizard UI writing to an already-real `tenants` row. Fixes the broken `/onboarding/` redirect as a side effect (confirmed still broken — `/onboarding/business-info` has no route file, so it 404s today).
+9. **Wire `estimate-server.ts` to a tenant's real `price_sheet_items`** instead of `SAMPLE_PRICE_SHEET`, and **persist a real estimate as a lead** — both blocked on the same thing: nothing is tenant-scoped yet (see step 10).
+10. **Build the public per-tenant quote page** (`/quote/:slug`) — right now `/demo` is the only customer-facing flow, and it's hardcoded to one sample business, not addressable per real tenant.
+11. **Build the actual embeddable widget script** that `/dashboard/widget`'s embed code currently just references (`https://cdn.frontdesk.tools/widget.js`) but doesn't back.
+12. ~~**Stripe billing.**~~ ✅ Checkout + webhook are real, and trial-day tracking is a non-issue by decision — there's no trial. Still ahead: invoice history pulled from Stripe instead of mock rows.
 
 ### Phase 2 — Trust & compliance
 
-12. **Email/SMS notifications** for new leads — without this, a business owner has to remember to check the dashboard; a real lead landing should reach them where they already are.
-13. **Privacy Policy and Terms of Service** — needed before any of this touches a real customer's data, and non-negotiable for both a public launch and Play Store submission.
-14. **Finish broadening "trades" wording** — the hero eyebrow and enumerated trade lists were broadened past the original 4 trades, but the word "trades" itself is still load-bearing in the browser tab title, the pricing page title, and the footer tagline. Still an open question, not yet decided either way.
+13. **Email/SMS notifications** for new leads — without this, a business owner has to remember to check the dashboard; a real lead landing should reach them where they already are.
+14. **Privacy Policy and Terms of Service** — needed before any of this touches a real customer's data, and non-negotiable for both a public launch and Play Store submission.
+15. **Finish broadening "trades" wording** — the hero eyebrow and enumerated trade lists were broadened past the original 4 trades, but the word "trades" itself is still load-bearing in the browser tab title, the pricing page title, and the footer tagline. Still an open question, not yet decided either way.
 
 ### Phase 3 — Play Store app
 
 Recap of the earlier decision: this is the **owner's pocket app** — lead inbox, approve/edit an estimate, generate documents, push notifications the moment a lead lands. It is *not* a wrapper around the customer-facing quote flow, which stays a zero-install web link (confirmed via researching how getjunkq.com does this — they don't actually use WhatsApp as a backend either, "WhatsApp-style chatbot" describes their UI styling only, not their real intake mechanism).
 
-15. **A real API surface.** A native app (Flutter/React Native) can't call `createServerFn` the way this web app's browser client does — it needs plain JSON HTTP endpoints for login, lead list/detail, and document generation.
-16. **Push notification infrastructure** — APNs for iOS, FCM for Android — tied to a "new lead created" event (built in step 8/step 12).
-17. **A path decision**: *Trusted Web Activity* (fastest, wraps the real dashboard as an installable Android app, limited push/offline support) vs. *Flutter* (more capable, full native push/offline — there's an idle Flutter + Supabase scaffold in `resume_builder_pro` from an earlier project that could be the starting shell).
-18. **Play Store logistics** — a Google Play developer account, app icons/screenshots for the listing, and the Privacy Policy from Phase 2.
+16. **A real API surface.** A native app (Flutter/React Native) can't call `createServerFn` the way this web app's browser client does — it needs plain JSON HTTP endpoints for login, lead list/detail, and document generation.
+17. **Push notification infrastructure** — APNs for iOS, FCM for Android — tied to a "new lead created" event (built in step 9/step 13).
+18. **A path decision**: *Trusted Web Activity* (fastest, wraps the real dashboard as an installable Android app, limited push/offline support) vs. *Flutter* (more capable, full native push/offline — there's an idle Flutter + Supabase scaffold in `resume_builder_pro` from an earlier project that could be the starting shell).
+19. **Play Store logistics** — a Google Play developer account, app icons/screenshots for the listing, and the Privacy Policy from Phase 2.
