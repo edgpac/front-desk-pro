@@ -72,7 +72,7 @@ function Landing() {
           <div className="border-border-strong px-5 py-14 lg:border-r lg:py-20 lg:pr-12">
             <p className="label-caps text-primary">For plumbers · electricians · detailers · any trade</p>
             <h1 className="mt-5 text-[2.6rem] leading-[1.03] text-foreground sm:text-6xl">
-              Quote the job before
+              Quick quote before
               <br />
               the next guy calls back.
             </h1>
