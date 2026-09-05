@@ -2,6 +2,8 @@ import { useState } from "react";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
 
+import { ArrowLeft } from "lucide-react";
+
 import { Wordmark } from "@/components/brand/Wordmark";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -47,9 +49,17 @@ function Login() {
     <div className="grid min-h-screen lg:grid-cols-[1fr_1fr]">
       <div className="flex flex-col justify-center px-5 py-12 sm:px-12">
         <div className="mx-auto w-full max-w-sm">
-          <Link to="/">
-            <Wordmark />
+          <Link
+            to="/"
+            className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
+          >
+            <ArrowLeft className="h-3.5 w-3.5" /> Back to home
           </Link>
+          <div className="mt-6">
+            <Link to="/">
+              <Wordmark />
+            </Link>
+          </div>
           <h1 className="mt-10 text-3xl">Welcome back.</h1>
           <p className="mt-2 text-sm text-muted-foreground">Pick up where the last job left off.</p>
 
