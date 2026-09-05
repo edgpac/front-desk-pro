@@ -323,8 +323,7 @@ function Landing() {
         <div className="mx-auto max-w-6xl px-5 pt-12">
           <p className="label-caps text-primary">What this looks like in practice</p>
           <p className="mt-2 max-w-xl text-sm text-muted-foreground">
-            We're onboarding our first few trades businesses now — these are the scenarios FrontDesk is
-            built to handle, not customer quotes.
+            These are the scenarios FrontDesk is built to handle, not customer quotes.
           </p>
         </div>
         <div className="mx-auto grid max-w-6xl gap-px bg-border-strong px-0 pt-8 sm:grid-cols-2">
@@ -352,6 +351,10 @@ function Landing() {
             <h2 className="text-3xl">Flat monthly price. Cancel whenever.</h2>
             <p className="mt-2 max-w-lg text-sm text-muted-foreground">
               $8/mo solo, $19/mo for a crew. One extra booked service call covers it.
+            </p>
+            <p className="mt-2 max-w-lg text-sm text-muted-foreground">
+              Every day you wait is a day someone else in your market might already be answering
+              faster.
             </p>
           </div>
           <div className="flex gap-3">
