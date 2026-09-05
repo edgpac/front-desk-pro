@@ -27,7 +27,9 @@ import { Route as DashboardLeadsIdRouteImport } from './routes/dashboard.leads.$
 import { Route as DashboardSettingsBillingRouteImport } from './routes/dashboard.settings.billing'
 import { Route as DashboardSettingsBusinessRouteImport } from './routes/dashboard.settings.business'
 import { Route as DashboardLeadsIdIndexRouteImport } from './routes/dashboard.leads.$id.index'
+import { Route as DashboardLeadsIdInvoiceRouteImport } from './routes/dashboard.leads.$id.invoice'
 import { Route as DashboardLeadsIdProposalRouteImport } from './routes/dashboard.leads.$id.proposal'
+import { Route as DashboardLeadsIdReceiptRouteImport } from './routes/dashboard.leads.$id.receipt'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -121,12 +123,22 @@ const DashboardLeadsIdIndexRoute = DashboardLeadsIdIndexRouteImport.update({
   path: '/',
   getParentRoute: () => DashboardLeadsIdRoute,
 } as any)
+const DashboardLeadsIdInvoiceRoute = DashboardLeadsIdInvoiceRouteImport.update({
+  id: '/invoice',
+  path: '/invoice',
+  getParentRoute: () => DashboardLeadsIdRoute,
+} as any)
 const DashboardLeadsIdProposalRoute =
   DashboardLeadsIdProposalRouteImport.update({
     id: '/proposal',
     path: '/proposal',
     getParentRoute: () => DashboardLeadsIdRoute,
   } as any)
+const DashboardLeadsIdReceiptRoute = DashboardLeadsIdReceiptRouteImport.update({
+  id: '/receipt',
+  path: '/receipt',
+  getParentRoute: () => DashboardLeadsIdRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -146,7 +158,9 @@ export interface FileRoutesByFullPath {
   '/dashboard/settings/billing': typeof DashboardSettingsBillingRoute
   '/dashboard/settings/business': typeof DashboardSettingsBusinessRoute
   '/dashboard/leads/': typeof DashboardLeadsIndexRoute
+  '/dashboard/leads/$id/invoice': typeof DashboardLeadsIdInvoiceRoute
   '/dashboard/leads/$id/proposal': typeof DashboardLeadsIdProposalRoute
+  '/dashboard/leads/$id/receipt': typeof DashboardLeadsIdReceiptRoute
   '/dashboard/leads/$id/': typeof DashboardLeadsIdIndexRoute
 }
 export interface FileRoutesByTo {
@@ -163,7 +177,9 @@ export interface FileRoutesByTo {
   '/dashboard/settings/billing': typeof DashboardSettingsBillingRoute
   '/dashboard/settings/business': typeof DashboardSettingsBusinessRoute
   '/dashboard/leads': typeof DashboardLeadsIndexRoute
+  '/dashboard/leads/$id/invoice': typeof DashboardLeadsIdInvoiceRoute
   '/dashboard/leads/$id/proposal': typeof DashboardLeadsIdProposalRoute
+  '/dashboard/leads/$id/receipt': typeof DashboardLeadsIdReceiptRoute
   '/dashboard/leads/$id': typeof DashboardLeadsIdIndexRoute
 }
 export interface FileRoutesById {
@@ -185,7 +201,9 @@ export interface FileRoutesById {
   '/dashboard/settings/billing': typeof DashboardSettingsBillingRoute
   '/dashboard/settings/business': typeof DashboardSettingsBusinessRoute
   '/dashboard/leads/': typeof DashboardLeadsIndexRoute
+  '/dashboard/leads/$id/invoice': typeof DashboardLeadsIdInvoiceRoute
   '/dashboard/leads/$id/proposal': typeof DashboardLeadsIdProposalRoute
+  '/dashboard/leads/$id/receipt': typeof DashboardLeadsIdReceiptRoute
   '/dashboard/leads/$id/': typeof DashboardLeadsIdIndexRoute
 }
 export interface FileRouteTypes {
@@ -208,7 +226,9 @@ export interface FileRouteTypes {
     | '/dashboard/settings/billing'
     | '/dashboard/settings/business'
     | '/dashboard/leads/'
+    | '/dashboard/leads/$id/invoice'
     | '/dashboard/leads/$id/proposal'
+    | '/dashboard/leads/$id/receipt'
     | '/dashboard/leads/$id/'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -225,7 +245,9 @@ export interface FileRouteTypes {
     | '/dashboard/settings/billing'
     | '/dashboard/settings/business'
     | '/dashboard/leads'
+    | '/dashboard/leads/$id/invoice'
     | '/dashboard/leads/$id/proposal'
+    | '/dashboard/leads/$id/receipt'
     | '/dashboard/leads/$id'
   id:
     | '__root__'
@@ -246,7 +268,9 @@ export interface FileRouteTypes {
     | '/dashboard/settings/billing'
     | '/dashboard/settings/business'
     | '/dashboard/leads/'
+    | '/dashboard/leads/$id/invoice'
     | '/dashboard/leads/$id/proposal'
+    | '/dashboard/leads/$id/receipt'
     | '/dashboard/leads/$id/'
   fileRoutesById: FileRoutesById
 }
@@ -388,6 +412,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DashboardLeadsIdIndexRouteImport
       parentRoute: typeof DashboardLeadsIdRoute
     }
+    '/dashboard/leads/$id/invoice': {
+      id: '/dashboard/leads/$id/invoice'
+      path: '/invoice'
+      fullPath: '/dashboard/leads/$id/invoice'
+      preLoaderRoute: typeof DashboardLeadsIdInvoiceRouteImport
+      parentRoute: typeof DashboardLeadsIdRoute
+    }
     '/dashboard/leads/$id/proposal': {
       id: '/dashboard/leads/$id/proposal'
       path: '/proposal'
@@ -395,16 +426,27 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DashboardLeadsIdProposalRouteImport
       parentRoute: typeof DashboardLeadsIdRoute
     }
+    '/dashboard/leads/$id/receipt': {
+      id: '/dashboard/leads/$id/receipt'
+      path: '/receipt'
+      fullPath: '/dashboard/leads/$id/receipt'
+      preLoaderRoute: typeof DashboardLeadsIdReceiptRouteImport
+      parentRoute: typeof DashboardLeadsIdRoute
+    }
   }
 }
 
 interface DashboardLeadsIdRouteChildren {
+  DashboardLeadsIdInvoiceRoute: typeof DashboardLeadsIdInvoiceRoute
   DashboardLeadsIdProposalRoute: typeof DashboardLeadsIdProposalRoute
+  DashboardLeadsIdReceiptRoute: typeof DashboardLeadsIdReceiptRoute
   DashboardLeadsIdIndexRoute: typeof DashboardLeadsIdIndexRoute
 }
 
 const DashboardLeadsIdRouteChildren: DashboardLeadsIdRouteChildren = {
+  DashboardLeadsIdInvoiceRoute: DashboardLeadsIdInvoiceRoute,
   DashboardLeadsIdProposalRoute: DashboardLeadsIdProposalRoute,
+  DashboardLeadsIdReceiptRoute: DashboardLeadsIdReceiptRoute,
   DashboardLeadsIdIndexRoute: DashboardLeadsIdIndexRoute,
 }
 

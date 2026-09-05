@@ -39,8 +39,8 @@ export type Lead = {
 export const lineItemsTotal = (items: LineItem[]) =>
   items.reduce((sum, i) => sum + i.qty * i.rate, 0);
 
-export const money = (n: number) =>
-  n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
+export const money = (n: number, currency: string = "USD") =>
+  n.toLocaleString("en-US", { style: "currency", currency, maximumFractionDigits: 0 });
 
 export const LEADS: Lead[] = [
   {
@@ -185,14 +185,38 @@ export const INVOICES = [
   { id: "INV-0971", date: "May 1, 2026", amount: "$19.00", plan: "Solo — monthly" },
 ];
 
-export const TENANT = {
+export type Tenant = {
+  name: string;
+  slug: string;
+  phone: string;
+  email: string;
+  address: string;
+  area: string;
+  hours: string;
+  trade: string;
+  brandColor: string;
+  currency: "USD" | "MXN" | "CAD";
+  calendarLink: string;
+  paymentTerms: string;
+  warrantyTerms: string;
+  taxRate: number;
+};
+
+export const TENANT: Tenant = {
   name: "Hale & Sons Plumbing",
   slug: "hale-and-sons",
   phone: "(512) 555-0110",
+  email: "office@haleandsonsplumbing.com",
+  address: "4110 Guadalupe St, Austin, TX 78751",
   area: "Austin + Round Rock, 25 mi",
+  hours: "Mon–Sat 7AM–6PM",
   trade: "Plumbing",
   brandColor: "#B4531F",
+  currency: "USD",
   calendarLink: "https://cal.com/hale-and-sons/service-call",
+  paymentTerms: "50% deposit at start, 50% due on completion.",
+  warrantyTerms: "30-day warranty on all workmanship.",
+  taxRate: 8.25,
 };
 
 export const embedSnippet = (slug: string) =>

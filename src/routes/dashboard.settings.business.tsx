@@ -5,64 +5,184 @@ import { toast } from "sonner";
 import { PageHeader, Panel } from "@/components/app/DashboardShell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { TENANT } from "@/lib/mock-data";
+import { Textarea } from "@/components/ui/textarea";
+import { TENANT, type Tenant } from "@/lib/mock-data";
 
 export const Route = createFileRoute("/dashboard/settings/business")({
   component: BusinessSettings,
 });
 
-function BusinessSettings() {
-  const [form, setForm] = useState({ ...TENANT });
+const CURRENCIES: Tenant["currency"][] = ["USD", "MXN", "CAD"];
 
-  function set<K extends keyof typeof form>(key: K, value: (typeof form)[K]) {
+const REQUIRED_FIELDS: (keyof Tenant)[] = [
+  "name",
+  "trade",
+  "phone",
+  "email",
+  "address",
+  "area",
+  "hours",
+  "calendarLink",
+  "paymentTerms",
+  "warrantyTerms",
+];
+
+function BusinessSettings() {
+  const [form, setForm] = useState<Tenant>({ ...TENANT });
+
+  function set<K extends keyof Tenant>(key: K, value: Tenant[K]) {
     setForm((f) => ({ ...f, [key]: value }));
   }
 
+  const missing = REQUIRED_FIELDS.filter((key) => !String(form[key] ?? "").trim());
+  const taxIsValid = form.taxRate !== null && form.taxRate !== undefined && !Number.isNaN(form.taxRate);
+  const canSave = missing.length === 0 && taxIsValid;
+
   return (
     <div className="space-y-6 p-6 lg:p-10">
-      <PageHeader eyebrow="Settings" title="Business info" />
+      <PageHeader
+        eyebrow="Settings"
+        title="Business info"
+        description="Everything here appears on your proposals, invoices, and receipts — all fields are required before you can save."
+      />
 
       <Panel>
         <form
           className="grid gap-5 sm:grid-cols-2"
           onSubmit={(e) => {
             e.preventDefault();
+            if (!canSave) return;
             toast.success("Saved");
           }}
         >
-          <label className="block text-sm">
-            <span className="label-caps text-muted-foreground">Business name</span>
-            <Input className="mt-1.5" value={form.name} onChange={(e) => set("name", e.target.value)} />
-          </label>
-          <label className="block text-sm">
-            <span className="label-caps text-muted-foreground">Trade</span>
-            <Input className="mt-1.5" value={form.trade} onChange={(e) => set("trade", e.target.value)} />
-          </label>
-          <label className="block text-sm">
-            <span className="label-caps text-muted-foreground">Phone</span>
-            <Input className="mt-1.5" value={form.phone} onChange={(e) => set("phone", e.target.value)} />
-          </label>
-          <label className="block text-sm">
-            <span className="label-caps text-muted-foreground">Service area</span>
-            <Input className="mt-1.5" value={form.area} onChange={(e) => set("area", e.target.value)} />
-          </label>
-          <label className="block text-sm sm:col-span-2">
-            <span className="label-caps text-muted-foreground">Calendar link</span>
+          <Field label="Business name" required>
+            <Input value={form.name} onChange={(e) => set("name", e.target.value)} required />
+          </Field>
+          <Field label="Trade" required>
+            <Input value={form.trade} onChange={(e) => set("trade", e.target.value)} required />
+          </Field>
+
+          <Field label="Phone" required>
+            <Input value={form.phone} onChange={(e) => set("phone", e.target.value)} required />
+          </Field>
+          <Field label="Email" required>
             <Input
-              className="mt-1.5"
+              type="email"
+              value={form.email}
+              onChange={(e) => set("email", e.target.value)}
+              required
+            />
+          </Field>
+
+          <Field label="Business address" required className="sm:col-span-2">
+            <Input value={form.address} onChange={(e) => set("address", e.target.value)} required />
+          </Field>
+
+          <Field label="Service area" required>
+            <Input value={form.area} onChange={(e) => set("area", e.target.value)} required />
+          </Field>
+          <Field label="Business hours" required>
+            <Input
+              value={form.hours}
+              onChange={(e) => set("hours", e.target.value)}
+              placeholder="Mon–Sat 8AM–6PM"
+              required
+            />
+          </Field>
+
+          <Field label="Currency" required>
+            <select
+              value={form.currency}
+              onChange={(e) => set("currency", e.target.value as Tenant["currency"])}
+              className="mt-1.5 h-10 w-full rounded-sm border border-border-strong bg-background px-3 text-sm"
+              required
+            >
+              {CURRENCIES.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Sales tax rate (%)" required>
+            <Input
+              type="number"
+              min={0}
+              step="0.01"
+              value={Number.isNaN(form.taxRate) ? "" : form.taxRate}
+              onChange={(e) => set("taxRate", e.target.valueAsNumber)}
+              placeholder="0 if you don't charge tax"
+              required
+            />
+          </Field>
+
+          <Field label="Calendar link" required className="sm:col-span-2">
+            <Input
               value={form.calendarLink}
               onChange={(e) => set("calendarLink", e.target.value)}
               placeholder="https://cal.com/your-business/service-call"
+              required
             />
             <span className="mt-1.5 block text-xs text-muted-foreground">
               Your existing Cal.com or Calendly link — bookings open here pre-filled with the job details.
             </span>
-          </label>
+          </Field>
+
+          <Field label="Payment terms" required className="sm:col-span-2">
+            <Textarea
+              rows={2}
+              value={form.paymentTerms}
+              onChange={(e) => set("paymentTerms", e.target.value)}
+              placeholder="e.g. 50% deposit at start, 50% due on completion."
+              required
+            />
+          </Field>
+          <Field label="Warranty terms" required className="sm:col-span-2">
+            <Textarea
+              rows={2}
+              value={form.warrantyTerms}
+              onChange={(e) => set("warrantyTerms", e.target.value)}
+              placeholder="e.g. 30-day warranty on all workmanship."
+              required
+            />
+          </Field>
+
           <div className="sm:col-span-2">
-            <Button type="submit">Save</Button>
+            <Button type="submit" disabled={!canSave}>
+              Save
+            </Button>
+            {!canSave && (
+              <p className="mt-2 text-xs text-muted-foreground">
+                {missing.length > 0
+                  ? `${missing.length} field${missing.length === 1 ? "" : "s"} still need${missing.length === 1 ? "s" : ""} to be filled in.`
+                  : "Enter a valid tax rate (0 is fine) to continue."}
+              </p>
+            )}
           </div>
         </form>
       </Panel>
     </div>
+  );
+}
+
+function Field({
+  label,
+  required,
+  className,
+  children,
+}: {
+  label: string;
+  required?: boolean;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <label className={`block text-sm ${className ?? ""}`}>
+      <span className="label-caps text-muted-foreground">
+        {label}
+        {required && <span className="text-destructive"> *</span>}
+      </span>
+      <div className="mt-1.5">{children}</div>
+    </label>
   );
 }

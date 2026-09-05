@@ -141,10 +141,23 @@ function LeadDetail() {
           </Panel>
 
           <Panel title="Take action">
+            <p className="mb-3 text-xs text-muted-foreground">
+              Each of these stands on its own — generate whichever one fits the job, in any order.
+            </p>
             <div className="space-y-2">
               <Button asChild className="w-full">
                 <Link to="/dashboard/leads/$id/proposal" params={{ id: initial.id }}>
                   <FileText className="mr-2 h-4 w-4" /> Generate proposal
+                </Link>
+              </Button>
+              <Button variant="outline" asChild className="w-full">
+                <Link to="/dashboard/leads/$id/invoice" params={{ id: initial.id }}>
+                  <FileText className="mr-2 h-4 w-4" /> Generate invoice
+                </Link>
+              </Button>
+              <Button variant="outline" asChild className="w-full">
+                <Link to="/dashboard/leads/$id/receipt" params={{ id: initial.id }}>
+                  <FileText className="mr-2 h-4 w-4" /> Generate receipt
                 </Link>
               </Button>
               <Button variant="outline" asChild className="w-full">
