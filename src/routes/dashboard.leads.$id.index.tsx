@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { createFileRoute, Link, notFound } from "@tanstack/react-router";
-import { ArrowLeft, Calendar, FileText, RefreshCw, Send } from "lucide-react";
+import { ArrowLeft, Calendar, FileText, Plus, RefreshCw, Send, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { PageHeader, Panel } from "@/components/app/DashboardShell";
@@ -14,6 +14,7 @@ import {
   STATUS_LABEL,
   TENANT,
   type LeadStatus,
+  type LineItem,
 } from "@/lib/mock-data";
 
 export const Route = createFileRoute("/dashboard/leads/$id/")({
@@ -36,8 +37,19 @@ function LeadDetail() {
 
   const total = lineItemsTotal(lineItems);
 
-  function updateAmount(id: string, rate: number) {
-    setLineItems((items) => items.map((i) => (i.id === id ? { ...i, rate } : i)));
+  function updateItem<K extends keyof LineItem>(id: string, key: K, value: LineItem[K]) {
+    setLineItems((items) => items.map((i) => (i.id === id ? { ...i, [key]: value } : i)));
+  }
+
+  function removeItem(id: string) {
+    setLineItems((items) => items.filter((i) => i.id !== id));
+  }
+
+  function addItem() {
+    setLineItems((items) => [
+      ...items,
+      { id: `new-${Date.now()}`, description: "New line item", qty: 1, unit: "job", rate: 0 },
+    ]);
   }
 
   function sendMessage() {
@@ -94,26 +106,51 @@ function LeadDetail() {
           <Panel title="Line items — edit before sending">
             <ul className="divide-y divide-border">
               {lineItems.map((item) => (
-                <li key={item.id} className="flex items-center justify-between gap-4 py-3">
-                  <div>
-                    <p className="text-sm font-medium text-foreground">{item.description}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {item.qty} {item.unit}
-                    </p>
-                  </div>
+                <li key={item.id} className="flex flex-wrap items-center gap-2 py-3">
+                  <Input
+                    value={item.description}
+                    onChange={(e) => updateItem(item.id, "description", e.target.value)}
+                    className="min-w-[200px] flex-1"
+                    aria-label="Description"
+                  />
+                  <Input
+                    type="number"
+                    value={item.qty}
+                    onChange={(e) => updateItem(item.id, "qty", e.target.valueAsNumber || 0)}
+                    className="w-16 text-right"
+                    aria-label={`Quantity for ${item.description}`}
+                  />
+                  <Input
+                    value={item.unit}
+                    onChange={(e) => updateItem(item.id, "unit", e.target.value)}
+                    className="w-20"
+                    aria-label={`Unit for ${item.description}`}
+                  />
                   <div className="flex items-center gap-1.5">
                     <span className="text-sm text-muted-foreground">$</span>
                     <Input
                       type="number"
                       value={item.rate}
-                      onChange={(e) => updateAmount(item.id, Number(e.target.value))}
+                      onChange={(e) => updateItem(item.id, "rate", e.target.valueAsNumber || 0)}
                       className="w-24 text-right"
                       aria-label={`Rate for ${item.description}`}
                     />
                   </div>
+                  <button
+                    onClick={() => removeItem(item.id)}
+                    className="rounded-sm p-2 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                    aria-label={`Remove ${item.description}`}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
                 </li>
               ))}
             </ul>
+            <div className="mt-3 border-t border-border-strong pt-3">
+              <Button variant="outline" size="sm" onClick={addItem}>
+                <Plus className="mr-2 h-4 w-4" /> Add line item
+              </Button>
+            </div>
             <div className="mt-3 flex items-center justify-between border-t border-border-strong pt-3">
               <span className="text-sm font-semibold text-foreground">Total</span>
               <span className="num text-lg font-extrabold text-foreground">{money(total)}</span>
