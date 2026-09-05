@@ -10,7 +10,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/lib/use-auth";
-import { getMyLead, saveLeadLineItems, updateLeadStatus, addLeadMessage } from "@/lib/leads-server";
+import {
+  getMyLead,
+  saveLeadLineItems,
+  updateLeadStatus,
+  updateLeadContact,
+  addLeadMessage,
+} from "@/lib/leads-server";
 import { getMyTenant } from "@/lib/tenant-server";
 import { buildSuggestedReply, lineItemsMatch } from "@/lib/reply-composer";
 import {
@@ -44,11 +50,13 @@ function LeadDetail() {
   const [status, setStatus] = useState<LeadStatus>("new");
   const [lineItems, setLineItems] = useState<LineItem[]>([]);
   const [thread, setThread] = useState<{ role: "customer" | "assistant"; text: string }[]>([]);
+  const [contact, setContact] = useState({ customer: "", phone: "", address: "" });
   // null = "untouched" — the box tracks the AI-drafted suggestion live. Once
   // the user types, it holds their exact text until they send or explicitly
   // revert, at which point it goes back to null so it starts tracking again.
   const [manualMessage, setManualMessage] = useState<string | null>(null);
   const [savingLineItems, setSavingLineItems] = useState(false);
+  const [savingContact, setSavingContact] = useState(false);
 
   useEffect(() => {
     if (authLoading) return;
@@ -64,6 +72,7 @@ function LeadDetail() {
       setStatus(mockLead.status);
       setLineItems(mockLead.lineItems);
       setThread(mockLead.followUps);
+      setContact({ customer: mockLead.customer, phone: mockLead.phone, address: mockLead.address });
       setTenant(TENANT);
       setLoading(false);
       return;
@@ -77,6 +86,7 @@ function LeadDetail() {
         setStatus(realLead.status);
         setLineItems(realLead.lineItems);
         setThread(realLead.followUps);
+        setContact({ customer: realLead.customer, phone: realLead.phone, address: realLead.address });
         setTenant(realTenant);
       })
       .catch(() => {
@@ -143,6 +153,28 @@ function LeadDetail() {
     }
   }
 
+  function updateContact<K extends keyof typeof contact>(key: K, value: (typeof contact)[K]) {
+    setContact((c) => ({ ...c, [key]: value }));
+  }
+
+  async function saveContact() {
+    if (!user) {
+      toast.success("Saved (sample data — sign up to save your real leads)");
+      return;
+    }
+    setSavingContact(true);
+    try {
+      await updateLeadContact({
+        data: { id, customerName: contact.customer, phone: contact.phone, address: contact.address },
+      });
+      toast.success("Contact info saved");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not save contact info.");
+    } finally {
+      setSavingContact(false);
+    }
+  }
+
   async function changeStatus(next: LeadStatus) {
     setStatus(next);
     toast.success(`Marked ${STATUS_LABEL[next]}`);
@@ -199,13 +231,46 @@ function LeadDetail() {
 
       <PageHeader
         eyebrow={lead.requested}
-        title={lead.customer}
-        description={`${lead.phone} · ${lead.address} · via ${lead.channel}`}
+        title={contact.customer}
+        description={`${contact.phone} · ${contact.address} · via ${lead.channel}`}
         actions={<StatusPill status={status} className="text-sm" />}
       />
 
       <div className="grid gap-6 lg:grid-cols-[1.3fr_1fr]">
         <div className="space-y-6">
+          <Panel title="Customer">
+            <p className="mb-3 text-xs text-muted-foreground">
+              Confirm who this is for — a WhatsApp or widget name isn't always the actual customer (e.g. a
+              rental's property manager texting on a tenant's behalf).
+            </p>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Input
+                value={contact.customer}
+                onChange={(e) => updateContact("customer", e.target.value)}
+                aria-label="Customer name"
+                placeholder="Customer name"
+              />
+              <Input
+                value={contact.phone}
+                onChange={(e) => updateContact("phone", e.target.value)}
+                aria-label="Customer phone"
+                placeholder="Phone"
+              />
+              <Input
+                value={contact.address}
+                onChange={(e) => updateContact("address", e.target.value)}
+                aria-label="Customer address"
+                placeholder="Address (incl. cross streets / zip)"
+                className="sm:col-span-2"
+              />
+            </div>
+            <div className="mt-3 flex justify-end border-t border-border-strong pt-3">
+              <Button size="sm" variant="outline" onClick={() => void saveContact()} disabled={savingContact}>
+                {savingContact ? "Saving…" : "Save contact info"}
+              </Button>
+            </div>
+          </Panel>
+
           <Panel title="Photo & description">
             <img src={lead.photo} alt={lead.problem} className="aspect-video w-full rounded-sm object-cover" />
             <p className="mt-3 text-sm text-foreground">{lead.problem}</p>

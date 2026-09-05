@@ -154,6 +154,20 @@ export const updateLeadStatus = createServerFn({ method: "POST" })
     return { ok: true as const };
   });
 
+export const updateLeadContact = createServerFn({ method: "POST" })
+  .validator((input: { id: string; customerName: string; phone: string; address: string }) => input)
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context, data }) => {
+    const tenantId = await getTenantId(context.supabase, context.userId);
+    const { error } = await context.supabase
+      .from("leads")
+      .update({ customer_name: data.customerName, phone: data.phone, address: data.address })
+      .eq("tenant_id", tenantId)
+      .eq("id", data.id);
+    if (error) throw new Error(`Could not save contact info: ${error.message}`);
+    return { ok: true as const };
+  });
+
 // Full replace, scoped to this one lead — the AI snapshot lives on the lead
 // row itself, not per line item, so this can't accidentally lose it.
 export const saveLeadLineItems = createServerFn({ method: "POST" })
