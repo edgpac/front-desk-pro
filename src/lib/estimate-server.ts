@@ -198,7 +198,12 @@ function buildPrompt(input: QuoteInput): string {
       ? `\n\nIMPORTANT: The customer is writing in ${LANGUAGE_NAME[language]}. Write every human-readable value in your JSON response — diagnosis, questions, options, line item description/detail — in ${LANGUAGE_NAME[language]}. Keep the JSON keys themselves in English exactly as shown (issueType, severity, etc.) — only translate the values.`
       : "";
 
-  return `You are the AI front desk for ${input.businessName}, a trades business. A customer sent a photo and/or description of a problem. Diagnose it and produce a priced estimate the way an experienced tradesperson would after seeing the photo and asking a couple of clarifying questions.${languageInstruction}
+  const hasPhoto = Boolean(input.imageBase64);
+  const photoStatus = hasPhoto
+    ? "A customer sent a photo and a description of a problem."
+    : "A customer sent only a text description — no photo was attached.";
+
+  return `You are the AI front desk for ${input.businessName}, a trades business. ${photoStatus} Diagnose it and produce a priced estimate the way an experienced tradesperson would after seeing the photo and asking a couple of clarifying questions.${languageInstruction}
 
 CUSTOMER'S DESCRIPTION: "${input.description}"${answersBlock}
 
@@ -208,7 +213,7 @@ ${sheetLines || "(no price sheet provided — estimate using the labor rate only
 Service call fee: $${input.serviceCallFee} (covers diagnosis plus the first hour of labor; only hours beyond the first are billed at $${input.laborRate}/hr).
 
 RULES:
-1. If the photo and description together are not enough to price this confidently, respond with 1-2 short clarifying questions instead of guessing. Give each question 2-4 short tappable answer options. Only ask if the answer would actually change the price.
+1. If the photo and description together are not enough to price this confidently, respond with 1-2 short clarifying questions instead of guessing. Give each question 2-4 short tappable answer options. Only ask if the answer would actually change the price. ${hasPhoto ? "" : "No photo was provided — a photo is almost always the single most useful thing you're missing, so make your first clarifying question a request for one (with an option for 'I don't have a photo handy' so the conversation isn't blocked) rather than asking about a detail a photo would answer faster."}
 2. If you have enough information, give a plain-language diagnosis (what's actually wrong, not just a restatement of the question), a severity (Low/Medium/High — High means it risks getting worse or is a safety issue), your confidence in reading the photo, and a line-item cost breakdown.
 3. Only include line items that make sense for what was described — don't pad the estimate.
 4. If this describes an active emergency (active flooding, sparking, a gas smell, no power to the whole house), set isEmergency to true and say so plainly in the diagnosis.
