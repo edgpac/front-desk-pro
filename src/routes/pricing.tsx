@@ -56,7 +56,7 @@ const matrix = [
   { row: "Price sheet photo extraction", solo: true, crew: true },
   { row: "Manual price editing", solo: true, crew: true },
   { row: "Hourly labor math", solo: false, crew: true },
-  { row: "Branded proposal PDF", solo: true, crew: true },
+  { row: "Branded proposal PDF or PNG", solo: true, crew: true },
   { row: "Customer follow-up thread", solo: false, crew: true },
   { row: "Analytics + CSV export", solo: false, crew: true },
 ];

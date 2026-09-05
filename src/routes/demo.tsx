@@ -60,7 +60,7 @@ function Demo() {
                 </li>
                 <li>
                   <span className="num font-display font-bold text-primary">03</span> One click turns it into
-                  a branded proposal PDF.
+                  a branded proposal PDF or PNG.
                 </li>
               </ol>
               <Button asChild className="mt-5 w-full">
