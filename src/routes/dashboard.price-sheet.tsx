@@ -7,7 +7,7 @@ import { PageHeader, Panel } from "@/components/app/DashboardShell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useAuth } from "@/lib/use-auth";
-import { listMyPriceSheet, saveMyPriceSheet } from "@/lib/price-sheet-server";
+import { listMyPriceSheet, saveMyPriceSheet, extractPriceSheetFromImage } from "@/lib/price-sheet-server";
 import { formatPrice, PRICE_SHEET, type PriceSheetRow, type PricingType } from "@/lib/mock-data";
 
 export const Route = createFileRoute("/dashboard/price-sheet")({
@@ -15,6 +15,23 @@ export const Route = createFileRoute("/dashboard/price-sheet")({
 });
 
 const PRICING_TYPES: PricingType[] = ["flat", "hourly", "range"];
+
+function fileToBase64(file: File): Promise<{ base64: string; mediaType: string }> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result;
+      if (typeof result !== "string") {
+        reject(new Error("Could not read that file."));
+        return;
+      }
+      const base64 = result.split(",")[1] ?? "";
+      resolve({ base64, mediaType: file.type || "image/jpeg" });
+    };
+    reader.onerror = () => reject(new Error("Could not read that file."));
+    reader.readAsDataURL(file);
+  });
+}
 
 function newRow(): PriceSheetRow {
   return {
@@ -35,6 +52,7 @@ function PriceSheetPage() {
   const [loading, setLoading] = useState(true);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [extracting, setExtracting] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -107,11 +125,38 @@ function PriceSheetPage() {
     }
   }
 
-  function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
+  async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
-    if (!file) return;
-    toast.info("Photo received — automatic extraction into rows isn't wired up yet, add them below for now.");
     e.target.value = "";
+    if (!file) return;
+    if (!user) {
+      toast.info("Sign up to upload your own price sheet.");
+      return;
+    }
+    setExtracting(true);
+    try {
+      const { base64, mediaType } = await fileToBase64(file);
+      const extracted = await extractPriceSheetFromImage({ data: { imageBase64: base64, imageMediaType: mediaType } });
+      if (extracted.length === 0) {
+        toast.error("Couldn't find any prices in that photo — try a clearer image.");
+        return;
+      }
+      setRows((r) => [
+        ...r,
+        ...extracted.map((item) => ({
+          ...item,
+          id: `extracted-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        })),
+      ]);
+      setDirty(true);
+      toast.success(
+        `Added ${extracted.length} service${extracted.length === 1 ? "" : "s"} from the photo — review below, then Save changes.`,
+      );
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Couldn't read that photo.");
+    } finally {
+      setExtracting(false);
+    }
   }
 
   if (loading) {
@@ -135,8 +180,8 @@ function PriceSheetPage() {
         actions={
           <>
             <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleUpload} />
-            <Button variant="outline" onClick={() => fileRef.current?.click()}>
-              <Upload className="mr-2 h-4 w-4" /> Upload a price sheet photo
+            <Button variant="outline" onClick={() => fileRef.current?.click()} disabled={extracting}>
+              <Upload className="mr-2 h-4 w-4" /> {extracting ? "Reading photo…" : "Upload a price sheet photo"}
             </Button>
           </>
         }

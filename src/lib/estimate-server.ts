@@ -154,7 +154,7 @@ function withinRateLimit(): boolean {
   return windowCount <= MAX_PER_WINDOW;
 }
 
-async function callClaude(body: unknown): Promise<any> {
+export async function callClaude(body: unknown): Promise<any> {
   const apiKey = process.env["ANTHROPIC_API_KEY"];
   if (!apiKey) {
     throw new Error(
