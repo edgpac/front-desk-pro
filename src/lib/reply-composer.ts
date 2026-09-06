@@ -13,9 +13,9 @@ export function buildSuggestedReply(params: {
   const language = detectLanguage(params.problem, params.diagnosis);
   const amount = money(params.total, params.currency ?? "USD");
   if (language === "es") {
-    return `Según las fotos: ${params.diagnosis} En total serían ${amount}. ¿Le gustaría que agendemos la visita?`;
+    return `Según las fotos: ${params.diagnosis} Precio estimado: ${amount}. Este estimado se basa en las fotos e información proporcionada de forma remota. Si el problema real o el alcance del trabajo es diferente a lo presentado, el precio final podría cambiar después de una inspección en sitio. ¿Le gustaría que agendemos la visita?`;
   }
-  return `Based on the photos: ${params.diagnosis} That comes to ${amount} total. Want me to get this booked in?`;
+  return `${params.diagnosis} Estimated price: ${amount}. This estimate is based on the photos and information provided remotely. If the actual issue or scope of work is different than what was presented, the final price may change after inspection. Want me to get this booked in?`;
 }
 
 export function lineItemsMatch(

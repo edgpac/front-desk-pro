@@ -214,6 +214,14 @@ export function BusinessDocument({
                   <span className="num">{money(total, tenant.currency)}</span>
                 </div>
               )}
+              {kind === "proposal" && (
+                <p className="pt-2 text-xs leading-relaxed text-muted-foreground">
+                  <span className="font-semibold text-foreground">Remote Estimate:</span> This price is
+                  based on the photos and information provided and reflects the expected scope of work. If
+                  the actual condition or scope is different from what was presented, the final price may
+                  change after an on-site inspection.
+                </p>
+              )}
             </div>
           </div>
 

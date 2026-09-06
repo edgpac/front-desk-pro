@@ -197,7 +197,7 @@ export const Route = createFileRoute("/api/whatsapp/webhook")({
 
           await sendWhatsAppMessage({
             to: fromPhone,
-            body: `Based on the photo: ${clarifyResult.diagnosis} That comes to ${money(clarifyTotal, tenant.currency)} total. Want me to get this booked in?`,
+            body: `${clarifyResult.diagnosis} Estimated price: ${money(clarifyTotal, tenant.currency)}. This estimate is based on the photos and information provided remotely. If the actual issue or scope of work is different than what was presented, the final price may change after inspection. Want me to get this booked in?`,
           });
 
           return emptyTwiml();
@@ -323,7 +323,7 @@ export const Route = createFileRoute("/api/whatsapp/webhook")({
 
         await sendWhatsAppMessage({
           to: fromPhone,
-          body: `Based on the photo: ${result.diagnosis} That comes to ${money(total, tenant.currency)} total. Want me to get this booked in?`,
+          body: `${result.diagnosis} Estimated price: ${money(total, tenant.currency)}. This estimate is based on the photos and information provided remotely. If the actual issue or scope of work is different than what was presented, the final price may change after inspection. Want me to get this booked in?`,
         });
 
         return emptyTwiml();
