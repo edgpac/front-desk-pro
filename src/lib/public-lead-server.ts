@@ -8,7 +8,7 @@ import { sendLeadNotificationEmail } from "@/lib/notify-server";
 // has no Supabase session at all — it has to use the service role key to
 // write on the tenant's behalf, identified by their public slug instead of
 // auth.uid(). Same admin-client pattern as api.stripe.webhook.tsx.
-function getAdminClient() {
+export function getAdminClient() {
   const url = process.env["SUPABASE_URL"];
   const serviceRoleKey = process.env["SUPABASE_SERVICE_ROLE_KEY"];
   if (!url || !serviceRoleKey) {
@@ -29,6 +29,7 @@ type CreateLeadInput = {
   problem: string;
   diagnosis: string;
   confidence: "High" | "Medium" | "Low";
+  isEmergency?: boolean;
   lineItems: Array<{ description: string; qty: number; unit: string; rate: number }>;
 };
 
@@ -101,6 +102,7 @@ export const createLead = createServerFn({ method: "POST" })
         problem: data.problem,
         diagnosis: data.diagnosis,
         confidence: data.confidence,
+        ...(data.isEmergency !== undefined ? { isEmergency: data.isEmergency } : {}),
       },
       lineItems: data.lineItems.map((item, index) => ({ id: String(index), ...item })),
       total,
