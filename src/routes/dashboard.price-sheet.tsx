@@ -205,7 +205,7 @@ function PriceSheetPage() {
         title="What FrontDesk quotes off of"
         description={
           user
-            ? "These are the exact numbers the AI uses to price a job — one price sheet, no separate copy to keep in sync."
+            ? "These are the exact numbers the AI prices jobs from — no separate copy to keep in sync. Paired with your Business Settings (what you're certified for, equipped for, and won't take on), FrontDesk can quote confidently when a job matches, and knows to check with you first when it doesn't."
             : "You're viewing a sample price sheet — sign up to build your own."
         }
         actions={
