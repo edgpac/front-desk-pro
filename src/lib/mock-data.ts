@@ -34,6 +34,10 @@ export type Lead = {
   confidence: "High" | "Medium" | "Low";
   lineItems: LineItem[];
   followUps: { role: "customer" | "assistant"; text: string }[];
+  // ISO timestamp, real leads only — sample leads leave this unset since
+  // their "requested" strings ("Today, 8:10 AM") are hand-authored display
+  // text, not backed by a real date to bucket by.
+  createdAt?: string;
 };
 
 export const lineItemsTotal = (items: LineItem[]) =>

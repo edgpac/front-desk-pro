@@ -1,18 +1,57 @@
+import { useEffect, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { Copy, ExternalLink } from "lucide-react";
+import { toast } from "sonner";
 
 import { PageHeader, Panel } from "@/components/app/DashboardShell";
 import { Button } from "@/components/ui/button";
 import { copyText } from "@/lib/clipboard";
-import { TENANT, embedSnippet, quoteLink } from "@/lib/mock-data";
+import { useAuth } from "@/lib/use-auth";
+import { getMyTenant } from "@/lib/tenant-server";
+import { TENANT, type Tenant, embedSnippet, quoteLink } from "@/lib/mock-data";
 
 export const Route = createFileRoute("/dashboard/widget")({
   component: WidgetPage,
 });
 
 function WidgetPage() {
-  const snippet = embedSnippet(TENANT.slug);
-  const link = quoteLink(TENANT.slug);
+  const { user, loading: authLoading } = useAuth();
+  const [tenant, setTenant] = useState<Tenant>(TENANT);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (authLoading) return;
+    if (!user) {
+      setTenant(TENANT);
+      setLoading(false);
+      return;
+    }
+    let active = true;
+    getMyTenant()
+      .then((realTenant) => {
+        if (active) setTenant(realTenant);
+      })
+      .catch((err) => {
+        toast.error(err instanceof Error ? err.message : "Could not load your business.");
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [authLoading, user]);
+
+  if (loading) {
+    return (
+      <div className="space-y-6 p-6 lg:p-10">
+        <PageHeader eyebrow="Widget & link" title="Loading…" />
+      </div>
+    );
+  }
+
+  const snippet = embedSnippet(tenant.slug);
+  const link = quoteLink(tenant.slug);
 
   return (
     <div className="space-y-6 p-6 lg:p-10">
@@ -63,11 +102,11 @@ function WidgetPage() {
         <div className="flex items-center gap-4">
           <span
             className="h-10 w-10 rounded-sm border border-border-strong"
-            style={{ backgroundColor: TENANT.brandColor }}
+            style={{ backgroundColor: tenant.brandColor }}
             aria-hidden
           />
           <div>
-            <p className="text-sm font-medium text-foreground">{TENANT.brandColor}</p>
+            <p className="text-sm font-medium text-foreground">{tenant.brandColor}</p>
             <p className="text-xs text-muted-foreground">
               Used on your quote page and embedded widget buttons.
             </p>

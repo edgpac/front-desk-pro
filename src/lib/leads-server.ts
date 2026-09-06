@@ -84,6 +84,7 @@ export const listMyLeads = createServerFn({ method: "GET" })
       confidence: row.confidence ?? "Medium",
       lineItems: itemsByLead.get(row.id) ?? [],
       followUps: [],
+      createdAt: row.created_at,
     }));
   });
 
