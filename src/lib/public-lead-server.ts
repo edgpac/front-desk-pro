@@ -1,6 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { createClient } from "@supabase/supabase-js";
 import { sendLeadNotificationEmail } from "@/lib/notify-server";
+import type { PriceSheetItem } from "@/lib/estimate-server";
 
 // Deliberately separate from leads-server.ts: everything there runs behind
 // requireSupabaseAuth (the tenant owner acting on their own account). This
@@ -18,6 +19,67 @@ export function getAdminClient() {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 }
+
+export type QuoteTenant = {
+  name: string;
+  slug: string;
+  currency: string;
+  laborRate: number;
+  serviceCallFee: number;
+  calendarLink: string;
+  priceSheet: PriceSheetItem[];
+};
+
+// Public, unauthenticated lookup for the /quote/:slug page — an anonymous
+// customer has no session, so this uses the same service-role pattern as
+// createLead below, identified by the tenant's public slug. Deliberately an
+// explicit field allowlist, never `select("*")`: this returns only what a
+// customer needs to get a quote, nothing else off the tenant row (no id,
+// no user_id, no email/phone/address). `id` is selected internally only to
+// scope the price_sheet_items lookup and is never included in the result.
+export const getTenantForQuote = createServerFn({ method: "GET" })
+  .validator((slug: string) => slug)
+  .handler(async ({ data: slug }): Promise<QuoteTenant> => {
+    const admin = getAdminClient();
+
+    const { data: tenant, error: tenantError } = await admin
+      .from("tenants")
+      .select("id, name, slug, currency, labor_rate, service_call_fee, calendar_link")
+      .eq("slug", slug)
+      .single();
+    if (tenantError || !tenant) {
+      throw new Error("Business not found.");
+    }
+
+    // The tenant-isolation boundary: price_sheet_items is explicitly
+    // scoped to this resolved tenant's id, same pattern as
+    // price-sheet-server.ts's listMyPriceSheet — a slug can never see or
+    // leak another tenant's prices.
+    const { data: items, error: itemsError } = await admin
+      .from("price_sheet_items")
+      .select("task, keywords, price_min, price_max, hours")
+      .eq("tenant_id", tenant.id)
+      .order("sort_order", { ascending: true });
+    if (itemsError) {
+      throw new Error(`Could not load price sheet: ${itemsError.message}`);
+    }
+
+    return {
+      name: tenant.name as string,
+      slug: tenant.slug as string,
+      currency: tenant.currency as string,
+      laborRate: tenant.labor_rate as number,
+      serviceCallFee: tenant.service_call_fee as number,
+      calendarLink: tenant.calendar_link as string,
+      priceSheet: (items ?? []).map((item) => ({
+        task: item["task"] as string,
+        keywords: item["keywords"] as string[],
+        priceMin: item["price_min"] as number,
+        priceMax: item["price_max"] as number,
+        hours: item["hours"] as number,
+      })),
+    };
+  });
 
 type CreateLeadInput = {
   tenantSlug: string;

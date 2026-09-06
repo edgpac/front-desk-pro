@@ -15,7 +15,9 @@ import {
   type Answer,
   type ClarifyingQuestion,
   type LineItem,
+  type PriceSheetItem,
 } from "@/lib/estimate-server";
+import { createLead } from "@/lib/public-lead-server";
 import leakPhoto from "@/assets/leak-detail.jpg";
 import panelPhoto from "@/assets/electrician-panel.jpg";
 import sinkPhoto from "@/assets/plumber-under-sink.jpg";
@@ -63,6 +65,8 @@ export function QuoteFlow({
   compact = false,
   laborRate = 125,
   serviceCallFee = 60,
+  priceSheet = SAMPLE_PRICE_SHEET,
+  tenantSlug,
 }: {
   businessName: string;
   accent?: string;
@@ -70,6 +74,8 @@ export function QuoteFlow({
   compact?: boolean;
   laborRate?: number;
   serviceCallFee?: number;
+  priceSheet?: PriceSheetItem[];
+  tenantSlug?: string;
 }) {
   const [stage, setStage] = useState<Stage>("intake");
   const [selectedSample, setSelectedSample] = useState<SamplePhoto | null>(null);
@@ -83,7 +89,10 @@ export function QuoteFlow({
   const [thread, setThread] = useState<{ role: "customer" | "desk"; text: string }[]>([]);
   const [draft, setDraft] = useState("");
   const [askingFollowUp, setAskingFollowUp] = useState(false);
+  const [customerName, setCustomerName] = useState("");
   const [phone, setPhone] = useState("");
+  const [sendingLead, setSendingLead] = useState(false);
+  const [leadSent, setLeadSent] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const descriptionRef = useRef<HTMLTextAreaElement>(null);
 
@@ -119,7 +128,7 @@ export function QuoteFlow({
           businessName,
           laborRate,
           serviceCallFee,
-          priceSheet: SAMPLE_PRICE_SHEET,
+          priceSheet,
           description,
           imageBase64: base64,
           imageMediaType: mediaType,
@@ -190,6 +199,48 @@ export function QuoteFlow({
     setResult(null);
     setErrorMessage("");
     setThread([]);
+    setCustomerName("");
+    setPhone("");
+    setLeadSent(false);
+  }
+
+  async function sendQuoteToBusiness() {
+    if (!result || !tenantSlug) {
+      toast.success("Quote texted to you");
+      return;
+    }
+    if (!customerName.trim() || !phone.trim()) {
+      toast.error("Add your name and phone so the business can reach you.");
+      return;
+    }
+    setSendingLead(true);
+    try {
+      await createLead({
+        data: {
+          tenantSlug,
+          customerName: customerName.trim(),
+          phone: phone.trim(),
+          address: "",
+          channel: "Quote link",
+          problem: description,
+          diagnosis: result.diagnosis,
+          confidence: result.confidence,
+          isEmergency: result.isEmergency,
+          lineItems: result.lineItems.map((item) => ({
+            description: item.detail ? `${item.description} — ${item.detail}` : item.description,
+            qty: 1,
+            unit: "job",
+            rate: item.amount,
+          })),
+        },
+      });
+      setLeadSent(true);
+      toast.success("Sent — the business will reach out.");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Couldn't send that — try again.");
+    } finally {
+      setSendingLead(false);
+    }
   }
 
   const canSubmit = description.trim().length > 0 && (uploadedFile || selectedSample || description.length > 10);
@@ -423,22 +474,44 @@ export function QuoteFlow({
                 </span>
               )}
             </Button>
-            <Button variant="outline" size="lg" onClick={() => toast.success("Quote texted to you")}>
-              Text me this quote
-            </Button>
           </div>
 
-          <div className="mt-4 flex flex-wrap items-center gap-2">
-            <Input
-              value={phone}
-              onChange={(e) => setPhone(e.target.value)}
-              placeholder="(512) 555-0182"
-              className="max-w-[200px]"
-              aria-label="Phone number for the quote"
-            />
-            <span className="text-xs text-muted-foreground">
-              We'll text the estimate so you can decide later.
-            </span>
+          <div className="mt-4 space-y-2">
+            {!leadSent && (
+              <div className="flex flex-wrap gap-2">
+                <Input
+                  value={customerName}
+                  onChange={(e) => setCustomerName(e.target.value)}
+                  placeholder="Your name"
+                  className="max-w-[200px]"
+                  aria-label="Your name"
+                  disabled={sendingLead}
+                />
+                <Input
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                  placeholder="(512) 555-0182"
+                  className="max-w-[200px]"
+                  aria-label="Phone number for the quote"
+                  disabled={sendingLead}
+                />
+              </div>
+            )}
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                variant="outline"
+                size="lg"
+                disabled={sendingLead || leadSent}
+                onClick={() => void sendQuoteToBusiness()}
+              >
+                {leadSent ? "Sent — the business will reach out" : sendingLead ? "Sending…" : "Text me this quote"}
+              </Button>
+              {!leadSent && (
+                <span className="text-xs text-muted-foreground">
+                  We'll text the estimate so you can decide later.
+                </span>
+              )}
+            </div>
           </div>
 
           <div className="mt-6 border-t border-border-strong pt-5">
