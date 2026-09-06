@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { createFileRoute } from "@tanstack/react-router";
-import { Plus, Trash2, Upload } from "lucide-react";
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { Plus, Settings, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
 
 import { PageHeader, Panel } from "@/components/app/DashboardShell";
@@ -210,6 +210,11 @@ function PriceSheetPage() {
         }
         actions={
           <>
+            <Button variant="outline" asChild>
+              <Link to="/dashboard/settings/qualifications">
+                <Settings className="mr-2 h-4 w-4" /> Business Settings
+              </Link>
+            </Button>
             <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleUpload} />
             <Button variant="outline" onClick={() => fileRef.current?.click()} disabled={extracting}>
               <Upload className="mr-2 h-4 w-4" /> {extracting ? "Reading photo…" : "Upload a price sheet photo"}

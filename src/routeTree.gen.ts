@@ -31,6 +31,7 @@ import { Route as DashboardLeadsIndexRouteImport } from './routes/dashboard.lead
 import { Route as DashboardLeadsIdRouteImport } from './routes/dashboard.leads.$id'
 import { Route as DashboardSettingsBillingRouteImport } from './routes/dashboard.settings.billing'
 import { Route as DashboardSettingsBusinessRouteImport } from './routes/dashboard.settings.business'
+import { Route as DashboardSettingsQualificationsRouteImport } from './routes/dashboard.settings.qualifications'
 import { Route as DashboardLeadsIdIndexRouteImport } from './routes/dashboard.leads.$id.index'
 import { Route as DashboardLeadsIdInvoiceRouteImport } from './routes/dashboard.leads.$id.invoice'
 import { Route as DashboardLeadsIdProposalRouteImport } from './routes/dashboard.leads.$id.proposal'
@@ -148,6 +149,12 @@ const DashboardSettingsBusinessRoute =
     path: '/settings/business',
     getParentRoute: () => DashboardRoute,
   } as any)
+const DashboardSettingsQualificationsRoute =
+  DashboardSettingsQualificationsRouteImport.update({
+    id: '/settings/qualifications',
+    path: '/settings/qualifications',
+    getParentRoute: () => DashboardRoute,
+  } as any)
 const DashboardLeadsIdIndexRoute = DashboardLeadsIdIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -192,6 +199,7 @@ export interface FileRoutesByFullPath {
   '/dashboard/leads/$id': typeof DashboardLeadsIdRouteWithChildren
   '/dashboard/settings/billing': typeof DashboardSettingsBillingRoute
   '/dashboard/settings/business': typeof DashboardSettingsBusinessRoute
+  '/dashboard/settings/qualifications': typeof DashboardSettingsQualificationsRoute
   '/dashboard/leads/': typeof DashboardLeadsIndexRoute
   '/dashboard/leads/$id/invoice': typeof DashboardLeadsIdInvoiceRoute
   '/dashboard/leads/$id/proposal': typeof DashboardLeadsIdProposalRoute
@@ -216,6 +224,7 @@ export interface FileRoutesByTo {
   '/api/whatsapp/webhook': typeof ApiWhatsappWebhookRoute
   '/dashboard/settings/billing': typeof DashboardSettingsBillingRoute
   '/dashboard/settings/business': typeof DashboardSettingsBusinessRoute
+  '/dashboard/settings/qualifications': typeof DashboardSettingsQualificationsRoute
   '/dashboard/leads': typeof DashboardLeadsIndexRoute
   '/dashboard/leads/$id/invoice': typeof DashboardLeadsIdInvoiceRoute
   '/dashboard/leads/$id/proposal': typeof DashboardLeadsIdProposalRoute
@@ -245,6 +254,7 @@ export interface FileRoutesById {
   '/dashboard/leads/$id': typeof DashboardLeadsIdRouteWithChildren
   '/dashboard/settings/billing': typeof DashboardSettingsBillingRoute
   '/dashboard/settings/business': typeof DashboardSettingsBusinessRoute
+  '/dashboard/settings/qualifications': typeof DashboardSettingsQualificationsRoute
   '/dashboard/leads/': typeof DashboardLeadsIndexRoute
   '/dashboard/leads/$id/invoice': typeof DashboardLeadsIdInvoiceRoute
   '/dashboard/leads/$id/proposal': typeof DashboardLeadsIdProposalRoute
@@ -275,6 +285,7 @@ export interface FileRouteTypes {
     | '/dashboard/leads/$id'
     | '/dashboard/settings/billing'
     | '/dashboard/settings/business'
+    | '/dashboard/settings/qualifications'
     | '/dashboard/leads/'
     | '/dashboard/leads/$id/invoice'
     | '/dashboard/leads/$id/proposal'
@@ -299,6 +310,7 @@ export interface FileRouteTypes {
     | '/api/whatsapp/webhook'
     | '/dashboard/settings/billing'
     | '/dashboard/settings/business'
+    | '/dashboard/settings/qualifications'
     | '/dashboard/leads'
     | '/dashboard/leads/$id/invoice'
     | '/dashboard/leads/$id/proposal'
@@ -327,6 +339,7 @@ export interface FileRouteTypes {
     | '/dashboard/leads/$id'
     | '/dashboard/settings/billing'
     | '/dashboard/settings/business'
+    | '/dashboard/settings/qualifications'
     | '/dashboard/leads/'
     | '/dashboard/leads/$id/invoice'
     | '/dashboard/leads/$id/proposal'
@@ -505,6 +518,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DashboardSettingsBusinessRouteImport
       parentRoute: typeof DashboardRoute
     }
+    '/dashboard/settings/qualifications': {
+      id: '/dashboard/settings/qualifications'
+      path: '/settings/qualifications'
+      fullPath: '/dashboard/settings/qualifications'
+      preLoaderRoute: typeof DashboardSettingsQualificationsRouteImport
+      parentRoute: typeof DashboardRoute
+    }
     '/dashboard/leads/$id/': {
       id: '/dashboard/leads/$id/'
       path: '/'
@@ -575,6 +595,7 @@ interface DashboardRouteChildren {
   DashboardIndexRoute: typeof DashboardIndexRoute
   DashboardSettingsBillingRoute: typeof DashboardSettingsBillingRoute
   DashboardSettingsBusinessRoute: typeof DashboardSettingsBusinessRoute
+  DashboardSettingsQualificationsRoute: typeof DashboardSettingsQualificationsRoute
 }
 
 const DashboardRouteChildren: DashboardRouteChildren = {
@@ -585,6 +606,7 @@ const DashboardRouteChildren: DashboardRouteChildren = {
   DashboardIndexRoute: DashboardIndexRoute,
   DashboardSettingsBillingRoute: DashboardSettingsBillingRoute,
   DashboardSettingsBusinessRoute: DashboardSettingsBusinessRoute,
+  DashboardSettingsQualificationsRoute: DashboardSettingsQualificationsRoute,
 }
 
 const DashboardRouteWithChildren = DashboardRoute._addFileChildren(
