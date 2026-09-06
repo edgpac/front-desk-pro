@@ -9,13 +9,13 @@ import { useAuth } from "@/lib/use-auth";
 export const Route = createFileRoute("/pricing")({
   head: () => ({
     meta: [
-      { title: "Pricing — FrontDesk for trades" },
+      { title: "Pricing — Job It Ready for trades" },
       {
         name: "description",
         content:
           "$8/mo solo, $19/mo for a crew. Try the sample dashboard free, no signup — subscribe when you're ready, cancel anytime.",
       },
-      { property: "og:title", content: "FrontDesk pricing — $8/mo solo, $19/mo crew" },
+      { property: "og:title", content: "Job It Ready pricing — $8/mo solo, $19/mo crew" },
       {
         property: "og:description",
         content: "One extra booked service call a month covers it. See it work first — no card required.",

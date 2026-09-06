@@ -1,8 +1,9 @@
-# FrontDesk
+# Job It Ready
 
 The front desk for trades that don't have one. A customer photographs a
-problem, FrontDesk prices it off the business's own price sheet, and books
-the job onto their calendar — no receptionist, no waiting for a callback.
+problem, Job It Ready prices it off the business's own price sheet, and
+books the job onto their calendar — no receptionist, no waiting for a
+callback.
 
 ## Product
 
@@ -45,7 +46,7 @@ You need two things in `.env`:
    sheet without this returns an honest error instead of a real diagnosis.
 2. **A Supabase project** — create a **new** one at
    [supabase.com/dashboard](https://supabase.com/dashboard) (don't reuse a
-   project from another app — FrontDesk's users should be their own, not
+   project from another app — Job It Ready's users should be their own, not
    shared with anything else). Settings → API on that project gives you the
    URL, anon/publishable key, and service role key. Without this, `/login`
    and `/signup` will throw on submit.

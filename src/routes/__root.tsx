@@ -75,13 +75,13 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "FrontDesk — instant priced estimates for trades" },
+      { title: "Job It Ready — instant priced estimates for trades" },
       {
         name: "description",
         content:
-          "FrontDesk answers your quote requests in minutes: customers send a photo, get a priced estimate, and book straight onto your calendar.",
+          "Job It Ready answers your quote requests in minutes: customers send a photo, get a priced estimate, and book straight onto your calendar.",
       },
-      { property: "og:title", content: "FrontDesk — instant priced estimates for trades" },
+      { property: "og:title", content: "Job It Ready — instant priced estimates for trades" },
       {
         property: "og:description",
         content: "Never miss a lead. Photo in, priced estimate out, booked job on your calendar.",

@@ -7,7 +7,7 @@ import { useAuth } from "@/lib/use-auth";
 export const Route = createFileRoute("/dashboard")({
   ssr: false,
   head: () => ({
-    meta: [{ title: "Dashboard — FrontDesk" }],
+    meta: [{ title: "Dashboard — Job It Ready" }],
   }),
   component: DashboardGate,
 });

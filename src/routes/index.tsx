@@ -12,11 +12,11 @@ import carInteriorPhoto from "@/assets/car-detailing-interior.png";
 const SOFTWARE_SCHEMA = {
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
-  name: "FrontDesk",
+  name: "Job It Ready",
   applicationCategory: "BusinessApplication",
   operatingSystem: "Web",
   description:
-    "AI-powered front desk for independent service businesses. Customers photograph a problem, FrontDesk prices it off the business's own price sheet using Claude AI, and books the job onto their calendar.",
+    "AI-powered front desk for independent service businesses. Customers photograph a problem, Job It Ready prices it off the business's own price sheet using Claude AI, and books the job onto their calendar.",
   offers: [
     {
       "@type": "Offer",
@@ -38,17 +38,17 @@ const SOFTWARE_SCHEMA = {
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "FrontDesk — quote every job before your competition calls back" },
+      { title: "Job It Ready — quote every job before your competition calls back" },
       {
         name: "description",
         content:
-          "Customers send a photo, FrontDesk sends a priced estimate off your own price sheet, and books the job on your calendar. Built for plumbers, electricians, detailers, and any service business that quotes from a photo.",
+          "Customers send a photo, Job It Ready sends a priced estimate off your own price sheet, and books the job on your calendar. Built for plumbers, electricians, detailers, and any service business that quotes from a photo.",
       },
       { property: "og:title", content: "Quote every job before your competition calls back" },
       {
         property: "og:description",
         content:
-          "Photo in, priced estimate out, job booked. FrontDesk answers quote requests while you're under a sink.",
+          "Photo in, priced estimate out, job booked. Job It Ready answers quote requests while you're under a sink.",
       },
     ],
     scripts: [
@@ -77,7 +77,7 @@ function Landing() {
               guy calls back.
             </h1>
             <p className="mt-6 max-w-lg text-[17px] leading-relaxed text-muted-foreground">
-              A customer takes a photo of the problem. FrontDesk reads it, prices it off{" "}
+              A customer takes a photo of the problem. Job It Ready reads it, prices it off{" "}
               <span className="font-semibold text-foreground">your</span> price sheet, and books it on your
               calendar — while you're still under somebody's sink.
             </p>
@@ -237,7 +237,7 @@ function Landing() {
               t: "Priced off your sheet, booked on your calendar",
               d: "Flat rates, hourly labor, ranges — whatever you actually charge. Estimate lands in their thread and in your inbox, with a booking link attached.",
               img: vanPhoto,
-              alt: "A service van wrapped with the FrontDesk logo, tagline, and a send-photo, get-quote, book-the-job icon strip",
+              alt: "A service van wrapped with the Job It Ready logo, tagline, and a send-photo, get-quote, book-the-job icon strip",
               w: 1448,
               h: 1086,
             },
@@ -323,7 +323,7 @@ function Landing() {
         <div className="mx-auto max-w-6xl px-5 pt-12">
           <p className="label-caps text-primary">What this looks like in practice</p>
           <p className="mt-2 max-w-xl text-sm text-muted-foreground">
-            These are the scenarios FrontDesk is built to handle, not customer quotes.
+            These are the scenarios Job It Ready is built to handle, not customer quotes.
           </p>
         </div>
         <div className="mx-auto grid max-w-6xl gap-px bg-border-strong px-0 pt-8 sm:grid-cols-2">

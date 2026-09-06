@@ -15,9 +15,9 @@ export const Route = createFileRoute("/login")({
   ssr: false,
   head: () => ({
     meta: [
-      { title: "Log in — FrontDesk" },
-      { name: "description", content: "Log in to your FrontDesk lead inbox, price sheet and proposals." },
-      { property: "og:title", content: "Log in to FrontDesk" },
+      { title: "Log in — Job It Ready" },
+      { name: "description", content: "Log in to your Job It Ready lead inbox, price sheet and proposals." },
+      { property: "og:title", content: "Log in to Job It Ready" },
       { property: "og:description", content: "Your lead inbox, price sheet and proposals." },
     ],
   }),
@@ -104,7 +104,7 @@ function Login() {
       <div className="hidden bg-ink lg:block">
         <img
           src={heroMockup}
-          alt="FrontDesk dashboard on a tablet, showing a priced estimate for an aircraft detailing job"
+          alt="Job It Ready dashboard on a tablet, showing a priced estimate for an aircraft detailing job"
           loading="lazy"
           width={1178}
           height={1335}

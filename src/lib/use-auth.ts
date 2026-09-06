@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { User } from "@supabase/supabase-js";
 import { supabase } from "@/integrations/supabase/client";
 
-// Shared auth state for FrontDesk. Returns the current user (or null) and a
+// Shared auth state for Job It Ready. Returns the current user (or null) and a
 // loading flag while the initial session check is in flight.
 export function useAuth() {
   const [user, setUser] = useState<User | null>(null);

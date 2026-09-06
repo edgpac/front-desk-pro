@@ -12,9 +12,9 @@ export const Route = createFileRoute("/demo")({
       {
         name: "description",
         content:
-          "Run the customer side of FrontDesk yourself: send a job photo, answer two questions, get a priced estimate. No signup.",
+          "Run the customer side of Job It Ready yourself: send a job photo, answer two questions, get a priced estimate. No signup.",
       },
-      { property: "og:title", content: "FrontDesk live demo — photo in, price out" },
+      { property: "og:title", content: "Job It Ready live demo — photo in, price out" },
       {
         property: "og:description",
         content: "Try the customer flow with a sample job photo. No signup, no card.",

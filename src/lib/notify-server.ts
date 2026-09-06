@@ -74,7 +74,7 @@ function buildEmailHtml(params: { tenant: NotifyTenant; lead: NotifyLead; lineIt
       </div>
 
       <div style="margin-top: 20px; padding: 15px; background: #f9fafb; border-radius: 8px; text-align: center;">
-        <p style="margin: 0; color: #6b7280; font-size: 12px;">Sent from your FrontDesk lead inbox — reply from the dashboard.</p>
+        <p style="margin: 0; color: #6b7280; font-size: 12px;">Sent from your Job It Ready lead inbox — reply from the dashboard.</p>
       </div>
     </div>
   `;
@@ -142,7 +142,7 @@ export async function sendFollowUpNotificationEmail(params: {
         <h2 style="color: #B4531F;">💬 New reply</h2>
         <p><strong>${escapeHtml(params.customerName) || "A customer"}</strong> wrote:</p>
         <blockquote style="background: #f3f4f6; padding: 15px; border-radius: 8px; margin: 0;">${escapeHtml(params.body)}</blockquote>
-        <p style="margin-top: 20px; color: #6b7280; font-size: 12px;">Reply from your FrontDesk lead inbox.</p>
+        <p style="margin-top: 20px; color: #6b7280; font-size: 12px;">Reply from your Job It Ready lead inbox.</p>
       </div>`,
     });
   } catch (err) {

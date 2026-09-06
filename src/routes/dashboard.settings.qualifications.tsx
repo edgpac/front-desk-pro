@@ -126,7 +126,7 @@ function QualificationsPage() {
         title="What can your business do?"
         description={
           user
-            ? "This tells FrontDesk what to price with confidence, and what to check with you about first."
+            ? "This tells Job It Ready what to price with confidence, and what to check with you about first."
             : "You're viewing sample qualifications — sign up to set your own."
         }
       />
@@ -161,7 +161,7 @@ function QualificationsPage() {
       />
       <CapabilitySection
         title="What does your business NOT handle?"
-        description="Work you won't take even if you're technically able to — FrontDesk won't quote these."
+        description="Work you won't take even if you're technically able to — Job It Ready won't quote these."
         type="exclusion"
         items={byType("exclusion")}
         placeholder="e.g. Roofs over 2 stories"

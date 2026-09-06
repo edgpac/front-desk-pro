@@ -6,10 +6,10 @@ import { SiteFooter } from "@/components/site/SiteFooter";
 export const Route = createFileRoute("/privacy")({
   head: () => ({
     meta: [
-      { title: "Privacy Policy — FrontDesk" },
+      { title: "Privacy Policy — Job It Ready" },
       {
         name: "description",
-        content: "How FrontDesk collects, uses, and protects data for businesses and their customers.",
+        content: "How Job It Ready collects, uses, and protects data for businesses and their customers.",
       },
     ],
   }),
@@ -28,9 +28,9 @@ function PrivacyPolicy() {
 
         <div className="prose mt-8 max-w-none space-y-6 text-[15px] leading-relaxed text-foreground">
           <p>
-            FrontDesk ("FrontDesk," "we," "us") provides software that helps service businesses turn a
+            Job It Ready ("Job It Ready," "we," "us") provides software that helps service businesses turn a
             customer's photo and description into a priced estimate. This policy explains what we collect,
-            why, and how it's handled — both for the businesses who sign up for FrontDesk ("business
+            why, and how it's handled — both for the businesses who sign up for Job It Ready ("business
             accounts") and the customers who send in a photo or message ("end customers").
           </p>
 
@@ -55,13 +55,13 @@ function PrivacyPolicy() {
           </ul>
 
           <h2 className="text-xl font-semibold">Who we share it with</h2>
-          <p>We don't sell data. We share it only with the services that make FrontDesk work:</p>
+          <p>We don't sell data. We share it only with the services that make Job It Ready work:</p>
           <ul className="list-disc space-y-2 pl-6">
             <li><strong>Anthropic</strong> — a submitted photo and description are sent to Anthropic's Claude
               API to generate the diagnosis and price estimate.</li>
             <li><strong>Twilio</strong> — WhatsApp messages (including photos) are sent and received through
               Twilio's platform.</li>
-            <li><strong>Stripe</strong> — subscription payments are processed by Stripe. FrontDesk never
+            <li><strong>Stripe</strong> — subscription payments are processed by Stripe. Job It Ready never
               receives or stores full card numbers.</li>
             <li><strong>Supabase</strong> — our database and authentication provider, where account and lead
               data is stored.</li>
@@ -77,11 +77,11 @@ function PrivacyPolicy() {
 
           <h2 className="text-xl font-semibold">Your choices</h2>
           <p>Business accounts can review and update their own information from the dashboard at any time.
-            End customers who want their data removed from a business's FrontDesk account should contact
+            End customers who want their data removed from a business's Job It Ready account should contact
             that business directly, or reach out to us and we'll help route the request.</p>
 
           <h2 className="text-xl font-semibold">Children's privacy</h2>
-          <p>FrontDesk isn't directed at children, and we don't knowingly collect data from anyone under 16.</p>
+          <p>Job It Ready isn't directed at children, and we don't knowingly collect data from anyone under 16.</p>
 
           <h2 className="text-xl font-semibold">Changes to this policy</h2>
           <p>If this policy changes in a material way, we'll update the date at the top of this page.</p>

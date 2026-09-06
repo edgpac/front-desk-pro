@@ -11,8 +11,8 @@ const PLAN_PRICE_CENTS: Record<"solo" | "crew", number> = {
 };
 
 const PLAN_LABEL: Record<"solo" | "crew", string> = {
-  solo: "FrontDesk Solo",
-  crew: "FrontDesk Crew",
+  solo: "Job It Ready Solo",
+  crew: "Job It Ready Crew",
 };
 
 function getStripe(): Stripe {
@@ -125,7 +125,7 @@ export const getMyBillingInfo = createServerFn({ method: "GET" })
 // Real "manage billing" — replaces a fake "isn't wired up yet" toast, and is
 // what actually makes good on the signup page's "cancel from the billing
 // page" promise: Stripe's own hosted Customer Portal handles cancellation,
-// card updates, and invoice history without FrontDesk needing to build any
+// card updates, and invoice history without Job It Ready needing to build any
 // of that UI itself.
 export const createBillingPortalSession = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])

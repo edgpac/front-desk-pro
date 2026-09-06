@@ -1,6 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 
-// FrontDesk's own Supabase project — separate from any other product's.
+// Job It Ready's own Supabase project — separate from any other product's.
 // Set VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY in .env and in Vercel.
 function makeClient() {
   const url = import.meta.env["VITE_SUPABASE_URL"] as string | undefined;

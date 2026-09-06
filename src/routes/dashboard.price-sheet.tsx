@@ -193,7 +193,7 @@ function PriceSheetPage() {
   if (loading) {
     return (
       <div className="space-y-6 p-6 lg:p-10">
-        <PageHeader eyebrow="Price sheet" title="What FrontDesk quotes off of" description="Loading…" />
+        <PageHeader eyebrow="Price sheet" title="What Job It Ready quotes off of" description="Loading…" />
       </div>
     );
   }
@@ -202,10 +202,10 @@ function PriceSheetPage() {
     <div className="space-y-6 p-6 lg:p-10">
       <PageHeader
         eyebrow="Price sheet"
-        title="What FrontDesk quotes off of"
+        title="What Job It Ready quotes off of"
         description={
           user
-            ? "These are the exact numbers the AI prices jobs from — no separate copy to keep in sync. Paired with your Business Settings (what you're certified for, equipped for, and won't take on), FrontDesk can quote confidently when a job matches, and knows to check with you first when it doesn't."
+            ? "These are the exact numbers the AI prices jobs from — no separate copy to keep in sync. Paired with your Business Settings (what you're certified for, equipped for, and won't take on), Job It Ready can quote confidently when a job matches, and knows to check with you first when it doesn't."
             : "You're viewing a sample price sheet — sign up to build your own."
         }
         actions={

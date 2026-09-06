@@ -166,7 +166,7 @@ function BillingSettings() {
           </div>
         </div>
         <p className="mt-3 text-xs text-muted-foreground">
-          Checkout uses the email on your FrontDesk account — no need to type it again.
+          Checkout uses the email on your Job It Ready account — no need to type it again.
         </p>
       </Panel>
 

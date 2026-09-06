@@ -269,7 +269,7 @@ export const extractPriceSheetFromUrl = createServerFn({ method: "POST" })
     try {
       const response = await fetch(data.url, {
         signal: AbortSignal.timeout(10_000),
-        headers: { "user-agent": "Mozilla/5.0 (compatible; FrontDeskBot/1.0)" },
+        headers: { "user-agent": "Mozilla/5.0 (compatible; JobItReadyBot/1.0)" },
       });
       if (!response.ok) {
         throw new Error(`That page returned an error (${response.status}).`);

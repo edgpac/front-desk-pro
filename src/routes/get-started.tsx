@@ -14,7 +14,7 @@ import type { Tenant } from "@/lib/mock-data";
 export const Route = createFileRoute("/get-started")({
   ssr: false,
   head: () => ({
-    meta: [{ title: "Get your first quote ready — FrontDesk" }],
+    meta: [{ title: "Get your first quote ready — Job It Ready" }],
   }),
   component: GetStarted,
 });

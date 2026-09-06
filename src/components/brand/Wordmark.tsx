@@ -10,9 +10,9 @@ export function Wordmark({ className, tone = "ink" }: { className?: string; tone
       )}
     >
       <span className="flex h-6 w-6 items-center justify-center rounded-sm bg-primary text-[13px] font-extrabold text-primary-foreground">
-        F
+        J
       </span>
-      FrontDesk
+      Job It Ready
     </span>
   );
 }

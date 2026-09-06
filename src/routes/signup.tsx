@@ -14,13 +14,13 @@ export const Route = createFileRoute("/signup")({
   ssr: false,
   head: () => ({
     meta: [
-      { title: "Create your account — FrontDesk" },
+      { title: "Create your account — Job It Ready" },
       {
         name: "description",
         content:
-          "Set up FrontDesk in about 10 minutes: your business details, your price sheet, your logo. No trial — you'll pick a plan as you get set up.",
+          "Set up Job It Ready in about 10 minutes: your business details, your price sheet, your logo. No trial — you'll pick a plan as you get set up.",
       },
-      { property: "og:title", content: "Create your FrontDesk account" },
+      { property: "og:title", content: "Create your Job It Ready account" },
       { property: "og:description", content: "About 10 minutes to set up. No trial — you'll pick a plan as you get set up." },
     ],
   }),
@@ -161,7 +161,7 @@ function Signup() {
       <div className="hidden bg-ink lg:block">
         <img
           src={heroMockup}
-          alt="FrontDesk dashboard on a tablet, showing a priced estimate for an aircraft detailing job"
+          alt="Job It Ready dashboard on a tablet, showing a priced estimate for an aircraft detailing job"
           loading="lazy"
           width={1178}
           height={1335}
