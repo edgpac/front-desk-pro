@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { createFileRoute } from "@tanstack/react-router";
-import { Plus, X } from "lucide-react";
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { ArrowLeft, Plus, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { PageHeader, Panel } from "@/components/app/DashboardShell";
@@ -114,6 +114,13 @@ function QualificationsPage() {
 
   return (
     <div className="space-y-6 p-6 lg:p-10">
+      <Link
+        to="/dashboard/price-sheet"
+        className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
+      >
+        <ArrowLeft className="h-3.5 w-3.5" /> Back to price sheet
+      </Link>
+
       <PageHeader
         eyebrow="Business Settings"
         title="What can your business do?"
