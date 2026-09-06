@@ -51,7 +51,7 @@ export function SiteFooter() {
       </div>
       <div className="border-t border-white/10">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-2 px-5 py-5 text-xs text-ink-muted">
-          <p>© 2026 Job It Ready. Built for people who work with their hands.</p>
+          <p>© 2026 Job It Ready. Gets you job ready before you get to the job.</p>
           <div className="flex gap-4">
             <Link to="/privacy" className="hover:text-ink-foreground">
               Privacy Policy
