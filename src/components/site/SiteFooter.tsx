@@ -52,7 +52,14 @@ export function SiteFooter() {
       <div className="border-t border-white/10">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-2 px-5 py-5 text-xs text-ink-muted">
           <p>© 2026 FrontDesk Tools. Built for people who work with their hands.</p>
-          <p>Austin, Texas</p>
+          <div className="flex gap-4">
+            <Link to="/privacy" className="hover:text-ink-foreground">
+              Privacy Policy
+            </Link>
+            <Link to="/terms" className="hover:text-ink-foreground">
+              Terms of Service
+            </Link>
+          </div>
         </div>
       </div>
     </footer>
