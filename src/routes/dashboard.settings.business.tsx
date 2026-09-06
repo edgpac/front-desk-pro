@@ -264,7 +264,7 @@ function BusinessSettings() {
                       : "bg-amber-100 text-amber-800"
                 }`}
               >
-                {whatsappConnected ? "Connected" : !whatsappIsValid ? "Invalid" : "Not connected"}
+                {whatsappConnected ? "Requested" : !whatsappIsValid ? "Invalid" : "Not set"}
               </span>
             </div>
             {!whatsappIsValid ? (
@@ -273,8 +273,8 @@ function BusinessSettings() {
               </span>
             ) : (
               <span className="mt-1.5 block text-xs text-muted-foreground">
-                The number customers text for a quote. Requires WhatsApp set up on your account —
-                leave blank until then.
+                We're still building self-serve WhatsApp connection. Save the number you want here and
+                we'll reach out to get it connected — leave blank if you're not ready yet.
               </span>
             )}
           </Field>

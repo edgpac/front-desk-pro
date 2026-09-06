@@ -125,8 +125,8 @@ function GetStarted() {
             <h1 className="mt-4 text-2xl">You're ready.</h1>
             <p className="mt-2 text-sm text-muted-foreground">
               {normalizedWhatsapp
-                ? "Customers can send job photos to your WhatsApp number and FrontDesk can turn them into quotes."
-                : "Your pricing is set. Connect a WhatsApp number any time from Settings to start taking photo quotes there."}
+                ? "We'll reach out to get that WhatsApp number connected — self-serve setup isn't live yet, so this is a manual step on our end for now."
+                : "Your pricing is set. You can request a WhatsApp number any time from Settings when you're ready."}
             </p>
             <Button className="mt-6 w-full" size="lg" onClick={() => navigate({ to: "/dashboard" })}>
               Go to dashboard
@@ -181,7 +181,12 @@ function GetStarted() {
                   <span className="mt-1.5 block text-xs text-destructive">
                     That doesn't look like a real phone number — check the digits, or leave it blank.
                   </span>
-                ) : null}
+                ) : (
+                  <span className="mt-1.5 block text-xs text-muted-foreground">
+                    We're still building self-serve WhatsApp connection — save the number you want and
+                    we'll reach out to connect it. Leave blank if you're not ready yet.
+                  </span>
+                )}
               </div>
 
               <Button type="submit" size="lg" className="w-full" disabled={!canSave}>
