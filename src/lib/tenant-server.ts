@@ -48,7 +48,7 @@ function toTenant(row: TenantRow): Tenant {
 // with the "whatsapp:" prefix stripped — a bare E.164 number like
 // "+15551234567". Normalize whatever the business types into that exact
 // shape so the lookup actually matches.
-function normalizeWhatsappNumber(input: string): string {
+export function normalizeWhatsappNumber(input: string): string {
   const trimmed = input.trim().replace(/^whatsapp:/i, "");
   const digits = trimmed.replace(/\D/g, "");
   if (!digits) return "";
@@ -56,6 +56,14 @@ function normalizeWhatsappNumber(input: string): string {
   // code — everything else (11+ digits, or already had a "+") is assumed to
   // already include one.
   return digits.length === 10 ? `+1${digits}` : `+${digits}`;
+}
+
+// E.164 allows 8-15 digits after the leading "+". Anything shorter/longer
+// than that after normalization is typo/garbage, not a real number — saving
+// it anyway would leave a phantom whatsapp_number that will never match a
+// real Twilio "To" and just silently blackholes that tenant's WhatsApp intake.
+export function isPlausiblePhoneNumber(normalized: string): boolean {
+  return /^\+\d{8,15}$/.test(normalized);
 }
 
 // Every signed-in user gets a tenant row automatically (see the
@@ -97,7 +105,18 @@ export const updateMyTenant = createServerFn({ method: "POST" })
     }) => input,
   )
   .handler(async ({ context, data }) => {
+    if (!Number.isFinite(data.laborRate) || data.laborRate < 0) {
+      throw new Error("Labor rate must be a number of 0 or more.");
+    }
+    if (!Number.isFinite(data.serviceCallFee) || data.serviceCallFee < 0) {
+      throw new Error("Service call fee must be a number of 0 or more.");
+    }
+
     const normalizedWhatsapp = normalizeWhatsappNumber(data.whatsappNumber);
+    if (normalizedWhatsapp && !isPlausiblePhoneNumber(normalizedWhatsapp)) {
+      throw new Error("That WhatsApp number doesn't look right — double-check the digits.");
+    }
+
     const { error } = await context.supabase
       .from("tenants")
       .update({
@@ -118,6 +137,14 @@ export const updateMyTenant = createServerFn({ method: "POST" })
         whatsapp_number: normalizedWhatsapp || null,
       })
       .eq("user_id", context.userId);
-    if (error) throw new Error(`Could not save business settings: ${error.message}`);
+    if (error) {
+      // Postgres unique_violation — someone else already has this number
+      // connected. Surface something a business owner can act on instead of
+      // the raw "duplicate key value violates constraint tenants_..." text.
+      if (error.code === "23505") {
+        throw new Error("That WhatsApp number is already connected to another business.");
+      }
+      throw new Error(`Could not save business settings: ${error.message}`);
+    }
     return { ok: true as const };
   });

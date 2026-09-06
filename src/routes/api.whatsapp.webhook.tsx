@@ -61,7 +61,11 @@ export const Route = createFileRoute("/api/whatsapp/webhook")({
         const admin = getAdminClient();
 
         // Which business's number did this land on? This is the multi-tenant
-        // piece neither template had any concept of.
+        // piece neither template had any concept of. A tenant with no
+        // whatsapp_number set (still null) can never match here — Postgres
+        // never satisfies `column = value` against a NULL column — so an
+        // unconfigured tenant simply falls through to "unrecognized number"
+        // below instead of ever being mistaken for the intended recipient.
         const { data: tenant, error: tenantError } = await admin
           .from("tenants")
           .select("id, slug, name, email, currency, labor_rate, service_call_fee")
