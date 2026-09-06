@@ -1,5 +1,5 @@
 import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
   BarChart3,
   CreditCard,
@@ -17,6 +17,7 @@ import { Wordmark } from "@/components/brand/Wordmark";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/lib/use-auth";
+import { getMyTenant } from "@/lib/tenant-server";
 import { TENANT } from "@/lib/mock-data";
 import { cn } from "@/lib/utils";
 
@@ -61,7 +62,33 @@ function NavList({ onNavigate }: { onNavigate?: () => void }) {
 export function DashboardShell() {
   const [open, setOpen] = useState(false);
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, loading: authLoading } = useAuth();
+  const [businessName, setBusinessName] = useState(TENANT.name);
+  const [businessArea, setBusinessArea] = useState(TENANT.area);
+
+  useEffect(() => {
+    if (authLoading) return;
+    if (!user) {
+      setBusinessName(TENANT.name);
+      setBusinessArea(TENANT.area);
+      return;
+    }
+    let active = true;
+    getMyTenant()
+      .then((tenant) => {
+        if (!active) return;
+        setBusinessName(tenant.name);
+        setBusinessArea(tenant.area);
+      })
+      .catch(() => {
+        // Sidebar chrome — fail quietly rather than toast on every page nav,
+        // the page content itself already surfaces a real error if the
+        // tenant fetch is broken.
+      });
+    return () => {
+      active = false;
+    };
+  }, [authLoading, user]);
 
   async function logOut() {
     await supabase.auth.signOut();
@@ -76,8 +103,8 @@ export function DashboardShell() {
         </Link>
         <div className="mt-6 rounded-sm border border-white/10 bg-white/[0.04] px-3 py-2.5">
           <p className="label-caps text-primary">Business</p>
-          <p className="mt-1 text-sm font-semibold text-ink-foreground">{TENANT.name}</p>
-          <p className="text-xs text-ink-muted">{TENANT.area}</p>
+          <p className="mt-1 text-sm font-semibold text-ink-foreground">{businessName}</p>
+          <p className="text-xs text-ink-muted">{businessArea}</p>
         </div>
         <div className="mt-6">
           <NavList />
