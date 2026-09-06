@@ -7,7 +7,13 @@ import { PageHeader, Panel } from "@/components/app/DashboardShell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useAuth } from "@/lib/use-auth";
-import { listMyPriceSheet, saveMyPriceSheet, extractPriceSheetFromImage } from "@/lib/price-sheet-server";
+import {
+  listMyPriceSheet,
+  saveMyPriceSheet,
+  extractPriceSheetFromImage,
+  extractPriceSheetFromUrl,
+  type ExtractedPriceSheetItem,
+} from "@/lib/price-sheet-server";
 import { formatPrice, PRICE_SHEET, type PriceSheetRow, type PricingType } from "@/lib/mock-data";
 
 export const Route = createFileRoute("/dashboard/price-sheet")({
@@ -53,7 +59,27 @@ function PriceSheetPage() {
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [extracting, setExtracting] = useState(false);
+  const [importingUrl, setImportingUrl] = useState(false);
+  const [urlValue, setUrlValue] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
+
+  function applyExtractedItems(extracted: ExtractedPriceSheetItem[], source: string) {
+    if (extracted.length === 0) {
+      toast.error(`Couldn't find any prices ${source} — try a clearer source.`);
+      return;
+    }
+    setRows((r) => [
+      ...r,
+      ...extracted.map((item) => ({
+        ...item,
+        id: `extracted-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      })),
+    ]);
+    setDirty(true);
+    toast.success(
+      `Added ${extracted.length} service${extracted.length === 1 ? "" : "s"} ${source} — review below, then Save changes.`,
+    );
+  }
 
   useEffect(() => {
     if (authLoading) return;
@@ -137,25 +163,30 @@ function PriceSheetPage() {
     try {
       const { base64, mediaType } = await fileToBase64(file);
       const extracted = await extractPriceSheetFromImage({ data: { imageBase64: base64, imageMediaType: mediaType } });
-      if (extracted.length === 0) {
-        toast.error("Couldn't find any prices in that photo — try a clearer image.");
-        return;
-      }
-      setRows((r) => [
-        ...r,
-        ...extracted.map((item) => ({
-          ...item,
-          id: `extracted-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-        })),
-      ]);
-      setDirty(true);
-      toast.success(
-        `Added ${extracted.length} service${extracted.length === 1 ? "" : "s"} from the photo — review below, then Save changes.`,
-      );
+      applyExtractedItems(extracted, "from the photo");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Couldn't read that photo.");
     } finally {
       setExtracting(false);
+    }
+  }
+
+  async function handleImportFromUrl() {
+    const url = urlValue.trim();
+    if (!url) return;
+    if (!user) {
+      toast.info("Sign up to import your own price sheet.");
+      return;
+    }
+    setImportingUrl(true);
+    try {
+      const extracted = await extractPriceSheetFromUrl({ data: { url } });
+      applyExtractedItems(extracted, "from that page");
+      setUrlValue("");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Couldn't import from that page.");
+    } finally {
+      setImportingUrl(false);
     }
   }
 
@@ -186,6 +217,27 @@ function PriceSheetPage() {
           </>
         }
       />
+
+      <Panel title="Import from a web page">
+        <div className="flex flex-wrap items-center gap-2">
+          <Input
+            type="url"
+            placeholder="https://yourbusiness.com/pricing"
+            value={urlValue}
+            onChange={(e) => setUrlValue(e.target.value)}
+            className="max-w-md"
+            disabled={importingUrl}
+          />
+          <Button variant="outline" onClick={() => void handleImportFromUrl()} disabled={importingUrl || !urlValue.trim()}>
+            {importingUrl ? "Reading page…" : "Import"}
+          </Button>
+        </div>
+        <p className="mt-2 text-xs text-muted-foreground">
+          Works well for Wix, Squarespace, WordPress, and plain HTML sites. Won't find anything on a page
+          that needs JavaScript to show its content (some custom-built sites) — use the photo upload above
+          for those instead.
+        </p>
+      </Panel>
 
       <Panel>
         <ul className="-m-4 divide-y divide-border">

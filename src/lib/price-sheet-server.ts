@@ -153,31 +153,147 @@ If the image doesn't contain any readable prices or services, respond with an em
     const raw: string | undefined = response.content?.[0]?.text?.trim();
     if (!raw) throw new Error("No response from the AI — try again.");
 
-    const cleaned = raw.replace(/```json\n?|\n?```/g, "").trim();
-    let parsed: unknown;
+    return parseExtractedItems(raw);
+  });
+
+function parseExtractedItems(raw: string): ExtractedPriceSheetItem[] {
+  const cleaned = raw.replace(/```json\n?|\n?```/g, "").trim();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch {
+    throw new Error("Couldn't read a price list from that — try a different page or a clearer photo.");
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error("Couldn't find any price sheet rows there.");
+  }
+  return parsed.map((item: Record<string, unknown>) => {
+    const pricingType = VALID_PRICING_TYPES.includes(item["pricingType"] as PricingType)
+      ? (item["pricingType"] as PricingType)
+      : "flat";
+    const priceMin = Number(item["priceMin"]) || 0;
+    return {
+      task: String(item["task"] ?? "Untitled service"),
+      category: String(item["category"] ?? "General"),
+      keywords: Array.isArray(item["keywords"]) ? item["keywords"].map(String) : [],
+      pricingType,
+      priceMin,
+      priceMax: Number(item["priceMax"] ?? priceMin) || priceMin,
+      hours: Number(item["hours"]) || 1,
+    };
+  });
+}
+
+const PRICE_LIST_EXTRACTION_PROMPT = `The text below was extracted from a business's web page. It may contain a price list or menu of services, mixed in with navigation, headers, and other page text — ignore everything that isn't a priced service.
+
+For each distinct service with a price, determine:
+- "task": a short, clear name for the service.
+- "category": a short grouping (e.g. "Plumbing", "Electrical", "General") — group similar tasks together.
+- "keywords": 2-4 lowercase words a customer might use when describing this problem.
+- "pricingType": "flat" for a single price, "hourly" for a rate per hour, or "range" for a price range.
+- "priceMin" and "priceMax": both equal to the price for "flat"/"hourly"; the low/high ends for "range".
+- "hours": your best numeric estimate of typical hours for the job (midpoint if a duration range is given, 1 if none).
+
+Respond with ONLY a JSON array, no markdown fences, no commentary:
+[{"task":"...","category":"...","keywords":["...","..."],"pricingType":"flat","priceMin":100,"priceMax":100,"hours":1}, ...]
+
+If no priced services are found in the text, respond with an empty array: []
+
+PAGE TEXT:
+"""`;
+
+// Blocks the obvious SSRF targets (internal/loopback/link-local addresses) —
+// this is a server making a request to a URL an authenticated user chose,
+// so it shouldn't be usable to probe internal network addresses.
+function isSafePublicUrl(rawUrl: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+
+  const host = parsed.hostname.toLowerCase();
+  if (host === "localhost" || host.endsWith(".localhost") || host === "0.0.0.0") return false;
+  if (host === "169.254.169.254") return false; // cloud metadata endpoint
+
+  const ipMatch = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ipMatch) {
+    const [a, b] = [Number(ipMatch[1]), Number(ipMatch[2])];
+    if (a === 127) return false; // loopback
+    if (a === 10) return false; // private
+    if (a === 192 && b === 168) return false; // private
+    if (a === 172 && b >= 16 && b <= 31) return false; // private
+    if (a === 169 && b === 254) return false; // link-local
+  }
+  return true;
+}
+
+// Strips scripts/styles/tags and decodes the common entities — enough to
+// turn HTML into readable text for Claude without adding an HTML-parsing
+// dependency this codebase doesn't otherwise use.
+function htmlToText(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+const MAX_PAGE_TEXT_LENGTH = 15_000;
+
+// Lightweight, server-side fetch + text extraction — works well for most
+// small-business sites (Wix, Squarespace, WordPress, plain HTML), which
+// serve real content directly in the HTML. Won't find anything on a
+// client-rendered single-page app (React/Vue/etc. with no server-rendered
+// content) since the page's real content only exists after JavaScript runs,
+// which this never does — that's a real limitation, not a bug, and photo
+// upload (extractPriceSheetFromImage, above) is the right tool for those.
+export const extractPriceSheetFromUrl = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .validator((input: { url: string }) => input)
+  .handler(async ({ data }): Promise<ExtractedPriceSheetItem[]> => {
+    if (!isSafePublicUrl(data.url)) {
+      throw new Error("That doesn't look like a public website address.");
+    }
+
+    let html: string;
     try {
-      parsed = JSON.parse(cleaned);
-    } catch {
-      throw new Error("Couldn't read that photo as a price sheet — try a clearer image.");
+      const response = await fetch(data.url, {
+        signal: AbortSignal.timeout(10_000),
+        headers: { "user-agent": "Mozilla/5.0 (compatible; FrontDeskBot/1.0)" },
+      });
+      if (!response.ok) {
+        throw new Error(`That page returned an error (${response.status}).`);
+      }
+      html = await response.text();
+    } catch (err) {
+      throw new Error(err instanceof Error && err.message.includes("error (") ? err.message : "Couldn't reach that page.");
     }
 
-    if (!Array.isArray(parsed)) {
-      throw new Error("Couldn't find any price sheet rows in that photo.");
+    const text = htmlToText(html).slice(0, MAX_PAGE_TEXT_LENGTH);
+    if (!text) {
+      throw new Error("That page didn't have any readable text — it may need JavaScript to show its content.");
     }
 
-    return parsed.map((item: Record<string, unknown>) => {
-      const pricingType = VALID_PRICING_TYPES.includes(item["pricingType"] as PricingType)
-        ? (item["pricingType"] as PricingType)
-        : "flat";
-      const priceMin = Number(item["priceMin"]) || 0;
-      return {
-        task: String(item["task"] ?? "Untitled service"),
-        category: String(item["category"] ?? "General"),
-        keywords: Array.isArray(item["keywords"]) ? item["keywords"].map(String) : [],
-        pricingType,
-        priceMin,
-        priceMax: Number(item["priceMax"] ?? priceMin) || priceMin,
-        hours: Number(item["hours"]) || 1,
-      };
+    const response = await callClaude({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 4096,
+      temperature: 0.2,
+      system: "You extract structured price lists from web page text. Respond with ONLY valid JSON, no markdown fences, no commentary.",
+      messages: [{ role: "user", content: `${PRICE_LIST_EXTRACTION_PROMPT}${text}"""` }],
     });
+
+    const raw: string | undefined = response.content?.[0]?.text?.trim();
+    if (!raw) throw new Error("No response from the AI — try again.");
+
+    return parseExtractedItems(raw);
   });
