@@ -245,6 +245,9 @@ export type Tenant = {
   paymentTerms: string;
   warrantyTerms: string;
   taxRate: number;
+  laborRate: number;
+  serviceCallFee: number;
+  whatsappNumber: string;
 };
 
 export const TENANT: Tenant = {
@@ -262,6 +265,9 @@ export const TENANT: Tenant = {
   paymentTerms: "50% deposit at start, 50% due on completion.",
   warrantyTerms: "30-day warranty on all workmanship.",
   taxRate: 8.25,
+  laborRate: 125,
+  serviceCallFee: 89,
+  whatsappNumber: "",
 };
 
 export const embedSnippet = (slug: string) =>

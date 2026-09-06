@@ -16,6 +16,9 @@ type TenantRow = {
   calendar_link: string;
   payment_terms: string;
   warranty_terms: string;
+  labor_rate: number;
+  service_call_fee: number;
+  whatsapp_number: string | null;
 };
 
 function toTenant(row: TenantRow): Tenant {
@@ -33,8 +36,26 @@ function toTenant(row: TenantRow): Tenant {
     paymentTerms: row.payment_terms,
     warrantyTerms: row.warranty_terms,
     taxRate: row.tax_rate,
+    laborRate: row.labor_rate,
+    serviceCallFee: row.service_call_fee,
+    whatsappNumber: row.whatsapp_number ?? "",
     brandColor: "#B4531F",
   };
+}
+
+// The WhatsApp webhook (api.whatsapp.webhook.tsx) looks a tenant up by
+// `.eq("whatsapp_number", toPhone)` where toPhone is Twilio's "From"/"To"
+// with the "whatsapp:" prefix stripped — a bare E.164 number like
+// "+15551234567". Normalize whatever the business types into that exact
+// shape so the lookup actually matches.
+function normalizeWhatsappNumber(input: string): string {
+  const trimmed = input.trim().replace(/^whatsapp:/i, "");
+  const digits = trimmed.replace(/\D/g, "");
+  if (!digits) return "";
+  // A bare 10-digit number is a US/Canada number typed without the country
+  // code — everything else (11+ digits, or already had a "+") is assumed to
+  // already include one.
+  return digits.length === 10 ? `+1${digits}` : `+${digits}`;
 }
 
 // Every signed-in user gets a tenant row automatically (see the
@@ -45,7 +66,9 @@ export const getMyTenant = createServerFn({ method: "GET" })
   .handler(async ({ context }): Promise<Tenant> => {
     const { data, error } = await context.supabase
       .from("tenants")
-      .select("name, slug, trade, phone, email, address, area, hours, currency, tax_rate, calendar_link, payment_terms, warranty_terms")
+      .select(
+        "name, slug, trade, phone, email, address, area, hours, currency, tax_rate, calendar_link, payment_terms, warranty_terms, labor_rate, service_call_fee, whatsapp_number",
+      )
       .eq("user_id", context.userId)
       .single();
     if (error) throw new Error(`Could not load business settings: ${error.message}`);
@@ -68,9 +91,13 @@ export const updateMyTenant = createServerFn({ method: "POST" })
       calendarLink: string;
       paymentTerms: string;
       warrantyTerms: string;
+      laborRate: number;
+      serviceCallFee: number;
+      whatsappNumber: string;
     }) => input,
   )
   .handler(async ({ context, data }) => {
+    const normalizedWhatsapp = normalizeWhatsappNumber(data.whatsappNumber);
     const { error } = await context.supabase
       .from("tenants")
       .update({
@@ -86,6 +113,9 @@ export const updateMyTenant = createServerFn({ method: "POST" })
         calendar_link: data.calendarLink,
         payment_terms: data.paymentTerms,
         warranty_terms: data.warrantyTerms,
+        labor_rate: data.laborRate,
+        service_call_fee: data.serviceCallFee,
+        whatsapp_number: normalizedWhatsapp || null,
       })
       .eq("user_id", context.userId);
     if (error) throw new Error(`Could not save business settings: ${error.message}`);

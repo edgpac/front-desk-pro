@@ -64,11 +64,12 @@ function BusinessSettings() {
 
   const missing = REQUIRED_FIELDS.filter((key) => !String(form[key] ?? "").trim());
   const taxIsValid = form.taxRate !== null && form.taxRate !== undefined && !Number.isNaN(form.taxRate);
-  const canSave = missing.length === 0 && taxIsValid && !saving;
+  const ratesAreValid = !Number.isNaN(form.laborRate) && !Number.isNaN(form.serviceCallFee);
+  const canSave = missing.length === 0 && taxIsValid && ratesAreValid && !saving;
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
-    if (missing.length > 0 || !taxIsValid) return;
+    if (missing.length > 0 || !taxIsValid || !ratesAreValid) return;
     if (!user) {
       toast.success("Saved (sample data — sign up to save your real business info)");
       return;
@@ -89,6 +90,9 @@ function BusinessSettings() {
           calendarLink: form.calendarLink,
           paymentTerms: form.paymentTerms,
           warrantyTerms: form.warrantyTerms,
+          laborRate: form.laborRate,
+          serviceCallFee: form.serviceCallFee,
+          whatsappNumber: form.whatsappNumber,
         },
       });
       toast.success("Saved");
@@ -213,15 +217,55 @@ function BusinessSettings() {
             />
           </Field>
 
+          <Field label="Labor rate ($/hr)">
+            <Input
+              type="number"
+              min={0}
+              step="0.01"
+              value={Number.isNaN(form.laborRate) ? "" : form.laborRate}
+              onChange={(e) => set("laborRate", e.target.valueAsNumber)}
+            />
+            <span className="mt-1.5 block text-xs text-muted-foreground">
+              What the AI quotes labor at when it prices a job.
+            </span>
+          </Field>
+          <Field label="Service call fee ($)">
+            <Input
+              type="number"
+              min={0}
+              step="0.01"
+              value={Number.isNaN(form.serviceCallFee) ? "" : form.serviceCallFee}
+              onChange={(e) => set("serviceCallFee", e.target.valueAsNumber)}
+            />
+            <span className="mt-1.5 block text-xs text-muted-foreground">
+              Added to every quote as the base call-out charge.
+            </span>
+          </Field>
+
+          <Field label="WhatsApp number" className="sm:col-span-2">
+            <Input
+              type="tel"
+              value={form.whatsappNumber}
+              onChange={(e) => set("whatsappNumber", e.target.value)}
+              placeholder="(512) 555-0110"
+            />
+            <span className="mt-1.5 block text-xs text-muted-foreground">
+              The number customers text for a quote. Requires WhatsApp set up on your account —
+              leave blank until then.
+            </span>
+          </Field>
+
           <div className="sm:col-span-2">
             <Button type="submit" disabled={!canSave}>
               {saving ? "Saving…" : "Save"}
             </Button>
-            {missing.length > 0 || !taxIsValid ? (
+            {missing.length > 0 || !taxIsValid || !ratesAreValid ? (
               <p className="mt-2 text-xs text-muted-foreground">
                 {missing.length > 0
                   ? `${missing.length} field${missing.length === 1 ? "" : "s"} still need${missing.length === 1 ? "s" : ""} to be filled in.`
-                  : "Enter a valid tax rate (0 is fine) to continue."}
+                  : !taxIsValid
+                    ? "Enter a valid tax rate (0 is fine) to continue."
+                    : "Enter a valid labor rate and service call fee to continue."}
               </p>
             ) : null}
           </div>
