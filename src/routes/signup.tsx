@@ -48,7 +48,7 @@ function Signup() {
       if (data.session) {
         // Email confirmation is off — the user is signed in immediately.
         toast.success("Account created.");
-        navigate({ to: "/dashboard" });
+        navigate({ to: "/get-started" });
       } else {
         // Email confirmation is on — a confirmation email was sent.
         toast.success("Check your email to confirm, then log in.");

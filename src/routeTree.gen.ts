@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as DashboardRouteImport } from './routes/dashboard'
 import { Route as DemoRouteImport } from './routes/demo'
+import { Route as GetStartedRouteImport } from './routes/get-started'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as OnboardingRouteImport } from './routes/onboarding'
 import { Route as PricingRouteImport } from './routes/pricing'
@@ -46,6 +47,11 @@ const DashboardRoute = DashboardRouteImport.update({
 const DemoRoute = DemoRouteImport.update({
   id: '/demo',
   path: '/demo',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const GetStartedRoute = GetStartedRouteImport.update({
+  id: '/get-started',
+  path: '/get-started',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LoginRoute = LoginRouteImport.update({
@@ -156,6 +162,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/dashboard': typeof DashboardRouteWithChildren
   '/demo': typeof DemoRoute
+  '/get-started': typeof GetStartedRoute
   '/login': typeof LoginRoute
   '/onboarding': typeof OnboardingRouteWithChildren
   '/pricing': typeof PricingRoute
@@ -180,6 +187,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/demo': typeof DemoRoute
+  '/get-started': typeof GetStartedRoute
   '/login': typeof LoginRoute
   '/pricing': typeof PricingRoute
   '/signup': typeof SignupRoute
@@ -203,6 +211,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/dashboard': typeof DashboardRouteWithChildren
   '/demo': typeof DemoRoute
+  '/get-started': typeof GetStartedRoute
   '/login': typeof LoginRoute
   '/onboarding': typeof OnboardingRouteWithChildren
   '/pricing': typeof PricingRoute
@@ -230,6 +239,7 @@ export interface FileRouteTypes {
     | '/'
     | '/dashboard'
     | '/demo'
+    | '/get-started'
     | '/login'
     | '/onboarding'
     | '/pricing'
@@ -254,6 +264,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/demo'
+    | '/get-started'
     | '/login'
     | '/pricing'
     | '/signup'
@@ -276,6 +287,7 @@ export interface FileRouteTypes {
     | '/'
     | '/dashboard'
     | '/demo'
+    | '/get-started'
     | '/login'
     | '/onboarding'
     | '/pricing'
@@ -302,6 +314,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   DashboardRoute: typeof DashboardRouteWithChildren
   DemoRoute: typeof DemoRoute
+  GetStartedRoute: typeof GetStartedRoute
   LoginRoute: typeof LoginRoute
   OnboardingRoute: typeof OnboardingRouteWithChildren
   PricingRoute: typeof PricingRoute
@@ -331,6 +344,13 @@ declare module '@tanstack/react-router' {
       path: '/demo'
       fullPath: '/demo'
       preLoaderRoute: typeof DemoRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/get-started': {
+      id: '/get-started'
+      path: '/get-started'
+      fullPath: '/get-started'
+      preLoaderRoute: typeof GetStartedRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/login': {
@@ -547,6 +567,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   DashboardRoute: DashboardRouteWithChildren,
   DemoRoute: DemoRoute,
+  GetStartedRoute: GetStartedRoute,
   LoginRoute: LoginRoute,
   OnboardingRoute: OnboardingRouteWithChildren,
   PricingRoute: PricingRoute,
