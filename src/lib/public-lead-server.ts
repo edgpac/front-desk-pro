@@ -110,3 +110,123 @@ export const createLead = createServerFn({ method: "POST" })
 
     return { id: lead.id as string };
   });
+
+type CreateClarifyingLeadInput = {
+  tenantSlug: string;
+  customerName: string;
+  phone: string;
+  channel: "Widget" | "Quote link" | "Shared link" | "WhatsApp";
+  photoUrl: string;
+  problem: string;
+};
+
+// The other half of the WhatsApp clarification fix: a lead now gets created
+// the moment the AI needs to ask a follow-up question, not just once a full
+// quote exists. Deliberately omits diagnosis/confidence/ai_line_items_snapshot
+// — leaving confidence NULL is what marks this lead as still-in-progress for
+// api.whatsapp.webhook.tsx's lookup, since createLead (above) always sets a
+// concrete confidence for a finished quote and nothing else in this codebase
+// ever writes a leads row at all. No new column or status value needed.
+export const createClarifyingLead = createServerFn({ method: "POST" })
+  .validator((input: CreateClarifyingLeadInput) => input)
+  .handler(async ({ data }) => {
+    const admin = getAdminClient();
+
+    const { data: tenant, error: tenantError } = await admin
+      .from("tenants")
+      .select("id")
+      .eq("slug", data.tenantSlug)
+      .single();
+    if (tenantError || !tenant) {
+      throw new Error("Business not found.");
+    }
+
+    const { data: lead, error: leadError } = await admin
+      .from("leads")
+      .insert({
+        tenant_id: tenant.id,
+        customer_name: data.customerName,
+        phone: data.phone,
+        channel: data.channel,
+        photo_url: data.photoUrl,
+        problem: data.problem,
+      })
+      .select("id")
+      .single();
+    if (leadError || !lead) {
+      throw new Error(`Could not save lead: ${leadError?.message ?? "unknown error"}`);
+    }
+
+    return { id: lead.id as string };
+  });
+
+type FinalizeLeadInput = {
+  leadId: string;
+  tenant: { name: string; email: string; currency: string };
+  customerName: string;
+  phone: string;
+  channel: "Widget" | "Quote link" | "Shared link" | "WhatsApp";
+  problem: string;
+  diagnosis: string;
+  confidence: "High" | "Medium" | "Low";
+  isEmergency?: boolean;
+  lineItems: Array<{ description: string; qty: number; unit: string; rate: number }>;
+};
+
+// Completes a lead that createClarifyingLead started earlier in the same
+// conversation — updates the existing row rather than inserting a second
+// one, so a WhatsApp thread that needed clarification ends up as exactly one
+// lead, same as a thread that didn't.
+export const finalizeLeadWithQuote = createServerFn({ method: "POST" })
+  .validator((input: FinalizeLeadInput) => input)
+  .handler(async ({ data }) => {
+    const admin = getAdminClient();
+
+    const { error: updateError } = await admin
+      .from("leads")
+      .update({
+        diagnosis: data.diagnosis,
+        confidence: data.confidence,
+        ai_line_items_snapshot: data.lineItems,
+      })
+      .eq("id", data.leadId);
+    if (updateError) {
+      throw new Error(`Could not update lead: ${updateError.message}`);
+    }
+
+    if (data.lineItems.length > 0) {
+      const { error: itemsError } = await admin.from("lead_line_items").insert(
+        data.lineItems.map((item, index) => ({
+          lead_id: data.leadId,
+          description: item.description,
+          qty: item.qty,
+          unit: item.unit,
+          rate: item.rate,
+          sort_order: index,
+        })),
+      );
+      if (itemsError) {
+        throw new Error(`Could not save line items: ${itemsError.message}`);
+      }
+    }
+
+    const total = data.lineItems.reduce((sum, item) => sum + item.qty * item.rate, 0);
+
+    void sendLeadNotificationEmail({
+      tenant: data.tenant,
+      lead: {
+        customer: data.customerName,
+        phone: data.phone,
+        address: "",
+        channel: data.channel,
+        problem: data.problem,
+        diagnosis: data.diagnosis,
+        confidence: data.confidence,
+        ...(data.isEmergency !== undefined ? { isEmergency: data.isEmergency } : {}),
+      },
+      lineItems: data.lineItems.map((item, index) => ({ id: String(index), ...item })),
+      total,
+    });
+
+    return { id: data.leadId, total };
+  });
