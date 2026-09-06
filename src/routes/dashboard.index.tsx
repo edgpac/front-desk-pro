@@ -1,29 +1,76 @@
+import { useEffect, useState } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { ArrowRight, Code2, Inbox } from "lucide-react";
+import { toast } from "sonner";
 
 import { PageHeader, Panel } from "@/components/app/DashboardShell";
 import { StatusPill } from "@/components/app/StatusPill";
 import { Button } from "@/components/ui/button";
 import { copyText } from "@/lib/clipboard";
-import { LEADS, TENANT, embedSnippet, lineItemsTotal, money, quoteLink } from "@/lib/mock-data";
+import { useAuth } from "@/lib/use-auth";
+import { getMyTenant } from "@/lib/tenant-server";
+import { listMyLeads } from "@/lib/leads-server";
+import { LEADS, TENANT, type Lead, type Tenant, embedSnippet, lineItemsTotal, money, quoteLink } from "@/lib/mock-data";
 
 export const Route = createFileRoute("/dashboard/")({
   component: DashboardHome,
 });
 
 function DashboardHome() {
-  const today = LEADS.filter((l) => l.requested.startsWith("Today"));
-  const newCount = LEADS.filter((l) => l.status === "new").length;
-  const quotedCount = LEADS.filter((l) => l.status === "quoted").length;
-  const bookedCount = LEADS.filter((l) => l.status === "booked").length;
-  const recent = LEADS.slice(0, 4);
+  const { user, loading: authLoading } = useAuth();
+  const [tenant, setTenant] = useState<Tenant>(TENANT);
+  const [leads, setLeads] = useState<Lead[]>(LEADS);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (authLoading) return;
+    if (!user) {
+      setTenant(TENANT);
+      setLeads(LEADS);
+      setLoading(false);
+      return;
+    }
+    let active = true;
+    Promise.all([getMyTenant(), listMyLeads()])
+      .then(([realTenant, realLeads]) => {
+        if (!active) return;
+        setTenant(realTenant);
+        setLeads(realLeads);
+      })
+      .catch((err) => {
+        toast.error(err instanceof Error ? err.message : "Could not load your dashboard.");
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [authLoading, user]);
+
+  const newCount = leads.filter((l) => l.status === "new").length;
+  const quotedCount = leads.filter((l) => l.status === "quoted").length;
+  const bookedCount = leads.filter((l) => l.status === "booked").length;
+  const recent = leads.slice(0, 4);
+
+  if (loading) {
+    return (
+      <div className="space-y-8 p-6 lg:p-10">
+        <PageHeader eyebrow="Today" title="Loading…" description="" />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-8 p-6 lg:p-10">
       <PageHeader
         eyebrow="Today"
-        title={`Welcome back, ${TENANT.name}`}
-        description={`${today.length} request${today.length === 1 ? "" : "s"} came in today across your widget and shared link.`}
+        title={`Welcome back, ${tenant.name}`}
+        description={
+          user
+            ? `${leads.length} lead${leads.length === 1 ? "" : "s"} total, ${newCount} still new.`
+            : `${LEADS.filter((l) => l.requested.startsWith("Today")).length} requests came in today across your widget and shared link.`
+        }
         actions={
           <Button asChild>
             <Link to="/dashboard/leads">
@@ -59,26 +106,30 @@ function DashboardHome() {
           </Link>
         }
       >
-        <ul className="divide-y divide-border">
-          {recent.map((lead) => (
-            <li key={lead.id}>
-              <Link
-                to="/dashboard/leads/$id"
-                params={{ id: lead.id }}
-                className="flex items-center justify-between gap-4 py-3 hover:bg-muted/40"
-              >
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-semibold text-foreground">{lead.customer}</p>
-                  <p className="truncate text-xs text-muted-foreground">{lead.problem}</p>
-                </div>
-                <div className="flex shrink-0 items-center gap-3">
-                  <span className="num text-sm text-foreground">{money(lineItemsTotal(lead.lineItems))}</span>
-                  <StatusPill status={lead.status} />
-                </div>
-              </Link>
-            </li>
-          ))}
-        </ul>
+        {recent.length === 0 ? (
+          <p className="py-6 text-sm text-muted-foreground">No leads yet — they'll show up here as they come in.</p>
+        ) : (
+          <ul className="divide-y divide-border">
+            {recent.map((lead) => (
+              <li key={lead.id}>
+                <Link
+                  to="/dashboard/leads/$id"
+                  params={{ id: lead.id }}
+                  className="flex items-center justify-between gap-4 py-3 hover:bg-muted/40"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold text-foreground">{lead.customer}</p>
+                    <p className="truncate text-xs text-muted-foreground">{lead.problem}</p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-3">
+                    <span className="num text-sm text-foreground">{money(lineItemsTotal(lead.lineItems))}</span>
+                    <StatusPill status={lead.status} />
+                  </div>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )}
       </Panel>
 
       <Panel title="Your widget">
@@ -89,11 +140,11 @@ function DashboardHome() {
           <div className="flex flex-wrap gap-2">
             <Button
               variant="outline"
-              onClick={() => copyText(embedSnippet(TENANT.slug), "Embed code copied")}
+              onClick={() => copyText(embedSnippet(tenant.slug), "Embed code copied")}
             >
               <Code2 className="mr-2 h-4 w-4" /> Copy embed code
             </Button>
-            <Button variant="outline" onClick={() => copyText(quoteLink(TENANT.slug), "Link copied")}>
+            <Button variant="outline" onClick={() => copyText(quoteLink(tenant.slug), "Link copied")}>
               Copy shareable link
             </Button>
           </div>
