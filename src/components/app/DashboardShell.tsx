@@ -86,7 +86,7 @@ export function DashboardShell() {
           <div className="rounded-sm border border-white/10 p-3">
             <p className="text-xs text-ink-muted">No trial — a plan is required</p>
             <Button asChild size="sm" className="mt-2 w-full">
-              <Link to="/dashboard/settings/billing">Pick a plan</Link>
+              <Link to="/pricing">Pick a plan</Link>
             </Button>
           </div>
           {user ? (

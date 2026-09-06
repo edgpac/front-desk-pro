@@ -4,6 +4,7 @@ import { Check, Minus } from "lucide-react";
 import { SiteHeader } from "@/components/site/SiteHeader";
 import { SiteFooter } from "@/components/site/SiteFooter";
 import { Button } from "@/components/ui/button";
+import { useAuth } from "@/lib/use-auth";
 
 export const Route = createFileRoute("/pricing")({
   head: () => ({
@@ -71,6 +72,8 @@ function Cell({ v }: { v: boolean | string }) {
 }
 
 function Pricing() {
+  const { user } = useAuth();
+
   return (
     <div className="min-h-screen bg-background">
       <SiteHeader />
@@ -114,7 +117,11 @@ function Pricing() {
               </ul>
               <div className="mt-7 pt-1">
                 <Button asChild className="w-full" variant={t.featured ? "default" : "outline"}>
-                  <Link to="/signup">{t.cta}</Link>
+                  {user ? (
+                    <Link to="/dashboard/settings/billing">Choose {t.name}</Link>
+                  ) : (
+                    <Link to="/signup">{t.cta}</Link>
+                  )}
                 </Button>
               </div>
             </div>
