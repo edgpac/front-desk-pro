@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { Copy, ExternalLink } from "lucide-react";
+import { Copy, Download, ExternalLink } from "lucide-react";
 import { toast } from "sonner";
+import QRCode from "qrcode";
 
 import { PageHeader, Panel } from "@/components/app/DashboardShell";
 import { Button } from "@/components/ui/button";
@@ -18,6 +19,7 @@ function WidgetPage() {
   const { user, loading: authLoading } = useAuth();
   const [tenant, setTenant] = useState<Tenant>(TENANT);
   const [loading, setLoading] = useState(true);
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
 
   useEffect(() => {
     if (authLoading) return;
@@ -41,6 +43,20 @@ function WidgetPage() {
       active = false;
     };
   }, [authLoading, user]);
+
+  useEffect(() => {
+    let active = true;
+    QRCode.toDataURL(quoteLink(tenant.slug), { width: 320, margin: 1 })
+      .then((dataUrl) => {
+        if (active) setQrDataUrl(dataUrl);
+      })
+      .catch(() => {
+        if (active) setQrDataUrl(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [tenant.slug]);
 
   if (loading) {
     return (
@@ -95,6 +111,33 @@ function WidgetPage() {
           >
             Open <ExternalLink className="h-3 w-3" />
           </a>
+        </div>
+      </Panel>
+
+      <Panel
+        title="QR code"
+        aside={
+          qrDataUrl ? (
+            <Button size="sm" variant="outline" asChild>
+              <a href={qrDataUrl} download={`frontdesk-quote-qr-${tenant.slug}.png`}>
+                <Download className="mr-2 h-3.5 w-3.5" /> Download PNG
+              </a>
+            </Button>
+          ) : null
+        }
+      >
+        <p className="text-sm text-muted-foreground">
+          Print it on a van decal, a job-site sign, or a business card — scanning it opens your shareable
+          quote link directly.
+        </p>
+        <div className="mt-3 flex justify-center rounded-sm border border-border-strong bg-muted p-4">
+          {qrDataUrl ? (
+            <img src={qrDataUrl} alt="QR code linking to your quote page" width={200} height={200} />
+          ) : (
+            <div className="flex h-[200px] w-[200px] items-center justify-center text-xs text-muted-foreground">
+              Generating…
+            </div>
+          )}
         </div>
       </Panel>
 
