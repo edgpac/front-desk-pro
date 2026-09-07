@@ -3,6 +3,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { toast } from "sonner";
 
 import { PageHeader, Panel } from "@/components/app/DashboardShell";
+import { ConnectWhatsAppMeta } from "@/components/app/ConnectWhatsAppMeta";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -278,6 +279,13 @@ function BusinessSettings() {
               </span>
             )}
           </Field>
+
+          <div className="sm:col-span-2">
+            <span className="mb-2 block text-xs text-muted-foreground">
+              Or connect automatically via Meta — no waiting on us to set it up manually.
+            </span>
+            <ConnectWhatsAppMeta />
+          </div>
 
           <div className="sm:col-span-2">
             <Button type="submit" disabled={!canSave}>
