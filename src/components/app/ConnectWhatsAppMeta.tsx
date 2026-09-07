@@ -119,7 +119,7 @@ export function ConnectWhatsAppMeta() {
         config_id: configId,
         response_type: "code",
         override_default_response_type: true,
-        extras: { sessionInfoVersion: "3" },
+        extras: { setup: {} },
       },
     );
   }
