@@ -36,10 +36,33 @@ async function exchangeCodeForToken(code: string): Promise<string> {
 
   const response = await fetch(url.toString());
   if (!response.ok) {
-    // Never log response.text() here — a Meta OAuth error body can echo
-    // back request parameters, and this endpoint is called with the app
-    // secret as a query param.
-    throw new Error(`Meta token exchange failed (${response.status}).`);
+    // Diagnostic only: surface Meta's safe, non-secret error fields (never
+    // the raw body/URL — this endpoint is called with the app secret and
+    // authorization code as query params, so the full request/response
+    // must never be logged). Meta's error shape is
+    // {error: {message, type, code, fbtrace_id}} — pull out exactly those
+    // four fields and nothing else.
+    let detail = `HTTP ${response.status}`;
+    try {
+      const errorJson = (await response.json()) as {
+        error?: { message?: string; type?: string; code?: number; fbtrace_id?: string };
+      };
+      const e = errorJson.error;
+      if (e) {
+        detail = [
+          e.message && `message="${e.message}"`,
+          e.type && `type=${e.type}`,
+          e.code !== undefined && `code=${e.code}`,
+          e.fbtrace_id && `fbtrace_id=${e.fbtrace_id}`,
+        ]
+          .filter(Boolean)
+          .join(", ") || detail;
+      }
+    } catch {
+      // Body wasn't JSON (or had no error field) — fall back to just the
+      // HTTP status, still no raw body logged.
+    }
+    throw new Error(`Meta token exchange failed (${response.status}): ${detail}`);
   }
   const json = (await response.json()) as { access_token?: string };
   if (!json.access_token) {
