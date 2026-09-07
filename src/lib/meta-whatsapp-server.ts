@@ -23,6 +23,14 @@ function graphUrl(apiVersion: string, path: string) {
   return `https://graph.facebook.com/${apiVersion}${path}`;
 }
 
+// TEMPORARY, diagnostic redirect_uri test — must exactly match the Valid
+// OAuth Redirect URIs entry registered on the Meta app (Facebook Login for
+// Business > Settings), byte-for-byte, since the app has Strict Mode for
+// redirect URIs enabled. Not part of Meta's documented Tech Provider
+// 3-parameter exchange shape; being tested because the app's own Strict
+// Mode setting may require it regardless of that doc.
+const META_REDIRECT_URI = "https://front-desk-pro-ten.vercel.app/dashboard/settings/business";
+
 type MetaSignupSuccess = { status: "connected"; displayPhoneNumber: string };
 type MetaSignupError = { status: "error"; message: string };
 export type MetaSignupResult = MetaSignupSuccess | MetaSignupError;
@@ -66,6 +74,7 @@ async function exchangeCodeForToken(code: string): Promise<string> {
   url.searchParams.set("client_id", appId);
   url.searchParams.set("client_secret", appSecret);
   url.searchParams.set("code", code);
+  url.searchParams.set("redirect_uri", META_REDIRECT_URI);
 
   const response = await fetch(url.toString());
   if (!response.ok) {
