@@ -26,7 +26,6 @@ declare global {
           config_id: string;
           response_type: "code";
           override_default_response_type: true;
-          redirect_uri?: string;
           extras?: { setup?: Record<string, unknown>; sessionInfoVersion?: string };
         },
       ) => void;
@@ -37,12 +36,6 @@ declare global {
 
 const GRAPH_VERSION_FOR_SDK = "v26.0";
 const FB_SDK_SRC = "https://connect.facebook.net/en_US/sdk.js";
-// Fixed, deterministic value — must exactly match both the Meta app's
-// registered Valid OAuth Redirect URIs entry and the redirect_uri sent in
-// the server-side token exchange (meta-whatsapp-server.ts). Deliberately
-// not window.location.href: with Strict Mode enabled, query params or a
-// trailing slash would make it a different string and break the match.
-const META_REDIRECT_URI = "https://front-desk-pro-ten.vercel.app/dashboard/settings/business";
 
 function loadFacebookSdk(appId: string): Promise<void> {
   return new Promise((resolve) => {
@@ -126,7 +119,6 @@ export function ConnectWhatsAppMeta() {
         config_id: configId,
         response_type: "code",
         override_default_response_type: true,
-        redirect_uri: META_REDIRECT_URI,
         extras: { sessionInfoVersion: "3" },
       },
     );

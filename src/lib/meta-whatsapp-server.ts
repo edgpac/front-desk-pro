@@ -23,13 +23,6 @@ function graphUrl(apiVersion: string, path: string) {
   return `https://graph.facebook.com/${apiVersion}${path}`;
 }
 
-// Must exactly match both the Meta app's registered Valid OAuth Redirect
-// URIs entry and the redirect_uri sent by FB.login() in
-// ConnectWhatsAppMeta.tsx (same literal, independently defined in each
-// file — the value is fixed and non-secret, so there's no need to widen
-// completeMetaWhatsAppSignup's input beyond {code} to pass it through).
-const META_REDIRECT_URI = "https://front-desk-pro-ten.vercel.app/dashboard/settings/business";
-
 type MetaSignupSuccess = { status: "connected"; displayPhoneNumber: string };
 type MetaSignupError = { status: "error"; message: string };
 export type MetaSignupResult = MetaSignupSuccess | MetaSignupError;
@@ -73,7 +66,6 @@ async function exchangeCodeForToken(code: string): Promise<string> {
   url.searchParams.set("client_id", appId);
   url.searchParams.set("client_secret", appSecret);
   url.searchParams.set("code", code);
-  url.searchParams.set("redirect_uri", META_REDIRECT_URI);
 
   const response = await fetch(url.toString());
   if (!response.ok) {
@@ -209,7 +201,7 @@ export const completeMetaWhatsAppSignup = createServerFn({ method: "POST" })
     // (below) returning the detailed error to the client instead of a
     // generic message. Revert once the redirect_uri/FedCM investigation is
     // resolved: a real customer should never see raw Meta error text.
-    console.log(`[Meta WhatsApp] START tenant=${tenantId} redirect_uri=${META_REDIRECT_URI}`);
+    console.log(`[Meta WhatsApp] START tenant=${tenantId}`);
     let stage = "exchangeCodeForToken";
     let accessToken: string;
     let wabaId: string;
