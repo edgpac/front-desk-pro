@@ -34,6 +34,39 @@ type MetaSignupSuccess = { status: "connected"; displayPhoneNumber: string };
 type MetaSignupError = { status: "error"; message: string };
 export type MetaSignupResult = MetaSignupSuccess | MetaSignupError;
 
+// Diagnostic only: pulls Meta's safe, non-secret error fields out of a
+// failed Graph API response — never the raw body/URL, since these calls
+// carry the app secret, access token, or authorization code as
+// parameters. Meta's error shape is {error: {message, type, code,
+// fbtrace_id}} — exactly those four fields and nothing else. Shared by
+// every Graph API call in this file so whichever step fails, the log
+// names the specific reason instead of just an HTTP status.
+async function describeMetaError(response: Response): Promise<string> {
+  let detail = `HTTP ${response.status}`;
+  try {
+    const errorJson = (await response.json()) as {
+      error?: { message?: string; type?: string; code?: number; error_subcode?: number; fbtrace_id?: string };
+    };
+    const e = errorJson.error;
+    if (e) {
+      detail =
+        [
+          e.message && `message="${e.message}"`,
+          e.type && `type=${e.type}`,
+          e.code !== undefined && `code=${e.code}`,
+          e.error_subcode !== undefined && `error_subcode=${e.error_subcode}`,
+          e.fbtrace_id && `fbtrace_id=${e.fbtrace_id}`,
+        ]
+          .filter(Boolean)
+          .join(", ") || detail;
+    }
+  } catch {
+    // Body wasn't JSON (or had no error field) — fall back to just the
+    // HTTP status, still no raw body logged.
+  }
+  return detail;
+}
+
 async function exchangeCodeForToken(code: string): Promise<string> {
   const { appId, appSecret, apiVersion } = getMetaCredentials();
   const url = new URL(graphUrl(apiVersion, "/oauth/access_token"));
@@ -44,33 +77,7 @@ async function exchangeCodeForToken(code: string): Promise<string> {
 
   const response = await fetch(url.toString());
   if (!response.ok) {
-    // Diagnostic only: surface Meta's safe, non-secret error fields (never
-    // the raw body/URL — this endpoint is called with the app secret and
-    // authorization code as query params, so the full request/response
-    // must never be logged). Meta's error shape is
-    // {error: {message, type, code, fbtrace_id}} — pull out exactly those
-    // four fields and nothing else.
-    let detail = `HTTP ${response.status}`;
-    try {
-      const errorJson = (await response.json()) as {
-        error?: { message?: string; type?: string; code?: number; fbtrace_id?: string };
-      };
-      const e = errorJson.error;
-      if (e) {
-        detail = [
-          e.message && `message="${e.message}"`,
-          e.type && `type=${e.type}`,
-          e.code !== undefined && `code=${e.code}`,
-          e.fbtrace_id && `fbtrace_id=${e.fbtrace_id}`,
-        ]
-          .filter(Boolean)
-          .join(", ") || detail;
-      }
-    } catch {
-      // Body wasn't JSON (or had no error field) — fall back to just the
-      // HTTP status, still no raw body logged.
-    }
-    throw new Error(`Meta token exchange failed (${response.status}): ${detail}`);
+    throw new Error(`Meta token exchange failed (${response.status}): ${await describeMetaError(response)}`);
   }
   const json = (await response.json()) as { access_token?: string };
   if (!json.access_token) {
@@ -100,7 +107,7 @@ async function resolveWabaId(accessToken: string): Promise<string> {
 
   const response = await fetch(url.toString());
   if (!response.ok) {
-    throw new Error(`Meta debug_token check failed (${response.status}).`);
+    throw new Error(`Meta debug_token check failed (${response.status}): ${await describeMetaError(response)}`);
   }
   const json = (await response.json()) as {
     data?: { granular_scopes?: { scope: string; target_ids?: string[] }[] };
@@ -125,7 +132,9 @@ async function resolvePhoneNumber(
 
   const response = await fetch(url.toString());
   if (!response.ok) {
-    throw new Error(`Could not list phone numbers for this WhatsApp Business Account (${response.status}).`);
+    throw new Error(
+      `Could not list phone numbers for this WhatsApp Business Account (${response.status}): ${await describeMetaError(response)}`,
+    );
   }
   const json = (await response.json()) as {
     data?: { id: string; display_phone_number: string }[];
@@ -146,7 +155,9 @@ async function subscribeAppToWaba(wabaId: string, accessToken: string): Promise<
     body: JSON.stringify({ access_token: accessToken }),
   });
   if (!response.ok) {
-    throw new Error(`Could not subscribe to this WhatsApp Business Account's webhooks (${response.status}).`);
+    throw new Error(
+      `Could not subscribe to this WhatsApp Business Account's webhooks (${response.status}): ${await describeMetaError(response)}`,
+    );
   }
 }
 
@@ -193,19 +204,38 @@ export const completeMetaWhatsAppSignup = createServerFn({ method: "POST" })
       };
     }
 
+    // TEMPORARY diagnostic instrumentation for live Embedded Signup
+    // debugging — stage tracking + verbose [Meta WhatsApp] log lines, and
+    // (below) returning the detailed error to the client instead of a
+    // generic message. Revert once the redirect_uri/FedCM investigation is
+    // resolved: a real customer should never see raw Meta error text.
+    console.log(`[Meta WhatsApp] START tenant=${tenantId} redirect_uri=${META_REDIRECT_URI}`);
+    let stage = "exchangeCodeForToken";
     let accessToken: string;
     let wabaId: string;
     let phoneNumberId: string;
     let displayPhoneNumber: string;
     try {
       accessToken = await exchangeCodeForToken(code);
+      console.log(`[Meta WhatsApp] ${stage} ✓`);
+
+      stage = "resolveWabaId";
       wabaId = await resolveWabaId(accessToken);
+      console.log(`[Meta WhatsApp] ${stage} ✓ waba_id=${wabaId}`);
+
+      stage = "resolvePhoneNumber";
       ({ phoneNumberId, displayPhoneNumber } = await resolvePhoneNumber(wabaId, accessToken));
+      console.log(`[Meta WhatsApp] ${stage} ✓ phone_number_id=${phoneNumberId}`);
     } catch (err) {
       // Nothing written yet, nothing called on Meta's subscription state —
       // genuinely no partial state at this point, local or external.
-      console.error(`Meta WhatsApp signup failed for tenant ${tenantId}:`, err instanceof Error ? err.message : err);
-      return { status: "error", message: "Couldn't complete the WhatsApp connection. Please try again." };
+      const detail = err instanceof Error ? err.message : String(err);
+      console.error(`[Meta WhatsApp] ${stage} FAILED for tenant ${tenantId}: ${detail}`);
+      // TEMPORARY: surfacing the real stage + Meta error detail to the
+      // client for live debugging. No token/code/secret is ever in this
+      // string — describeMetaError only ever extracts message/type/code/
+      // error_subcode/fbtrace_id. Revert to a generic message afterward.
+      return { status: "error", message: `[${stage}] ${detail}` };
     }
 
     // Insert the local row BEFORE calling Meta's subscribed_apps — this is
@@ -245,9 +275,11 @@ export const completeMetaWhatsAppSignup = createServerFn({ method: "POST" })
         .from("whatsapp_connections")
         .update({ status: "failed", error_reason: `Connected to Meta but webhook subscription failed: ${reason}` })
         .eq("id", connectionRow.id);
-      console.error(`Meta subscribed_apps failed for tenant ${tenantId}:`, reason);
-      return { status: "error", message: "Connected to Meta, but couldn't finish setting up notifications. Please try again." };
+      console.error(`[Meta WhatsApp] subscribeAppToWaba FAILED for tenant ${tenantId}: ${reason}`);
+      // TEMPORARY: see note above.
+      return { status: "error", message: `[subscribeAppToWaba] ${reason}` };
     }
+    console.log(`[Meta WhatsApp] subscribeAppToWaba ✓`);
 
     const { error: updateError } = await admin
       .from("whatsapp_connections")
@@ -259,9 +291,10 @@ export const completeMetaWhatsAppSignup = createServerFn({ method: "POST" })
       // just not yet reflecting full success. Reconciling a 'verifying' row
       // is a later-sub-stage concern (e.g. a "check connection status"
       // action), not something silently hidden here.
-      console.error(`Could not finalize WhatsApp connection status for tenant ${tenantId}:`, updateError.message);
+      console.error(`[Meta WhatsApp] finalize-status FAILED for tenant ${tenantId}: ${updateError.message}`);
       return { status: "error", message: "Connected, but finishing setup is taking longer than expected. Please refresh in a moment." };
     }
 
+    console.log(`[Meta WhatsApp] COMPLETE ✓ tenant=${tenantId}`);
     return { status: "connected", displayPhoneNumber };
   });
