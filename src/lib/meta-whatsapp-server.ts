@@ -71,6 +71,13 @@ export async function exchangeCodeForToken(code: string): Promise<string> {
   url.searchParams.set("client_secret", appSecret);
   url.searchParams.set("code", code);
 
+  // TEMPORARY diagnostic — never logs the code itself, only whether one was
+  // present and its length/prefix, to correlate "the code the client sent"
+  // with "the code this function actually received" without exposing it.
+  console.log(
+    `[Meta WhatsApp] exchangeCodeForToken codeReceived=${Boolean(code)} codeLength=${code.length} codePrefix=${code.slice(0, 6)} apiVersion=${apiVersion}`,
+  );
+
   const response = await fetch(url.toString());
   if (!response.ok) {
     throw new Error(`Meta token exchange failed (${response.status}): ${await describeMetaError(response)}`);
