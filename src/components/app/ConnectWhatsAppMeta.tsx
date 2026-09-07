@@ -96,7 +96,6 @@ export function ConnectWhatsAppMeta() {
       return;
     }
 
-    setStatus("connecting");
     window.FB.login(
       (response) => {
         const code = response.authResponse?.code;
@@ -128,6 +127,7 @@ export function ConnectWhatsAppMeta() {
         extras: { setup: {} },
       },
     );
+    setStatus("connecting");
   }
 
   if (status === "connected" && displayPhoneNumber) {
