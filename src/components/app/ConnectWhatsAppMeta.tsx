@@ -63,30 +63,36 @@ export function ConnectWhatsAppMeta() {
   const [status, setStatus] = useState<Status>("idle");
   const [displayPhoneNumber, setDisplayPhoneNumber] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState("");
-  const sdkReady = useRef(false);
+  const sdkLoadTriggered = useRef(false);
 
   const appId = import.meta.env["VITE_META_APP_ID"] as string | undefined;
   const configId = import.meta.env["VITE_META_CONFIG_ID"] as string | undefined;
 
   useEffect(() => {
-    // Only load Meta's SDK once this component is actually shown and
-    // configured — no reason to pull in a third-party script otherwise.
-    if (!appId || sdkReady.current) return;
-    sdkReady.current = true;
+    // Load Meta's SDK as soon as this component mounts — not on click.
+    // FB.login() opens a popup via window.open(), which browsers only allow
+    // as the direct, synchronous result of a user gesture. Awaiting the SDK
+    // load inside the click handler puts a microtask between the click and
+    // FB.login(), which some browsers then treat as an unsolicited popup
+    // and block silently (no exception, no callback, nothing visible).
+    // Preloading here means the click handler below can call FB.login()
+    // synchronously once the SDK is already present.
+    if (!appId || sdkLoadTriggered.current) return;
+    sdkLoadTriggered.current = true;
     void loadFacebookSdk(appId);
   }, [appId]);
 
-  async function handleConnect() {
+  function handleConnect() {
     if (!appId || !configId) {
       toast.error("WhatsApp connection isn't configured yet.");
       return;
     }
-    setStatus("loading-sdk");
-    await loadFacebookSdk(appId);
 
     if (!window.FB) {
-      setStatus("error");
-      setErrorMessage("Couldn't load Meta's connection tool. Please try again.");
+      // Not ready yet — do not await-load-then-call here, since that would
+      // reintroduce the same async gap this fix removes. Let the user retry
+      // once the (already in-flight, from mount) SDK load has finished.
+      toast.error("Still loading Meta's connection tool — please try again in a moment.");
       return;
     }
 
@@ -138,7 +144,7 @@ export function ConnectWhatsAppMeta() {
       <Button
         type="button"
         variant="outline"
-        onClick={() => void handleConnect()}
+        onClick={handleConnect}
         disabled={status === "loading-sdk" || status === "connecting" || !appId || !configId}
       >
         {status === "connecting" ? "Connecting…" : "Connect WhatsApp via Meta"}
