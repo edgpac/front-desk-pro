@@ -60,7 +60,11 @@ async function describeMetaError(response: Response): Promise<string> {
   return detail;
 }
 
-async function exchangeCodeForToken(code: string): Promise<string> {
+// Exported only so the TEMPORARY diagnostic route
+// (src/routes/api.meta-test-exchange.tsx) can reuse this exact, unmodified
+// function for the meta-test.html A/B configuration test — no behavior
+// here has changed. Remove `export` if that diagnostic route is deleted.
+export async function exchangeCodeForToken(code: string): Promise<string> {
   const { appId, appSecret, apiVersion } = getMetaCredentials();
   const url = new URL(graphUrl(apiVersion, "/oauth/access_token"));
   url.searchParams.set("client_id", appId);

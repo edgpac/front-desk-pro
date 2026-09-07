@@ -19,6 +19,7 @@ import { Route as PricingRouteImport } from './routes/pricing'
 import { Route as PrivacyRouteImport } from './routes/privacy'
 import { Route as SignupRouteImport } from './routes/signup'
 import { Route as TermsRouteImport } from './routes/terms'
+import { Route as ApiMetaTestExchangeRouteImport } from './routes/api.meta-test-exchange'
 import { Route as DashboardIndexRouteImport } from './routes/dashboard.index'
 import { Route as DashboardAnalyticsRouteImport } from './routes/dashboard.analytics'
 import { Route as DashboardLeadsRouteImport } from './routes/dashboard.leads'
@@ -86,6 +87,11 @@ const SignupRoute = SignupRouteImport.update({
 const TermsRoute = TermsRouteImport.update({
   id: '/terms',
   path: '/terms',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiMetaTestExchangeRoute = ApiMetaTestExchangeRouteImport.update({
+  id: '/api/meta-test-exchange',
+  path: '/api/meta-test-exchange',
   getParentRoute: () => rootRouteImport,
 } as any)
 const DashboardIndexRoute = DashboardIndexRouteImport.update({
@@ -194,6 +200,7 @@ export interface FileRoutesByFullPath {
   '/privacy': typeof PrivacyRoute
   '/signup': typeof SignupRoute
   '/terms': typeof TermsRoute
+  '/api/meta-test-exchange': typeof ApiMetaTestExchangeRoute
   '/dashboard/analytics': typeof DashboardAnalyticsRoute
   '/dashboard/leads': typeof DashboardLeadsRouteWithChildren
   '/dashboard/price-sheet': typeof DashboardPriceSheetRoute
@@ -222,6 +229,7 @@ export interface FileRoutesByTo {
   '/privacy': typeof PrivacyRoute
   '/signup': typeof SignupRoute
   '/terms': typeof TermsRoute
+  '/api/meta-test-exchange': typeof ApiMetaTestExchangeRoute
   '/dashboard/analytics': typeof DashboardAnalyticsRoute
   '/dashboard/price-sheet': typeof DashboardPriceSheetRoute
   '/dashboard/widget': typeof DashboardWidgetRoute
@@ -251,6 +259,7 @@ export interface FileRoutesById {
   '/privacy': typeof PrivacyRoute
   '/signup': typeof SignupRoute
   '/terms': typeof TermsRoute
+  '/api/meta-test-exchange': typeof ApiMetaTestExchangeRoute
   '/dashboard/analytics': typeof DashboardAnalyticsRoute
   '/dashboard/leads': typeof DashboardLeadsRouteWithChildren
   '/dashboard/price-sheet': typeof DashboardPriceSheetRoute
@@ -283,6 +292,7 @@ export interface FileRouteTypes {
     | '/privacy'
     | '/signup'
     | '/terms'
+    | '/api/meta-test-exchange'
     | '/dashboard/analytics'
     | '/dashboard/leads'
     | '/dashboard/price-sheet'
@@ -311,6 +321,7 @@ export interface FileRouteTypes {
     | '/privacy'
     | '/signup'
     | '/terms'
+    | '/api/meta-test-exchange'
     | '/dashboard/analytics'
     | '/dashboard/price-sheet'
     | '/dashboard/widget'
@@ -339,6 +350,7 @@ export interface FileRouteTypes {
     | '/privacy'
     | '/signup'
     | '/terms'
+    | '/api/meta-test-exchange'
     | '/dashboard/analytics'
     | '/dashboard/leads'
     | '/dashboard/price-sheet'
@@ -370,6 +382,7 @@ export interface RootRouteChildren {
   PrivacyRoute: typeof PrivacyRoute
   SignupRoute: typeof SignupRoute
   TermsRoute: typeof TermsRoute
+  ApiMetaTestExchangeRoute: typeof ApiMetaTestExchangeRoute
   QuoteSlugRoute: typeof QuoteSlugRoute
   ApiStripeWebhookRoute: typeof ApiStripeWebhookRoute
   ApiWhatsappWebhookRoute: typeof ApiWhatsappWebhookRoute
@@ -445,6 +458,13 @@ declare module '@tanstack/react-router' {
       path: '/terms'
       fullPath: '/terms'
       preLoaderRoute: typeof TermsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/meta-test-exchange': {
+      id: '/api/meta-test-exchange'
+      path: '/api/meta-test-exchange'
+      fullPath: '/api/meta-test-exchange'
+      preLoaderRoute: typeof ApiMetaTestExchangeRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/dashboard/': {
@@ -656,6 +676,7 @@ const rootRouteChildren: RootRouteChildren = {
   PrivacyRoute: PrivacyRoute,
   SignupRoute: SignupRoute,
   TermsRoute: TermsRoute,
+  ApiMetaTestExchangeRoute: ApiMetaTestExchangeRoute,
   QuoteSlugRoute: QuoteSlugRoute,
   ApiStripeWebhookRoute: ApiStripeWebhookRoute,
   ApiWhatsappWebhookRoute: ApiWhatsappWebhookRoute,

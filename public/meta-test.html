@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Meta WhatsApp Embedded Signup — isolated test</title>
+<style>
+  body { font-family: -apple-system, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 16px; }
+  label { display: block; margin-top: 16px; font-weight: 600; font-size: 14px; }
+  input[type="text"] { width: 100%; padding: 8px; font-family: monospace; font-size: 14px; box-sizing: border-box; }
+  button { margin-top: 16px; padding: 10px 20px; font-size: 15px; cursor: pointer; }
+  #log { margin-top: 24px; padding: 12px; background: #111; color: #0f0; font-family: monospace; font-size: 12px;
+         white-space: pre-wrap; word-break: break-all; height: 400px; overflow-y: auto; border-radius: 4px; }
+  .note { color: #666; font-size: 13px; margin-top: 8px; }
+</style>
+</head>
+<body>
+
+<h2>Meta WhatsApp Embedded Signup — isolated test</h2>
+<p class="note">
+  Plain HTML, no React, no bundling, no app secret. Used only to determine
+  whether a given Facebook Login for Business configuration produces a code
+  that Meta's own token exchange will accept — completely independent of
+  the production dashboard app. TEMPORARY — delete this file, its API route,
+  and the export on exchangeCodeForToken once the test is done.
+</p>
+
+<label for="configId">Configuration ID to test</label>
+<input type="text" id="configId" value="1794429681690457" autocomplete="off" />
+
+<button onclick="launchWhatsAppSignup()">Connect WhatsApp (test)</button>
+<button onclick="clearLog()">Clear log</button>
+
+<div id="log"></div>
+
+<script>
+  const APP_ID = "980714215030262"; // public, client-safe — same VITE_META_APP_ID used everywhere in the app
+
+  function log(line) {
+    const el = document.getElementById("log");
+    const ts = new Date().toISOString();
+    el.textContent += `[${ts}] ${line}\n`;
+    el.scrollTop = el.scrollHeight;
+  }
+
+  function clearLog() {
+    document.getElementById("log").textContent = "";
+  }
+
+  log(`Page loaded. User-Agent: ${navigator.userAgent}`);
+
+  window.fbAsyncInit = function () {
+    FB.init({
+      appId: APP_ID,
+      autoLogAppEvents: true,
+      xfbml: false,
+      version: "v26.0",
+    });
+    log("FB.init() complete.");
+  };
+
+  function launchWhatsAppSignup() {
+    const configId = document.getElementById("configId").value.trim();
+    if (!configId) {
+      log("ERROR: no configuration ID entered.");
+      return;
+    }
+    if (!window.FB) {
+      log("ERROR: Facebook SDK not loaded yet — try again in a moment.");
+      return;
+    }
+    log(`Calling FB.login() with config_id=${configId} ...`);
+    FB.login(
+      (response) => {
+        log(`FB.login() callback fired. Full response: ${JSON.stringify(response)}`);
+        const code = response && response.authResponse && response.authResponse.code;
+        if (!code) {
+          log("No authorization code in response (user may have closed the popup, or an error occurred).");
+          return;
+        }
+        log(`Authorization code received (length ${code.length}). Sending to server exchange...`);
+        fetch("/api/meta-test-exchange", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ code }),
+        })
+          .then((r) => r.json())
+          .then((result) => {
+            log(`Server exchange result: ${JSON.stringify(result)}`);
+            if (result.status === "success") {
+              log("✅ SUCCESS — Meta accepted this code and issued an access token.");
+            } else {
+              log(`❌ FAILED — ${result.message}`);
+            }
+          })
+          .catch((err) => {
+            log(`ERROR calling server exchange: ${err}`);
+          });
+      },
+      {
+        config_id: configId,
+        response_type: "code",
+        override_default_response_type: true,
+        extras: { setup: {} },
+      },
+    );
+  }
+</script>
+
+<script async defer crossorigin="anonymous" src="https://connect.facebook.net/en_US/sdk.js"></script>
+
+</body>
+</html>
