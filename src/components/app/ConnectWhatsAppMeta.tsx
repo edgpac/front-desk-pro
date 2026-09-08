@@ -26,6 +26,7 @@ declare global {
           config_id: string;
           response_type: "code";
           override_default_response_type: true;
+          auth_type?: string;
           extras?: { setup?: Record<string, unknown>; sessionInfoVersion?: string };
         },
       ) => void;
@@ -162,6 +163,11 @@ export function ConnectWhatsAppMeta() {
         config_id: configId,
         response_type: "code",
         override_default_response_type: true,
+        // Without this, Meta silently reuses prior consent via a one-click
+        // "Continue as <name>" shortcut that skips the WABA/phone-number
+        // selection screens entirely — confirmed live, repeatedly, against
+        // this app. reauthenticate forces the full flow every time.
+        auth_type: "reauthenticate",
         extras: { setup: {} },
       },
     );
