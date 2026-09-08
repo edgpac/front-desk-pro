@@ -39,6 +39,7 @@
   <option value="">(none — matches current production behavior)</option>
   <option value="https://front-desk-pro-ten.vercel.app/">https://front-desk-pro-ten.vercel.app/ (domain root)</option>
   <option value="https://front-desk-pro-ten.vercel.app/dashboard/settings/business">https://front-desk-pro-ten.vercel.app/dashboard/settings/business (registered path)</option>
+  <option value="__captured__">Auto-captured (the exact real value Meta's SDK uses for THIS run — no typing needed)</option>
   <option value="__custom__">Custom (type below)</option>
 </select>
 <input type="text" id="customRedirectUri" placeholder="Paste a custom redirect_uri (e.g. the xd_arbiter URL) here" style="margin-top:8px; display:none;" />
@@ -73,8 +74,36 @@
     if (sel === "__custom__") {
       return document.getElementById("customRedirectUri").value.trim();
     }
+    if (sel === "__captured__") {
+      return "__use_captured__"; // resolved later, once the real value is intercepted
+    }
     return sel;
   }
+
+  // Intercept window.open BEFORE the Facebook SDK loads, so we can read the
+  // exact, real URL (and its real redirect_uri) the SDK opens as the
+  // Embedded Signup popup — no manual DevTools/copy-paste needed, and no
+  // risk of a hand-typed placeholder being sent by mistake. The real popup
+  // still opens normally; this only observes the URL passed to it.
+  let lastCapturedRedirectUri = null;
+  const nativeWindowOpen = window.open;
+  window.open = function (url, ...rest) {
+    if (typeof url === "string" && url.includes("facebook.com") && url.includes("dialog/oauth")) {
+      try {
+        const parsed = new URL(url);
+        const redirectUri = parsed.searchParams.get("redirect_uri");
+        if (redirectUri) {
+          lastCapturedRedirectUri = redirectUri;
+          log(`🔎 Intercepted real popup URL. Captured real redirect_uri (decoded): ${redirectUri}`);
+        } else {
+          log(`🔎 Intercepted popup URL, but it had no redirect_uri parameter: ${url}`);
+        }
+      } catch (e) {
+        log(`🔎 Intercepted popup URL but failed to parse it: ${url} (${e})`);
+      }
+    }
+    return nativeWindowOpen.apply(window, [url, ...rest]);
+  };
 
   log(`Page loaded. User-Agent: ${navigator.userAgent}`);
 
@@ -90,8 +119,9 @@
 
   function launchWhatsAppSignup() {
     const run = ++runCounter;
+    lastCapturedRedirectUri = null; // reset before this run's popup opens
     const configId = document.getElementById("configId").value.trim();
-    const redirectUriForExchange = getSelectedRedirectUri();
+    const redirectUriSelection = getSelectedRedirectUri();
     if (!configId) {
       log("ERROR: no configuration ID entered.", run);
       return;
@@ -100,7 +130,10 @@
       log("ERROR: Facebook SDK not loaded yet — try again in a moment.", run);
       return;
     }
-    log(`START — config_id=${configId}, selected exchange redirect_uri=${redirectUriForExchange || "(none)"}`, run);
+    log(
+      `START — config_id=${configId}, exchange redirect_uri mode=${redirectUriSelection === "__use_captured__" ? "AUTO-CAPTURE (real value)" : redirectUriSelection || "(none)"}`,
+      run,
+    );
     log("Calling FB.login() now — watch for a popup or a Chrome pop-up-blocked icon in the address bar.", run);
 
     // Safety net: if neither the FB.login() callback nor a popup-blocked
@@ -119,11 +152,20 @@
           log("RESULT: no authorization code in response (user may have closed the popup, or an error occurred). No exchange attempted.", run);
           return;
         }
-        log(`Authorization code received: YES (length ${code.length}). Sending to server exchange with redirect_uri=${redirectUriForExchange || "(none)"} ...`, run);
+        let redirectUriToSend = redirectUriSelection;
+        if (redirectUriSelection === "__use_captured__") {
+          redirectUriToSend = lastCapturedRedirectUri || "";
+          if (!lastCapturedRedirectUri) {
+            log("⚠️ Auto-capture mode selected, but no redirect_uri was intercepted from window.open() — sending none. This shouldn't happen; the popup must have opened some other way.", run);
+          } else {
+            log(`Using auto-captured redirect_uri for this run's exchange: ${lastCapturedRedirectUri}`, run);
+          }
+        }
+        log(`Authorization code received: YES (length ${code.length}). Sending to server exchange with redirect_uri=${redirectUriToSend || "(none)"} ...`, run);
         fetch("/api/meta-test-exchange", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ code, redirect_uri: redirectUriForExchange || undefined }),
+          body: JSON.stringify({ code, redirect_uri: redirectUriToSend || undefined }),
         })
           .then((r) => r.json())
           .then((result) => {
