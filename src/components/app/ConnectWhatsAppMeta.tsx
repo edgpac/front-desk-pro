@@ -65,6 +65,8 @@ export function ConnectWhatsAppMeta() {
   const [errorMessage, setErrorMessage] = useState("");
   const sdkLoadTriggered = useRef(false);
   const capturedRedirectUri = useRef<string | null>(null);
+  const capturedWabaId = useRef<string | null>(null);
+  const capturedPhoneNumberId = useRef<string | null>(null);
 
   const appId = import.meta.env["VITE_META_APP_ID"] as string | undefined;
   const configId = import.meta.env["VITE_META_CONFIG_ID"] as string | undefined;
@@ -113,6 +115,34 @@ export function ConnectWhatsAppMeta() {
     };
   }, []);
 
+  useEffect(() => {
+    // Meta's Embedded Signup popup posts a WA_EMBEDDED_SIGNUP message back
+    // to this window as the WABA/phone-number flow completes, carrying the
+    // real waba_id/phone_number_id it granted — enabled by
+    // sessionInfoVersion on the FB.login() call below. debug_token's
+    // granular_scopes never reflected a WABA-scoped grant for this app's
+    // configuration despite the configuration itself being set up
+    // correctly, so the server validates these captured ids directly
+    // against Meta using the exchanged token, rather than trying to
+    // discover them from the token alone.
+    function handleMessage(event: MessageEvent) {
+      if (typeof event.origin !== "string" || !event.origin.endsWith("facebook.com")) return;
+      let data: unknown;
+      try {
+        data = JSON.parse(event.data as string);
+      } catch {
+        return; // not a JSON message we care about
+      }
+      if (data && typeof data === "object" && (data as { type?: unknown }).type === "WA_EMBEDDED_SIGNUP") {
+        const payload = (data as { data?: { waba_id?: string; phone_number_id?: string } }).data;
+        if (payload?.waba_id) capturedWabaId.current = payload.waba_id;
+        if (payload?.phone_number_id) capturedPhoneNumberId.current = payload.phone_number_id;
+      }
+    }
+    window.addEventListener("message", handleMessage);
+    return () => window.removeEventListener("message", handleMessage);
+  }, []);
+
   function handleConnect() {
     if (!appId || !configId) {
       toast.error("WhatsApp connection isn't configured yet.");
@@ -127,7 +157,10 @@ export function ConnectWhatsAppMeta() {
       return;
     }
 
-    capturedRedirectUri.current = null; // reset before this attempt's popup opens
+    // reset before this attempt's popup opens
+    capturedRedirectUri.current = null;
+    capturedWabaId.current = null;
+    capturedPhoneNumberId.current = null;
     window.FB.login(
       (response) => {
         const code = response.authResponse?.code;
@@ -136,14 +169,18 @@ export function ConnectWhatsAppMeta() {
           return; // user closed the popup or cancelled — not an error to surface
         }
         const redirectUri = capturedRedirectUri.current;
-        if (!redirectUri) {
+        const wabaId = capturedWabaId.current;
+        const phoneNumberId = capturedPhoneNumberId.current;
+        if (!redirectUri || !wabaId || !phoneNumberId) {
           setStatus("error");
-          setErrorMessage("Couldn't complete the WhatsApp connection. Please try again.");
+          setErrorMessage(
+            "Couldn't complete the WhatsApp connection — no WhatsApp Business Account was selected. Please try again.",
+          );
           return;
         }
         void (async () => {
           try {
-            const result = await completeMetaWhatsAppSignup({ data: { code, redirectUri } });
+            const result = await completeMetaWhatsAppSignup({ data: { code, redirectUri, wabaId, phoneNumberId } });
             if (result.status === "connected") {
               setStatus("connected");
               setDisplayPhoneNumber(result.displayPhoneNumber);
