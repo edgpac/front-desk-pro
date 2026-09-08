@@ -30,6 +30,17 @@
   Authorization codes are single-use. Each redirect_uri option below needs
   its own fresh "Connect WhatsApp" run — don't reuse a code across runs.
 </p>
+<p class="note">
+  This page also listens for Meta's <code>WA_EMBEDDED_SIGNUP</code>
+  <code>postMessage</code> events (enabled by <code>sessionInfoVersion</code>
+  on the login call below). These fire from inside the popup itself and
+  carry the real <code>waba_id</code>/<code>phone_number_id</code> the
+  moment the WABA/phone-number flow actually completes — independent of
+  whether the server-side token exchange or <code>debug_token</code> check
+  ever succeeds. This is the ground-truth signal for whether the real
+  signup flow ran at all, versus a "Continue as &lt;name&gt;" shortcut that
+  skips it.
+</p>
 
 <label for="configId">Configuration ID to test</label>
 <input type="text" id="configId" value="1794429681690457" autocomplete="off" />
@@ -104,6 +115,27 @@
     }
     return nativeWindowOpen.apply(window, [url, ...rest]);
   };
+
+  // WA_EMBEDDED_SIGNUP postMessage events — Meta's popup posts these back to
+  // the opener as the WABA/phone-number flow progresses, but only once
+  // sessionInfoVersion is set on the FB.login() call below. This is the one
+  // signal that reveals the real waba_id/phone_number_id directly from the
+  // popup itself, so it tells us definitively whether the actual signup
+  // flow ran — no server round trip needed to know that much.
+  window.addEventListener("message", (event) => {
+    if (typeof event.origin !== "string" || !event.origin.endsWith("facebook.com")) return;
+    let data;
+    try {
+      data = JSON.parse(event.data);
+    } catch {
+      return; // not a JSON postMessage we care about
+    }
+    if (data && data.type === "WA_EMBEDDED_SIGNUP") {
+      log(`🎯 WA_EMBEDDED_SIGNUP event=${data.event} — data: ${JSON.stringify(data.data)}`);
+    } else {
+      log(`(other postMessage from ${event.origin}): ${event.data}`);
+    }
+  });
 
   log(`Page loaded. User-Agent: ${navigator.userAgent}`);
 
@@ -184,7 +216,7 @@
         config_id: configId,
         response_type: "code",
         override_default_response_type: true,
-        extras: { setup: {} },
+        extras: { setup: {}, sessionInfoVersion: "3" },
       },
     );
   }
