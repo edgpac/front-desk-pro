@@ -184,9 +184,6 @@
         config_id: configId,
         response_type: "code",
         override_default_response_type: true,
-        // Forces the full WABA/phone-number flow every time instead of
-        // Meta's silent "Continue as <name>" one-click reuse of prior consent.
-        auth_type: "reauthenticate",
         extras: { setup: {} },
       },
     );
