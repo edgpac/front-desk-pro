@@ -64,6 +64,7 @@ export function ConnectWhatsAppMeta() {
   const [displayPhoneNumber, setDisplayPhoneNumber] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState("");
   const sdkLoadTriggered = useRef(false);
+  const capturedRedirectUri = useRef<string | null>(null);
 
   const appId = import.meta.env["VITE_META_APP_ID"] as string | undefined;
   const configId = import.meta.env["VITE_META_CONFIG_ID"] as string | undefined;
@@ -82,6 +83,36 @@ export function ConnectWhatsAppMeta() {
     void loadFacebookSdk(appId);
   }, [appId]);
 
+  useEffect(() => {
+    // Meta binds the authorization code FB.login() returns to the exact
+    // redirect_uri its popup used to open — a dynamic
+    // https://staticxx.facebook.com/x/connect/xd_arbiter/... URL, unique
+    // per attempt, that Meta's own JS SDK generates internally and never
+    // exposes through the FB.login() callback's response object. The
+    // server-side exchange fails with error_subcode=36008 ("redirect_uri
+    // isn't identical") unless this exact value is echoed back — confirmed
+    // via live A/B testing against an isolated diagnostic page. FB.login()
+    // opens this popup via window.open(), so intercepting that call here is
+    // the only way to observe the real value; the popup itself still opens
+    // normally, this only reads the URL passed to it.
+    const nativeOpen = window.open;
+    window.open = function (url?: string | URL, target?: string, features?: string) {
+      if (typeof url === "string" && url.includes("facebook.com") && url.includes("dialog/oauth")) {
+        try {
+          const redirectUri = new URL(url).searchParams.get("redirect_uri");
+          if (redirectUri) capturedRedirectUri.current = redirectUri;
+        } catch {
+          // Malformed URL from the SDK — leave capturedRedirectUri as-is;
+          // handleConnect's own check below catches a missing value.
+        }
+      }
+      return nativeOpen.call(window, url, target, features);
+    };
+    return () => {
+      window.open = nativeOpen;
+    };
+  }, []);
+
   function handleConnect() {
     if (!appId || !configId) {
       toast.error("WhatsApp connection isn't configured yet.");
@@ -96,6 +127,7 @@ export function ConnectWhatsAppMeta() {
       return;
     }
 
+    capturedRedirectUri.current = null; // reset before this attempt's popup opens
     window.FB.login(
       (response) => {
         const code = response.authResponse?.code;
@@ -103,9 +135,15 @@ export function ConnectWhatsAppMeta() {
           setStatus("idle");
           return; // user closed the popup or cancelled — not an error to surface
         }
+        const redirectUri = capturedRedirectUri.current;
+        if (!redirectUri) {
+          setStatus("error");
+          setErrorMessage("Couldn't complete the WhatsApp connection. Please try again.");
+          return;
+        }
         void (async () => {
           try {
-            const result = await completeMetaWhatsAppSignup({ data: { code } });
+            const result = await completeMetaWhatsAppSignup({ data: { code, redirectUri } });
             if (result.status === "connected") {
               setStatus("connected");
               setDisplayPhoneNumber(result.displayPhoneNumber);

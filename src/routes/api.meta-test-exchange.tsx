@@ -1,39 +1,27 @@
 import { createFileRoute } from "@tanstack/react-router";
-import {
-  exchangeCodeForToken,
-  getMetaCredentials,
-  graphUrl,
-  describeMetaError,
-} from "@/lib/meta-whatsapp-server";
+import { getMetaCredentials, graphUrl, describeMetaError } from "@/lib/meta-whatsapp-server";
 
 // TEMPORARY DIAGNOSTIC ROUTE — supports public/meta-test.html only.
 //
-// Purpose: let the isolated, plain-HTML test page ask "does Meta's
-// /oauth/access_token exchange accept a code obtained from a given
-// Facebook Login for Business configuration?" without needing a
-// Supabase session (the real completeMetaWhatsAppSignup is auth-gated
-// and writes to the database; a static test page can do neither).
-//
-// When `redirect_uri` is omitted, this calls the exact same, unmodified
-// exchangeCodeForToken() the real flow uses — no duplicated logic, no
-// behavior difference from production. When `redirect_uri` is provided,
-// a separate, test-only function below builds the same exchange request
-// with that value added, to determine whether Meta's exchange requires a
-// specific redirect_uri to match the one used in the original OAuth
-// dialog request — the production exchange function itself is never
-// modified either way.
-//
-// This never returns the access token itself, never touches
-// whatsapp_connections, never resolves a tenant, and never logs the code.
+// This is what discovered that Meta's /oauth/access_token exchange
+// requires the exact redirect_uri the SDK's popup used to open (now
+// required in production's exchangeCodeForToken() — see
+// meta-whatsapp-server.ts). This route keeps its own copy of the exchange
+// request so it can still test the "no redirect_uri" and "wrong
+// redirect_uri" cases that production's function no longer allows —
+// never returns the access token itself, never touches
+// whatsapp_connections, never resolves a tenant, never logs the code.
 // Delete this file (and the three `export`s it depends on in
-// meta-whatsapp-server.ts) once the redirect_uri experiment is complete.
-async function exchangeCodeForTokenWithRedirect(code: string, redirectUri: string): Promise<void> {
+// meta-whatsapp-server.ts) now that the fix is confirmed and shipped.
+async function testExchangeCodeForToken(code: string, redirectUri: string): Promise<void> {
   const { appId, appSecret, apiVersion } = getMetaCredentials();
   const url = new URL(graphUrl(apiVersion, "/oauth/access_token"));
   url.searchParams.set("client_id", appId);
   url.searchParams.set("client_secret", appSecret);
   url.searchParams.set("code", code);
-  url.searchParams.set("redirect_uri", redirectUri);
+  if (redirectUri) {
+    url.searchParams.set("redirect_uri", redirectUri);
+  }
 
   const response = await fetch(url.toString());
   if (!response.ok) {
@@ -65,11 +53,7 @@ export const Route = createFileRoute("/api/meta-test-exchange")({
         const trimmedRedirectUri = typeof redirectUri === "string" ? redirectUri.trim() : "";
 
         try {
-          if (trimmedRedirectUri) {
-            await exchangeCodeForTokenWithRedirect(trimmedCode, trimmedRedirectUri);
-          } else {
-            await exchangeCodeForToken(trimmedCode);
-          }
+          await testExchangeCodeForToken(trimmedCode, trimmedRedirectUri);
           return Response.json({ status: "success", redirectUriUsed: trimmedRedirectUri || null });
         } catch (err) {
           return Response.json({

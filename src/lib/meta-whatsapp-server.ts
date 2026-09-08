@@ -64,23 +64,21 @@ export async function describeMetaError(response: Response): Promise<string> {
   return detail;
 }
 
-// Exported only so the TEMPORARY diagnostic route
-// (src/routes/api.meta-test-exchange.tsx) can reuse this exact, unmodified
-// function for the meta-test.html A/B configuration test — no behavior
-// here has changed. Remove `export` if that diagnostic route is deleted.
-export async function exchangeCodeForToken(code: string): Promise<string> {
+// redirect_uri is required, not optional: Meta binds the authorization
+// code to the exact redirect_uri the SDK's popup used when it opened (a
+// dynamic https://staticxx.facebook.com/x/connect/xd_arbiter/... URL,
+// unique per attempt, captured client-side — see ConnectWhatsAppMeta.tsx's
+// window.open() interception). Confirmed via live A/B testing: omitting
+// it, or sending the app's own registered domain, both fail with
+// error_subcode=36008 ("redirect_uri isn't identical to the one used in
+// the OAuth dialog"); sending the exact captured value succeeds.
+async function exchangeCodeForToken(code: string, redirectUri: string): Promise<string> {
   const { appId, appSecret, apiVersion } = getMetaCredentials();
   const url = new URL(graphUrl(apiVersion, "/oauth/access_token"));
   url.searchParams.set("client_id", appId);
   url.searchParams.set("client_secret", appSecret);
   url.searchParams.set("code", code);
-
-  // TEMPORARY diagnostic — never logs the code itself, only whether one was
-  // present and its length/prefix, to correlate "the code the client sent"
-  // with "the code this function actually received" without exposing it.
-  console.log(
-    `[Meta WhatsApp] exchangeCodeForToken codeReceived=${Boolean(code)} codeLength=${code.length} codePrefix=${code.slice(0, 6)} apiVersion=${apiVersion}`,
-  );
+  url.searchParams.set("redirect_uri", redirectUri);
 
   const response = await fetch(url.toString());
   if (!response.ok) {
@@ -170,11 +168,15 @@ async function subscribeAppToWaba(wabaId: string, accessToken: string): Promise<
 
 export const completeMetaWhatsAppSignup = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .validator((input: { code: string }) => input)
+  .validator((input: { code: string; redirectUri: string }) => input)
   .handler(async ({ context, data }): Promise<MetaSignupResult> => {
     const code = data.code?.trim();
+    const redirectUri = data.redirectUri?.trim();
     if (!code) {
       return { status: "error", message: "Missing signup code." };
+    }
+    if (!redirectUri) {
+      return { status: "error", message: "Missing redirect information from the sign-in popup. Please try again." };
     }
 
     const { data: tenantRow, error: tenantError } = await context.supabase
@@ -223,7 +225,7 @@ export const completeMetaWhatsAppSignup = createServerFn({ method: "POST" })
     let phoneNumberId: string;
     let displayPhoneNumber: string;
     try {
-      accessToken = await exchangeCodeForToken(code);
+      accessToken = await exchangeCodeForToken(code, redirectUri);
       console.log(`[Meta WhatsApp] ${stage} ✓`);
 
       stage = "resolveWabaId";
