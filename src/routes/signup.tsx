@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { supabase } from "@/integrations/supabase/client";
+import { isOwnerEmail } from "@/lib/owner-gate";
 import heroMockup from "@/assets/aircraft-detailing-mockup.png";
 
 export const Route = createFileRoute("/signup")({
@@ -34,6 +35,7 @@ function Signup() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
+  const [blocked, setBlocked] = useState(false);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -45,6 +47,11 @@ function Signup() {
         options: { data: { name, phone } },
       });
       if (error) throw error;
+      if (!isOwnerEmail(data.user?.email)) {
+        if (data.session) await supabase.auth.signOut();
+        setBlocked(true);
+        return;
+      }
       if (data.session) {
         // Email confirmation is off — the user is signed in immediately.
         toast.success("Account created.");
@@ -77,85 +84,94 @@ function Signup() {
             </Link>
           </div>
           <h1 className="mt-10 text-3xl">Create your account.</h1>
-          <p className="mt-2 text-sm text-muted-foreground">
-            No card required to sign up — you'll pick a plan as you start setting things up, then
-            you're quoting off your own price sheet the same day.
-          </p>
 
-          <form className="mt-8 space-y-4" onSubmit={submit}>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div>
-                <Label htmlFor="name">Your name</Label>
-                <Input
-                  id="name"
-                  className="mt-1.5"
-                  placeholder="Ray Delgado"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  required
-                />
-              </div>
-              <div>
-                <Label htmlFor="phone">Mobile</Label>
-                <Input
-                  id="phone"
-                  className="mt-1.5"
-                  placeholder="(512) 555-0110"
-                  value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
-                  required
-                />
-              </div>
-            </div>
-            <div>
-              <Label htmlFor="email">Email</Label>
-              <Input
-                id="email"
-                type="email"
-                className="mt-1.5"
-                placeholder="ray@delgadoplumbing.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-              />
-            </div>
-            <div>
-              <Label htmlFor="password">Password</Label>
-              <Input
-                id="password"
-                type="password"
-                className="mt-1.5"
-                placeholder="At least 8 characters"
-                minLength={8}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-              />
-            </div>
-            <Button type="submit" size="lg" className="w-full" disabled={busy}>
-              {busy ? "Creating account…" : "Create account"}
-            </Button>
-          </form>
+          {blocked ? (
+            <p className="mt-6 text-sm text-muted-foreground">
+              Job It Ready isn't open for new accounts yet — coming soon.
+            </p>
+          ) : (
+            <>
+              <p className="mt-2 text-sm text-muted-foreground">
+                No card required to sign up — you'll pick a plan as you start setting things up, then
+                you're quoting off your own price sheet the same day.
+              </p>
 
-          <ul className="mt-6 space-y-2 text-sm text-muted-foreground">
-            {[
-              "No trial — you'll pick a plan as you get set up",
-              "Cancel from the billing page",
-              "Your pricing stays yours",
-              "Starts empty — this is your real account, not the sample dashboard",
-            ].map((p) => (
-              <li key={p} className="flex gap-2">
-                <Check className="mt-0.5 h-4 w-4 text-success" /> {p}
-              </li>
-            ))}
-          </ul>
+              <form className="mt-8 space-y-4" onSubmit={submit}>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div>
+                    <Label htmlFor="name">Your name</Label>
+                    <Input
+                      id="name"
+                      className="mt-1.5"
+                      placeholder="Ray Delgado"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      required
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="phone">Mobile</Label>
+                    <Input
+                      id="phone"
+                      className="mt-1.5"
+                      placeholder="(512) 555-0110"
+                      value={phone}
+                      onChange={(e) => setPhone(e.target.value)}
+                      required
+                    />
+                  </div>
+                </div>
+                <div>
+                  <Label htmlFor="email">Email</Label>
+                  <Input
+                    id="email"
+                    type="email"
+                    className="mt-1.5"
+                    placeholder="ray@delgadoplumbing.com"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    required
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="password">Password</Label>
+                  <Input
+                    id="password"
+                    type="password"
+                    className="mt-1.5"
+                    placeholder="At least 8 characters"
+                    minLength={8}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    required
+                  />
+                </div>
+                <Button type="submit" size="lg" className="w-full" disabled={busy}>
+                  {busy ? "Creating account…" : "Create account"}
+                </Button>
+              </form>
 
-          <p className="mt-6 text-sm text-muted-foreground">
-            Already set up?{" "}
-            <Link to="/login" className="font-semibold text-primary underline-offset-4 hover:underline">
-              Log in
-            </Link>
-          </p>
+              <ul className="mt-6 space-y-2 text-sm text-muted-foreground">
+                {[
+                  "No trial — you'll pick a plan as you get set up",
+                  "Cancel from the billing page",
+                  "Your pricing stays yours",
+                  "Starts empty — this is your real account, not the sample dashboard",
+                ].map((p) => (
+                  <li key={p} className="flex gap-2">
+                    <Check className="mt-0.5 h-4 w-4 text-success" /> {p}
+                  </li>
+                ))}
+              </ul>
+
+              <p className="mt-6 text-sm text-muted-foreground">
+                Already set up?{" "}
+                <Link to="/login" className="font-semibold text-primary underline-offset-4 hover:underline">
+                  Log in
+                </Link>
+              </p>
+            </>
+          )}
         </div>
       </div>
       <div className="hidden bg-ink lg:block">

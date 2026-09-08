@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { supabase } from "@/integrations/supabase/client";
+import { isOwnerEmail } from "@/lib/owner-gate";
 import heroMockup from "@/assets/aircraft-detailing-mockup.png";
 
 export const Route = createFileRoute("/login")({
@@ -29,13 +30,19 @@ function Login() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
+  const [blocked, setBlocked] = useState(false);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
     try {
-      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) throw error;
+      if (!isOwnerEmail(data.user?.email)) {
+        await supabase.auth.signOut();
+        setBlocked(true);
+        return;
+      }
       toast.success("Signed in.");
       navigate({ to: "/dashboard" });
     } catch (err) {
@@ -61,44 +68,53 @@ function Login() {
             </Link>
           </div>
           <h1 className="mt-10 text-3xl">Welcome back.</h1>
-          <p className="mt-2 text-sm text-muted-foreground">Pick up where the last job left off.</p>
 
-          <form className="mt-8 space-y-4" onSubmit={submit}>
-            <div>
-              <Label htmlFor="email">Email</Label>
-              <Input
-                id="email"
-                type="email"
-                className="mt-1.5"
-                placeholder="ray@delgadoplumbing.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-              />
-            </div>
-            <div>
-              <Label htmlFor="password">Password</Label>
-              <Input
-                id="password"
-                type="password"
-                className="mt-1.5"
-                placeholder="••••••••"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-              />
-            </div>
-            <Button type="submit" size="lg" className="w-full" disabled={busy}>
-              {busy ? "Signing in…" : "Log in"}
-            </Button>
-          </form>
+          {blocked ? (
+            <p className="mt-6 text-sm text-muted-foreground">
+              Job It Ready isn't open for accounts yet — coming soon.
+            </p>
+          ) : (
+            <>
+              <p className="mt-2 text-sm text-muted-foreground">Pick up where the last job left off.</p>
 
-          <p className="mt-6 text-sm text-muted-foreground">
-            No account yet?{" "}
-            <Link to="/signup" className="font-semibold text-primary underline-offset-4 hover:underline">
-              Sign up
-            </Link>
-          </p>
+              <form className="mt-8 space-y-4" onSubmit={submit}>
+                <div>
+                  <Label htmlFor="email">Email</Label>
+                  <Input
+                    id="email"
+                    type="email"
+                    className="mt-1.5"
+                    placeholder="ray@delgadoplumbing.com"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    required
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="password">Password</Label>
+                  <Input
+                    id="password"
+                    type="password"
+                    className="mt-1.5"
+                    placeholder="••••••••"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    required
+                  />
+                </div>
+                <Button type="submit" size="lg" className="w-full" disabled={busy}>
+                  {busy ? "Signing in…" : "Log in"}
+                </Button>
+              </form>
+
+              <p className="mt-6 text-sm text-muted-foreground">
+                No account yet?{" "}
+                <Link to="/signup" className="font-semibold text-primary underline-offset-4 hover:underline">
+                  Sign up
+                </Link>
+              </p>
+            </>
+          )}
         </div>
       </div>
       <div className="hidden bg-ink lg:block">
