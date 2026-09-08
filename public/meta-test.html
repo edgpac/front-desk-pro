@@ -7,25 +7,41 @@
   body { font-family: -apple-system, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 16px; }
   label { display: block; margin-top: 16px; font-weight: 600; font-size: 14px; }
   input[type="text"] { width: 100%; padding: 8px; font-family: monospace; font-size: 14px; box-sizing: border-box; }
+  select { width: 100%; padding: 8px; font-family: monospace; font-size: 13px; box-sizing: border-box; }
   button { margin-top: 16px; padding: 10px 20px; font-size: 15px; cursor: pointer; }
   #log { margin-top: 24px; padding: 12px; background: #111; color: #0f0; font-family: monospace; font-size: 12px;
          white-space: pre-wrap; word-break: break-all; height: 400px; overflow-y: auto; border-radius: 4px; }
   .note { color: #666; font-size: 13px; margin-top: 8px; }
+  .warn { color: #a60; font-size: 13px; margin-top: 8px; font-weight: 600; }
 </style>
 </head>
 <body>
 
 <h2>Meta WhatsApp Embedded Signup — isolated test</h2>
 <p class="note">
-  Plain HTML, no React, no bundling, no app secret. Used only to determine
-  whether a given Facebook Login for Business configuration produces a code
-  that Meta's own token exchange will accept — completely independent of
-  the production dashboard app. TEMPORARY — delete this file, its API route,
-  and the export on exchangeCodeForToken once the test is done.
+  Plain HTML, no React, no bundling, no app secret. Used to determine
+  whether a given Facebook Login for Business configuration, and a given
+  redirect_uri at exchange time, produces a code that Meta's own token
+  exchange will accept — completely independent of the production
+  dashboard app. TEMPORARY — delete this file, its API route, and the
+  exports it depends on in meta-whatsapp-server.ts once the test is done.
+</p>
+<p class="warn">
+  Authorization codes are single-use. Each redirect_uri option below needs
+  its own fresh "Connect WhatsApp" run — don't reuse a code across runs.
 </p>
 
 <label for="configId">Configuration ID to test</label>
 <input type="text" id="configId" value="1794429681690457" autocomplete="off" />
+
+<label for="redirectUri">redirect_uri to send at exchange time (this run only)</label>
+<select id="redirectUri">
+  <option value="">(none — matches current production behavior)</option>
+  <option value="https://front-desk-pro-ten.vercel.app/">https://front-desk-pro-ten.vercel.app/ (domain root)</option>
+  <option value="https://front-desk-pro-ten.vercel.app/dashboard/settings/business">https://front-desk-pro-ten.vercel.app/dashboard/settings/business (registered path)</option>
+  <option value="__custom__">Custom (type below)</option>
+</select>
+<input type="text" id="customRedirectUri" placeholder="Paste a custom redirect_uri (e.g. the xd_arbiter URL) here" style="margin-top:8px; display:none;" />
 
 <button onclick="launchWhatsAppSignup()">Connect WhatsApp (test)</button>
 <button onclick="clearLog()">Clear log</button>
@@ -46,6 +62,18 @@
     document.getElementById("log").textContent = "";
   }
 
+  document.getElementById("redirectUri").addEventListener("change", (e) => {
+    document.getElementById("customRedirectUri").style.display = e.target.value === "__custom__" ? "block" : "none";
+  });
+
+  function getSelectedRedirectUri() {
+    const sel = document.getElementById("redirectUri").value;
+    if (sel === "__custom__") {
+      return document.getElementById("customRedirectUri").value.trim();
+    }
+    return sel;
+  }
+
   log(`Page loaded. User-Agent: ${navigator.userAgent}`);
 
   window.fbAsyncInit = function () {
@@ -60,6 +88,7 @@
 
   function launchWhatsAppSignup() {
     const configId = document.getElementById("configId").value.trim();
+    const redirectUriForExchange = getSelectedRedirectUri();
     if (!configId) {
       log("ERROR: no configuration ID entered.");
       return;
@@ -68,7 +97,7 @@
       log("ERROR: Facebook SDK not loaded yet — try again in a moment.");
       return;
     }
-    log(`Calling FB.login() with config_id=${configId} ...`);
+    log(`Calling FB.login() with config_id=${configId} ... (will exchange with redirect_uri=${redirectUriForExchange || "(none)"})`);
     FB.login(
       (response) => {
         log(`FB.login() callback fired. Full response: ${JSON.stringify(response)}`);
@@ -77,19 +106,19 @@
           log("No authorization code in response (user may have closed the popup, or an error occurred).");
           return;
         }
-        log(`Authorization code received (length ${code.length}). Sending to server exchange...`);
+        log(`Authorization code received (length ${code.length}). Sending to server exchange with redirect_uri=${redirectUriForExchange || "(none)"} ...`);
         fetch("/api/meta-test-exchange", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ code }),
+          body: JSON.stringify({ code, redirect_uri: redirectUriForExchange || undefined }),
         })
           .then((r) => r.json())
           .then((result) => {
             log(`Server exchange result: ${JSON.stringify(result)}`);
             if (result.status === "success") {
-              log("✅ SUCCESS — Meta accepted this code and issued an access token.");
+              log(`✅ SUCCESS — Meta accepted this code with redirect_uri=${result.redirectUriUsed || "(none)"} and issued an access token.`);
             } else {
-              log(`❌ FAILED — ${result.message}`);
+              log(`❌ FAILED with redirect_uri=${result.redirectUriUsed || "(none)"} — ${result.message}`);
             }
           })
           .catch((err) => {

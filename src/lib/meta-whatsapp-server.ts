@@ -9,7 +9,11 @@ import { getAdminClient } from "@/lib/public-lead-server";
 // is imported by whatsapp-conversation-server.ts or api.whatsapp.webhook.tsx
 // — the two channels stay fully independent.
 
-function getMetaCredentials() {
+// Exported (along with graphUrl and describeMetaError below) only so the
+// TEMPORARY diagnostic route (src/routes/api.meta-test-exchange.tsx) can
+// build its own redirect_uri experiment without duplicating credential
+// handling. No logic in any of these three functions has changed.
+export function getMetaCredentials() {
   const appId = process.env["VITE_META_APP_ID"];
   const appSecret = process.env["META_APP_SECRET"];
   const apiVersion = process.env["META_API_VERSION"] || "v26.0";
@@ -19,7 +23,7 @@ function getMetaCredentials() {
   return { appId, appSecret, apiVersion };
 }
 
-function graphUrl(apiVersion: string, path: string) {
+export function graphUrl(apiVersion: string, path: string) {
   return `https://graph.facebook.com/${apiVersion}${path}`;
 }
 
@@ -34,7 +38,7 @@ export type MetaSignupResult = MetaSignupSuccess | MetaSignupError;
 // fbtrace_id}} — exactly those four fields and nothing else. Shared by
 // every Graph API call in this file so whichever step fails, the log
 // names the specific reason instead of just an HTTP status.
-async function describeMetaError(response: Response): Promise<string> {
+export async function describeMetaError(response: Response): Promise<string> {
   let detail = `HTTP ${response.status}`;
   try {
     const errorJson = (await response.json()) as {
