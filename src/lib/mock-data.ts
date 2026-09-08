@@ -275,10 +275,10 @@ export const TENANT: Tenant = {
 };
 
 export const embedSnippet = (slug: string) =>
-  `<!-- FrontDesk quote widget -->
-<script src="https://cdn.frontdesk.tools/widget.js"
+  `<!-- Job It Ready quote widget -->
+<script src="https://cdn.jobitready.com/widget.js"
         data-shop="${slug}"
         data-position="bottom-right"
         async></script>`;
 
-export const quoteLink = (slug: string) => `https://frontdesk.tools/quote/${slug}`;
+export const quoteLink = (slug: string) => `https://www.jobitready.com/quote/${slug}`;

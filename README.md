@@ -87,9 +87,8 @@ AI-crawler-readable summary of the product), `public/sitemap.xml` (generated
 via `npm run generate-sitemap`, listing only real marketing pages — not
 `/dashboard/*` or `/api/*`), a `Sitemap:` line in `robots.txt`, and
 `SoftwareApplication` JSON-LD structured data on the homepage. All of this
-currently points at `frontdesk.tools` as a placeholder domain, matching the
-one already used in `src/lib/mock-data.ts`'s widget/quote-link helpers —
-swap it for the real domain once one is registered.
+points at `www.jobitready.com`, the real registered domain, matching the
+one used in `src/lib/mock-data.ts`'s widget/quote-link helpers.
 
 ## Scope
 

@@ -13,4 +13,4 @@ Allow: /
 User-agent: *
 Allow: /
 
-Sitemap: https://frontdesk.tools/sitemap.xml
+Sitemap: https://www.jobitready.com/sitemap.xml
