@@ -162,7 +162,7 @@ export function ConnectWhatsAppMeta() {
         config_id: configId,
         response_type: "code",
         override_default_response_type: true,
-        extras: { setup: {} },
+        extras: { setup: {}, sessionInfoVersion: "3" },
       },
     );
     setStatus("connecting");
