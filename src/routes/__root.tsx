@@ -88,6 +88,10 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
+      // Meta Business Manager domain-ownership verification for
+      // jobitready.com — not temporary, keep this indefinitely (Meta
+      // periodically re-checks it).
+      { name: "facebook-domain-verification", content: "mmcl7wmuxmq3pcw3q1q7qui94sof79" },
     ],
     links: [
       { rel: "stylesheet", href: appCss },
