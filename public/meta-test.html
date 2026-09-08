@@ -50,11 +50,13 @@
 
 <script>
   const APP_ID = "980714215030262"; // public, client-safe — same VITE_META_APP_ID used everywhere in the app
+  let runCounter = 0;
 
-  function log(line) {
+  function log(line, run) {
     const el = document.getElementById("log");
     const ts = new Date().toISOString();
-    el.textContent += `[${ts}] ${line}\n`;
+    const prefix = run ? `[RUN ${run}] ` : "";
+    el.textContent += `[${ts}] ${prefix}${line}\n`;
     el.scrollTop = el.scrollHeight;
   }
 
@@ -87,26 +89,37 @@
   };
 
   function launchWhatsAppSignup() {
+    const run = ++runCounter;
     const configId = document.getElementById("configId").value.trim();
     const redirectUriForExchange = getSelectedRedirectUri();
     if (!configId) {
-      log("ERROR: no configuration ID entered.");
+      log("ERROR: no configuration ID entered.", run);
       return;
     }
     if (!window.FB) {
-      log("ERROR: Facebook SDK not loaded yet — try again in a moment.");
+      log("ERROR: Facebook SDK not loaded yet — try again in a moment.", run);
       return;
     }
-    log(`Calling FB.login() with config_id=${configId} ... (will exchange with redirect_uri=${redirectUriForExchange || "(none)"})`);
+    log(`START — config_id=${configId}, selected exchange redirect_uri=${redirectUriForExchange || "(none)"}`, run);
+    log("Calling FB.login() now — watch for a popup or a Chrome pop-up-blocked icon in the address bar.", run);
+
+    // Safety net: if neither the FB.login() callback nor a popup-blocked
+    // signal appears within 15s, log that explicitly instead of leaving
+    // this run silently hanging with no further output.
+    const stallTimer = setTimeout(() => {
+      log("⚠️ No FB.login() callback after 15s — the popup likely never opened or is still awaiting user action. Check the address bar for a pop-up-blocked icon.", run);
+    }, 15000);
+
     FB.login(
       (response) => {
-        log(`FB.login() callback fired. Full response: ${JSON.stringify(response)}`);
+        clearTimeout(stallTimer);
+        log(`FB.login() callback fired. status=${response && response.status}. Full response: ${JSON.stringify(response)}`, run);
         const code = response && response.authResponse && response.authResponse.code;
         if (!code) {
-          log("No authorization code in response (user may have closed the popup, or an error occurred).");
+          log("RESULT: no authorization code in response (user may have closed the popup, or an error occurred). No exchange attempted.", run);
           return;
         }
-        log(`Authorization code received (length ${code.length}). Sending to server exchange with redirect_uri=${redirectUriForExchange || "(none)"} ...`);
+        log(`Authorization code received: YES (length ${code.length}). Sending to server exchange with redirect_uri=${redirectUriForExchange || "(none)"} ...`, run);
         fetch("/api/meta-test-exchange", {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -114,15 +127,15 @@
         })
           .then((r) => r.json())
           .then((result) => {
-            log(`Server exchange result: ${JSON.stringify(result)}`);
             if (result.status === "success") {
-              log(`✅ SUCCESS — Meta accepted this code with redirect_uri=${result.redirectUriUsed || "(none)"} and issued an access token.`);
+              log(`RESULT: ✅ SUCCESS — redirect_uri sent=${result.redirectUriUsed || "(none)"} — Meta accepted this code and issued an access token.`, run);
             } else {
-              log(`❌ FAILED with redirect_uri=${result.redirectUriUsed || "(none)"} — ${result.message}`);
+              // result.message is describeMetaError's output: message="...", type=..., code=..., error_subcode=..., fbtrace_id=...
+              log(`RESULT: ❌ FAILED — redirect_uri sent=${result.redirectUriUsed || "(none)"} — ${result.message}`, run);
             }
           })
           .catch((err) => {
-            log(`ERROR calling server exchange: ${err}`);
+            log(`RESULT: ERROR calling server exchange: ${err}`, run);
           });
       },
       {
