@@ -1,6 +1,8 @@
+import crypto from "node:crypto";
 import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { getAdminClient } from "@/lib/public-lead-server";
+import type { InboundWhatsAppTenant } from "@/lib/whatsapp-conversation-server";
 
 // Meta WhatsApp Cloud API — Stage 2B: Embedded Signup + OAuth/token
 // exchange only. No webhook, no inbound/outbound messaging, no templates —
@@ -297,3 +299,126 @@ export const completeMetaWhatsAppSignup = createServerFn({ method: "POST" })
     console.log(`[Meta WhatsApp] COMPLETE ✓ tenant=${tenantId}`);
     return { status: "connected", displayPhoneNumber };
   });
+
+// --- Stage 2C: inbound webhook + outbound send/media, used by
+// api.whatsapp.meta-webhook.tsx ------------------------------------------
+
+// Meta signs every webhook POST with HMAC-SHA256 over the raw body, using
+// the app secret — same spirit as Twilio's signature check in
+// twilio-server.ts, different algorithm and header. Constant-time compare,
+// same reasoning as verifyTwilioSignature: a signature check should never
+// short-circuit on the first mismatched byte.
+export function verifyMetaWebhookSignature(rawBody: string, header: string | null): boolean {
+  if (!header || !header.startsWith("sha256=")) return false;
+  const { appSecret } = getMetaCredentials();
+  const expected = crypto.createHmac("sha256", appSecret).update(rawBody, "utf-8").digest("hex");
+  const actual = header.slice("sha256=".length);
+
+  const expectedBuf = Buffer.from(expected);
+  const actualBuf = Buffer.from(actual);
+  if (expectedBuf.length !== actualBuf.length) return false;
+  return crypto.timingSafeEqual(expectedBuf, actualBuf);
+}
+
+// The routing key an inbound Meta webhook is resolved by. `status = 'online'`
+// is what actually makes a disconnected tenant stop receiving messages,
+// independent of how fast Meta's own unsubscribe propagates; `.single()`
+// (not .maybeSingle() or an unbounded list) means that if the
+// meta_phone_number_id_active_idx uniqueness constraint were ever somehow
+// violated, this fails loudly instead of silently routing to one of two
+// matching tenants. Returns the token this tenant's connection stored, plus
+// exactly the tenant fields handleInboundWhatsAppMessage needs — never the
+// whole row.
+export async function resolveActiveMetaConnection(
+  phoneNumberId: string,
+): Promise<{ accessToken: string; tenant: InboundWhatsAppTenant } | null> {
+  const admin = getAdminClient();
+  const { data, error } = await admin
+    .from("whatsapp_connections")
+    .select(
+      "meta_system_user_token, tenants!inner(id, slug, name, email, currency, labor_rate, service_call_fee)",
+    )
+    .eq("meta_phone_number_id", phoneNumberId)
+    .eq("status", "online")
+    .single();
+  if (error || !data) return null;
+
+  const accessToken = data["meta_system_user_token"] as string | null;
+  const tenantRow = data["tenants"] as unknown as {
+    id: string;
+    slug: string;
+    name: string;
+    email: string;
+    currency: string;
+    labor_rate: number;
+    service_call_fee: number;
+  };
+  if (!accessToken || !tenantRow) return null;
+
+  return {
+    accessToken,
+    tenant: {
+      id: tenantRow.id,
+      slug: tenantRow.slug,
+      name: tenantRow.name,
+      email: tenantRow.email,
+      currency: tenantRow.currency,
+      laborRate: tenantRow.labor_rate,
+      serviceCallFee: tenantRow.service_call_fee,
+    },
+  };
+}
+
+export async function sendWhatsAppMessageMeta(params: {
+  phoneNumberId: string;
+  accessToken: string;
+  to: string;
+  body: string;
+}): Promise<void> {
+  const { apiVersion } = getMetaCredentials();
+  const response = await fetch(graphUrl(apiVersion, `/${params.phoneNumberId}/messages`), {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${params.accessToken}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      messaging_product: "whatsapp",
+      to: params.to.replace(/^\+/, ""),
+      type: "text",
+      text: { body: params.body },
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(`Meta send failed (${response.status}): ${await describeMetaError(response)}`);
+  }
+}
+
+// Meta's media retrieval is a two-step lookup, unlike Twilio's stable media
+// URL: GET /{media-id} for a short-lived CDN URL + mime type, then GET that
+// URL with the same Bearer token. Same return shape as
+// fetchTwilioMediaAsBase64 so handleInboundWhatsAppMessage doesn't need to
+// know which channel it came from.
+export async function fetchMetaMediaAsBase64(
+  mediaId: string,
+  accessToken: string,
+): Promise<{ base64: string; mediaType: string }> {
+  const { apiVersion } = getMetaCredentials();
+  const lookup = await fetch(graphUrl(apiVersion, `/${mediaId}`), {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!lookup.ok) {
+    throw new Error(`Could not look up Meta media (${lookup.status}): ${await describeMetaError(lookup)}`);
+  }
+  const { url, mime_type: mimeType } = (await lookup.json()) as { url?: string; mime_type?: string };
+  if (!url) {
+    throw new Error("Meta media lookup returned no URL.");
+  }
+
+  const download = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+  if (!download.ok) {
+    throw new Error(`Could not download Meta media (${download.status}).`);
+  }
+  const buffer = Buffer.from(await download.arrayBuffer());
+  return { base64: buffer.toString("base64"), mediaType: mimeType || "image/jpeg" };
+}

@@ -28,6 +28,7 @@ import { Route as DashboardWidgetRouteImport } from './routes/dashboard.widget'
 import { Route as OnboardingIndexRouteImport } from './routes/onboarding.index'
 import { Route as QuoteSlugRouteImport } from './routes/quote.$slug'
 import { Route as ApiStripeWebhookRouteImport } from './routes/api.stripe.webhook'
+import { Route as ApiWhatsappMetaWebhookRouteImport } from './routes/api.whatsapp.meta-webhook'
 import { Route as ApiWhatsappWebhookRouteImport } from './routes/api.whatsapp.webhook'
 import { Route as DashboardLeadsIndexRouteImport } from './routes/dashboard.leads.index'
 import { Route as DashboardLeadsIdRouteImport } from './routes/dashboard.leads.$id'
@@ -134,6 +135,11 @@ const ApiStripeWebhookRoute = ApiStripeWebhookRouteImport.update({
   path: '/api/stripe/webhook',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiWhatsappMetaWebhookRoute = ApiWhatsappMetaWebhookRouteImport.update({
+  id: '/api/whatsapp/meta-webhook',
+  path: '/api/whatsapp/meta-webhook',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiWhatsappWebhookRoute = ApiWhatsappWebhookRouteImport.update({
   id: '/api/whatsapp/webhook',
   path: '/api/whatsapp/webhook',
@@ -209,6 +215,7 @@ export interface FileRoutesByFullPath {
   '/dashboard/': typeof DashboardIndexRoute
   '/onboarding/': typeof OnboardingIndexRoute
   '/api/stripe/webhook': typeof ApiStripeWebhookRoute
+  '/api/whatsapp/meta-webhook': typeof ApiWhatsappMetaWebhookRoute
   '/api/whatsapp/webhook': typeof ApiWhatsappWebhookRoute
   '/dashboard/leads/$id': typeof DashboardLeadsIdRouteWithChildren
   '/dashboard/settings/billing': typeof DashboardSettingsBillingRoute
@@ -237,6 +244,7 @@ export interface FileRoutesByTo {
   '/dashboard': typeof DashboardIndexRoute
   '/onboarding': typeof OnboardingIndexRoute
   '/api/stripe/webhook': typeof ApiStripeWebhookRoute
+  '/api/whatsapp/meta-webhook': typeof ApiWhatsappMetaWebhookRoute
   '/api/whatsapp/webhook': typeof ApiWhatsappWebhookRoute
   '/dashboard/settings/billing': typeof DashboardSettingsBillingRoute
   '/dashboard/settings/business': typeof DashboardSettingsBusinessRoute
@@ -268,6 +276,7 @@ export interface FileRoutesById {
   '/dashboard/': typeof DashboardIndexRoute
   '/onboarding/': typeof OnboardingIndexRoute
   '/api/stripe/webhook': typeof ApiStripeWebhookRoute
+  '/api/whatsapp/meta-webhook': typeof ApiWhatsappMetaWebhookRoute
   '/api/whatsapp/webhook': typeof ApiWhatsappWebhookRoute
   '/dashboard/leads/$id': typeof DashboardLeadsIdRouteWithChildren
   '/dashboard/settings/billing': typeof DashboardSettingsBillingRoute
@@ -301,6 +310,7 @@ export interface FileRouteTypes {
     | '/dashboard/'
     | '/onboarding/'
     | '/api/stripe/webhook'
+    | '/api/whatsapp/meta-webhook'
     | '/api/whatsapp/webhook'
     | '/dashboard/leads/$id'
     | '/dashboard/settings/billing'
@@ -329,6 +339,7 @@ export interface FileRouteTypes {
     | '/dashboard'
     | '/onboarding'
     | '/api/stripe/webhook'
+    | '/api/whatsapp/meta-webhook'
     | '/api/whatsapp/webhook'
     | '/dashboard/settings/billing'
     | '/dashboard/settings/business'
@@ -359,6 +370,7 @@ export interface FileRouteTypes {
     | '/dashboard/'
     | '/onboarding/'
     | '/api/stripe/webhook'
+    | '/api/whatsapp/meta-webhook'
     | '/api/whatsapp/webhook'
     | '/dashboard/leads/$id'
     | '/dashboard/settings/billing'
@@ -385,6 +397,7 @@ export interface RootRouteChildren {
   ApiMetaTestExchangeRoute: typeof ApiMetaTestExchangeRoute
   QuoteSlugRoute: typeof QuoteSlugRoute
   ApiStripeWebhookRoute: typeof ApiStripeWebhookRoute
+  ApiWhatsappMetaWebhookRoute: typeof ApiWhatsappMetaWebhookRoute
   ApiWhatsappWebhookRoute: typeof ApiWhatsappWebhookRoute
 }
 
@@ -521,6 +534,13 @@ declare module '@tanstack/react-router' {
       path: '/api/stripe/webhook'
       fullPath: '/api/stripe/webhook'
       preLoaderRoute: typeof ApiStripeWebhookRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/whatsapp/meta-webhook': {
+      id: '/api/whatsapp/meta-webhook'
+      path: '/api/whatsapp/meta-webhook'
+      fullPath: '/api/whatsapp/meta-webhook'
+      preLoaderRoute: typeof ApiWhatsappMetaWebhookRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/whatsapp/webhook': {
@@ -679,6 +699,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiMetaTestExchangeRoute: ApiMetaTestExchangeRoute,
   QuoteSlugRoute: QuoteSlugRoute,
   ApiStripeWebhookRoute: ApiStripeWebhookRoute,
+  ApiWhatsappMetaWebhookRoute: ApiWhatsappMetaWebhookRoute,
   ApiWhatsappWebhookRoute: ApiWhatsappWebhookRoute,
 }
 export const routeTree = rootRouteImport
