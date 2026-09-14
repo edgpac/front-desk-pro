@@ -331,18 +331,19 @@ export function verifyMetaWebhookSignature(rawBody: string, header: string | nul
 // whole row.
 export async function resolveActiveMetaConnection(
   phoneNumberId: string,
-): Promise<{ accessToken: string; tenant: InboundWhatsAppTenant } | null> {
+): Promise<{ connectionId: string; accessToken: string; tenant: InboundWhatsAppTenant } | null> {
   const admin = getAdminClient();
   const { data, error } = await admin
     .from("whatsapp_connections")
     .select(
-      "meta_system_user_token, tenants!inner(id, slug, name, email, currency, labor_rate, service_call_fee)",
+      "id, meta_system_user_token, tenants!inner(id, slug, name, email, currency, labor_rate, service_call_fee)",
     )
     .eq("meta_phone_number_id", phoneNumberId)
     .eq("status", "online")
     .single();
   if (error || !data) return null;
 
+  const connectionId = data["id"] as string;
   const accessToken = data["meta_system_user_token"] as string | null;
   const tenantRow = data["tenants"] as unknown as {
     id: string;
@@ -356,6 +357,7 @@ export async function resolveActiveMetaConnection(
   if (!accessToken || !tenantRow) return null;
 
   return {
+    connectionId,
     accessToken,
     tenant: {
       id: tenantRow.id,
@@ -422,3 +424,149 @@ export async function fetchMetaMediaAsBase64(
   const buffer = Buffer.from(await download.arrayBuffer());
   return { base64: buffer.toString("base64"), mediaType: mimeType || "image/jpeg" };
 }
+
+// Marks a connection broken and records why, so it's visible the next time
+// anyone calls getMyWhatsAppConnection below — the pragmatic equivalent of
+// Tel-Agent's in-process health registry, sized to what this schema already
+// has (whatsapp_connections.status/error_reason from 0003) rather than a
+// new notification system. Any send failure is treated as connection-
+// affecting, not just token-expiry specifically — a deliberate
+// simplification: the cost of over-triggering on a transient failure is a
+// reconnect prompt the owner didn't strictly need, not a broken feature.
+export async function markConnectionFailed(connectionId: string, reason: string): Promise<void> {
+  const admin = getAdminClient();
+  await admin
+    .from("whatsapp_connections")
+    .update({ status: "failed", error_reason: reason.slice(0, 500) })
+    .eq("id", connectionId);
+}
+
+// Duplicate-delivery dedup (Stage 2D, built in after auditing against
+// Tel-Agent's `last_wamid` equivalent). Insert-and-catch-conflict IS the
+// check: a second delivery of the same wamid hits
+// whatsapp_processed_messages' primary key and this returns true, so the
+// caller skips processing before any AI call or send happens. Postgres
+// error code 23505 is unique_violation — anything else is a real failure,
+// not a duplicate, and is rethrown rather than silently treated as "already
+// processed."
+export async function wasMessageAlreadyProcessed(messageId: string): Promise<boolean> {
+  const admin = getAdminClient();
+  const { error } = await admin.from("whatsapp_processed_messages").insert({ message_id: messageId });
+  if (!error) return false;
+  if (error.code === "23505") return true;
+  throw new Error(`Could not record processed message id: ${error.message}`);
+}
+
+export type MyWhatsAppConnection = {
+  status: "creating" | "offline" | "verifying" | "online" | "failed" | "disconnected";
+  displayPhoneNumber: string | null;
+  errorReason: string | null;
+  connectedAt: string | null;
+};
+
+// The dashboard-facing read — auth-gated, hand-picked non-secret fields
+// only (status, display number, error reason, connected_at), never
+// meta_system_user_token/waba_id/meta_phone_number_id. Returns null when
+// the tenant has never connected (not an error — a business that hasn't
+// set this up yet is the normal case, not a failure).
+export const getMyWhatsAppConnection = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }): Promise<MyWhatsAppConnection | null> => {
+    const { data: tenantRow } = await context.supabase
+      .from("tenants")
+      .select("id")
+      .eq("user_id", context.userId)
+      .single();
+    if (!tenantRow) return null;
+
+    const admin = getAdminClient();
+    const { data } = await admin
+      .from("whatsapp_connections")
+      .select("status, display_phone_number, error_reason, connected_at")
+      .eq("tenant_id", tenantRow.id as string)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (!data) return null;
+
+    return {
+      status: data["status"] as MyWhatsAppConnection["status"],
+      displayPhoneNumber: (data["display_phone_number"] as string | null) ?? null,
+      errorReason: (data["error_reason"] as string | null) ?? null,
+      connectedAt: (data["connected_at"] as string | null) ?? null,
+    };
+  });
+
+type DisconnectResult = { status: "disconnected" } | { status: "error"; message: string };
+
+// Auth-gated, derives tenant_id server-side from the session — never
+// accepts a client-supplied connectionId, so there is nothing for a client
+// to even attempt to point at another tenant's connection. Nulls out
+// meta_system_user_token immediately: a disconnected token is a live
+// secret with no further legitimate use, and reconnecting always mints a
+// fresh one via a new Embedded Signup run rather than reusing the old one.
+export const disconnectMetaWhatsApp = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }): Promise<DisconnectResult> => {
+    const { data: tenantRow, error: tenantError } = await context.supabase
+      .from("tenants")
+      .select("id")
+      .eq("user_id", context.userId)
+      .single();
+    if (tenantError || !tenantRow) {
+      return { status: "error", message: "Could not find your business." };
+    }
+
+    const admin = getAdminClient();
+    const { data: connection, error: findError } = await admin
+      .from("whatsapp_connections")
+      .select("id, waba_id, meta_system_user_token")
+      .eq("tenant_id", tenantRow.id as string)
+      .neq("status", "disconnected")
+      .neq("status", "failed")
+      .maybeSingle();
+    if (findError) {
+      return { status: "error", message: "Could not look up your WhatsApp connection." };
+    }
+    if (!connection) {
+      // Nothing active to disconnect — not an error, the end state is the
+      // same either way.
+      return { status: "disconnected" };
+    }
+
+    const wabaId = connection["waba_id"] as string | null;
+    const accessToken = connection["meta_system_user_token"] as string | null;
+    if (wabaId && accessToken) {
+      try {
+        const { apiVersion } = getMetaCredentials();
+        const response = await fetch(graphUrl(apiVersion, `/${wabaId}/subscribed_apps`), {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        if (!response.ok) {
+          // Meta-side unsubscribe failing doesn't block disconnecting
+          // locally — an owner asking to disconnect should never get stuck
+          // because Meta's API had a bad moment. Logged, not fatal.
+          console.error(
+            `[Meta WhatsApp] unsubscribe failed for connection ${connection["id"]}: ${await describeMetaError(response)}`,
+          );
+        }
+      } catch (err) {
+        console.error(`[Meta WhatsApp] unsubscribe request failed for connection ${connection["id"]}:`, err);
+      }
+    }
+
+    const { error: updateError } = await admin
+      .from("whatsapp_connections")
+      .update({
+        status: "disconnected",
+        disconnected_at: new Date().toISOString(),
+        meta_system_user_token: null,
+      })
+      .eq("id", connection["id"] as string);
+    if (updateError) {
+      return { status: "error", message: "Could not disconnect WhatsApp. Please try again." };
+    }
+
+    return { status: "disconnected" };
+  });

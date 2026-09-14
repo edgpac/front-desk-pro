@@ -2,7 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
-import { completeMetaWhatsAppSignup } from "@/lib/meta-whatsapp-server";
+import {
+  completeMetaWhatsAppSignup,
+  disconnectMetaWhatsApp,
+  getMyWhatsAppConnection,
+  type MyWhatsAppConnection,
+} from "@/lib/meta-whatsapp-server";
 
 // Meta Embedded Signup — Stage 2B only. This component's entire job is:
 // load Meta's JS SDK, trigger FB.login() with the Embedded Signup
@@ -63,6 +68,13 @@ export function ConnectWhatsAppMeta() {
   const [status, setStatus] = useState<Status>("idle");
   const [displayPhoneNumber, setDisplayPhoneNumber] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState("");
+  // The persisted connection state, separate from `status` above (which
+  // tracks only the in-progress FB.login() flow) — without this, reloading
+  // the page after a successful connect would show the "Connect" button
+  // again even though whatsapp_connections already has an online row.
+  const [connection, setConnection] = useState<MyWhatsAppConnection | null>(null);
+  const [loadingConnection, setLoadingConnection] = useState(true);
+  const [disconnecting, setDisconnecting] = useState(false);
   const sdkLoadTriggered = useRef(false);
   const capturedRedirectUri = useRef<string | null>(null);
   const capturedWabaId = useRef<string | null>(null);
@@ -70,6 +82,43 @@ export function ConnectWhatsAppMeta() {
 
   const appId = import.meta.env["VITE_META_APP_ID"] as string | undefined;
   const configId = import.meta.env["VITE_META_CONFIG_ID"] as string | undefined;
+
+  useEffect(() => {
+    let active = true;
+    getMyWhatsAppConnection()
+      .then((result) => {
+        if (active) setConnection(result);
+      })
+      .catch(() => {
+        // Not fatal — the component just falls back to showing the
+        // "Connect" button, same as a tenant who never connected.
+      })
+      .finally(() => {
+        if (active) setLoadingConnection(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  async function handleDisconnect() {
+    setDisconnecting(true);
+    try {
+      const result = await disconnectMetaWhatsApp();
+      if (result.status === "disconnected") {
+        setConnection(null);
+        setStatus("idle");
+        setDisplayPhoneNumber(null);
+        toast.success("WhatsApp disconnected.");
+      } else {
+        toast.error(result.message);
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Couldn't disconnect WhatsApp.");
+    } finally {
+      setDisconnecting(false);
+    }
+  }
 
   useEffect(() => {
     // Load Meta's SDK as soon as this component mounts — not on click.
@@ -184,6 +233,12 @@ export function ConnectWhatsAppMeta() {
             if (result.status === "connected") {
               setStatus("connected");
               setDisplayPhoneNumber(result.displayPhoneNumber);
+              setConnection({
+                status: "online",
+                displayPhoneNumber: result.displayPhoneNumber,
+                errorReason: null,
+                connectedAt: new Date().toISOString(),
+              });
               toast.success("WhatsApp connected.");
             } else {
               setStatus("error");
@@ -205,11 +260,44 @@ export function ConnectWhatsAppMeta() {
     setStatus("connecting");
   }
 
-  if (status === "connected" && displayPhoneNumber) {
+  if (connection?.status === "online") {
     return (
       <div className="rounded-sm border border-border-strong bg-muted px-4 py-3">
         <p className="text-sm font-medium text-foreground">WhatsApp connected</p>
-        <p className="text-xs text-muted-foreground">{displayPhoneNumber}</p>
+        {connection.displayPhoneNumber && (
+          <p className="text-xs text-muted-foreground">{connection.displayPhoneNumber}</p>
+        )}
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="mt-2"
+          onClick={handleDisconnect}
+          disabled={disconnecting}
+        >
+          {disconnecting ? "Disconnecting…" : "Disconnect"}
+        </Button>
+      </div>
+    );
+  }
+
+  if (connection?.status === "failed") {
+    return (
+      <div className="rounded-sm border border-destructive/40 bg-destructive/5 px-4 py-3">
+        <p className="text-sm font-medium text-foreground">WhatsApp connection needs attention</p>
+        {connection.errorReason && (
+          <p className="mt-1 text-xs text-muted-foreground">{connection.errorReason}</p>
+        )}
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="mt-2"
+          onClick={handleDisconnect}
+          disabled={disconnecting}
+        >
+          {disconnecting ? "Disconnecting…" : "Disconnect and reconnect"}
+        </Button>
       </div>
     );
   }
@@ -220,7 +308,9 @@ export function ConnectWhatsAppMeta() {
         type="button"
         variant="outline"
         onClick={handleConnect}
-        disabled={status === "loading-sdk" || status === "connecting" || !appId || !configId}
+        disabled={
+          status === "loading-sdk" || status === "connecting" || loadingConnection || !appId || !configId
+        }
       >
         {status === "connecting" ? "Connecting…" : "Connect WhatsApp via Meta"}
       </Button>

@@ -1,5 +1,12 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { verifyMetaWebhookSignature, resolveActiveMetaConnection, sendWhatsAppMessageMeta, fetchMetaMediaAsBase64 } from "@/lib/meta-whatsapp-server";
+import {
+  verifyMetaWebhookSignature,
+  resolveActiveMetaConnection,
+  sendWhatsAppMessageMeta,
+  fetchMetaMediaAsBase64,
+  markConnectionFailed,
+  wasMessageAlreadyProcessed,
+} from "@/lib/meta-whatsapp-server";
 import { handleInboundWhatsAppMessage, type ChannelAdapter } from "@/lib/whatsapp-conversation-server";
 
 // Meta-specific wire protocol only — GET handshake, POST signature
@@ -13,12 +20,17 @@ import { handleInboundWhatsAppMessage, type ChannelAdapter } from "@/lib/whatsap
 //
 // Raw HTTP handler, not createServerFn — the signature check needs the
 // exact raw request body, same reason api.whatsapp.webhook.tsx isn't one.
-//
-// Deliberately NOT hardened yet, matching the original Stage 2C scope: no
-// duplicate-delivery dedup against Meta's message id (Meta can redeliver a
-// webhook; Twilio's own webhook doesn't need this the same way). That's a
-// Stage 2D concern — this route is enough for a real, working, if naive,
-// round trip, not the final hardened version.
+
+// Every rejection reason (bad signature, unknown/inactive phone_number_id,
+// missing server config) answers identically to an outside caller — same
+// reasoning as Tel-Agent's equivalent: distinguishing them would turn this
+// address into an oracle for probing why a request failed. The real reason
+// is still logged server-side for operator visibility; it's just never in
+// the response body.
+function refused(): Response {
+  return new Response("Forbidden", { status: 403 });
+}
+
 export const Route = createFileRoute("/api/whatsapp/meta-webhook")({
   server: {
     handlers: {
@@ -34,12 +46,13 @@ export const Route = createFileRoute("/api/whatsapp/meta-webhook")({
         const expectedToken = process.env["META_WEBHOOK_VERIFY_TOKEN"];
         if (!expectedToken) {
           console.error("META_WEBHOOK_VERIFY_TOKEN is not set on the server.");
-          return new Response("Not configured", { status: 500 });
+          return refused();
         }
         if (mode === "subscribe" && token === expectedToken && challenge) {
           return new Response(challenge, { status: 200 });
         }
-        return new Response("Forbidden", { status: 403 });
+        console.error("Meta WhatsApp webhook handshake refused: mode/token mismatch.");
+        return refused();
       },
 
       POST: async ({ request }: { request: Request }) => {
@@ -54,7 +67,7 @@ export const Route = createFileRoute("/api/whatsapp/meta-webhook")({
         }
         if (!signatureValid) {
           console.error("Rejected Meta WhatsApp webhook: invalid or missing X-Hub-Signature-256.");
-          return new Response("Invalid signature", { status: 403 });
+          return refused();
         }
 
         let payload: MetaWebhookPayload;
@@ -81,17 +94,42 @@ export const Route = createFileRoute("/api/whatsapp/meta-webhook")({
               console.error(`Meta WhatsApp message to unrecognized/inactive phone_number_id ${phoneNumberId}`);
               continue;
             }
-            const { accessToken, tenant } = connection;
+            const { connectionId, accessToken, tenant } = connection;
 
             const adapter: ChannelAdapter = {
-              sendMessage: (to, body) =>
-                sendWhatsAppMessageMeta({ phoneNumberId, accessToken, to, body }),
+              sendMessage: async (to, body) => {
+                try {
+                  await sendWhatsAppMessageMeta({ phoneNumberId, accessToken, to, body });
+                } catch (err) {
+                  // A send failing (not a webhook/signature problem, an
+                  // actual Meta-API-rejected-the-send problem) is the
+                  // clearest signal this connection is broken — an expired
+                  // or revoked token, most likely. Marked here, not deeper
+                  // in sendWhatsAppMessageMeta, which has no business
+                  // knowing about whatsapp_connections rows.
+                  await markConnectionFailed(
+                    connectionId,
+                    err instanceof Error ? err.message : "WhatsApp send failed.",
+                  );
+                  throw err;
+                }
+              },
               fetchMedia: (ref) => fetchMetaMediaAsBase64(ref, accessToken),
             };
 
             const profileName = value.contacts?.[0]?.profile?.name;
 
             for (const message of messages) {
+              // Duplicate-delivery dedup: Meta can redeliver a webhook that
+              // didn't get a fast-enough 200. Insert-and-catch-conflict
+              // against whatsapp_processed_messages IS the check — a wamid
+              // seen before returns true here and this message is skipped
+              // before any AI call or send happens.
+              if (await wasMessageAlreadyProcessed(message.id)) {
+                console.log(`Meta WhatsApp message ${message.id} already processed, skipping.`);
+                continue;
+              }
+
               const fromPhone = `+${message.from}`;
               const body = message.type === "text" ? (message.text?.body ?? "").trim() : "";
               const mediaRef = message.type === "image" ? message.image?.id : undefined;
