@@ -215,14 +215,3 @@ export const saveLeadLineItems = createServerFn({ method: "POST" })
     if (insertError) throw new Error(`Could not save line items: ${insertError.message}`);
     return { ok: true as const };
   });
-
-export const addLeadMessage = createServerFn({ method: "POST" })
-  .validator((input: { leadId: string; body: string }) => input)
-  .middleware([requireSupabaseAuth])
-  .handler(async ({ context, data }) => {
-    const { error } = await context.supabase
-      .from("lead_messages")
-      .insert({ lead_id: data.leadId, role: "assistant", body: data.body });
-    if (error) throw new Error(`Could not send message: ${error.message}`);
-    return { ok: true as const };
-  });

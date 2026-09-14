@@ -16,8 +16,8 @@ import {
   updateLeadStatus,
   updateLeadContact,
   updateLeadDiagnosis,
-  addLeadMessage,
 } from "@/lib/leads-server";
+import { sendLeadReply } from "@/lib/lead-reply-server";
 import { getMyTenant } from "@/lib/tenant-server";
 import { buildSuggestedReply, lineItemsMatch } from "@/lib/reply-composer";
 import {
@@ -61,6 +61,7 @@ function LeadDetail() {
   const [savingLineItems, setSavingLineItems] = useState(false);
   const [savingContact, setSavingContact] = useState(false);
   const [savingDiagnosis, setSavingDiagnosis] = useState(false);
+  const [sending, setSending] = useState(false);
 
   useEffect(() => {
     if (authLoading) return;
@@ -216,19 +217,35 @@ function LeadDetail() {
   }
 
   async function sendMessage() {
-    if (!message.trim()) return;
+    if (!message.trim() || sending) return;
     const body = message.trim();
-    setThread((t) => [...t, { role: "assistant", text: body }]);
-    setManualMessage(null);
-    if (user) {
-      try {
-        await addLeadMessage({ data: { leadId: id, body } });
-      } catch (err) {
-        toast.error(err instanceof Error ? err.message : "Could not send message.");
-        return;
-      }
+
+    if (!user) {
+      // Sample/demo mode — no real backend, no real channel to fail on.
+      setThread((t) => [...t, { role: "assistant", text: body }]);
+      setManualMessage(null);
+      toast.success("Sent to the customer's thread");
+      return;
     }
-    toast.success("Sent to the customer's thread");
+
+    setSending(true);
+    try {
+      const result = await sendLeadReply({ data: { leadId: id, body } });
+      if (result.status === "sent") {
+        // Only added to the visible thread once the real send (if this
+        // lead came in on WhatsApp) actually succeeded — the thread should
+        // never claim delivery that didn't happen.
+        setThread((t) => [...t, { role: "assistant", text: body }]);
+        setManualMessage(null);
+        toast.success("Sent to the customer's thread");
+      } else {
+        toast.error(result.message);
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not send message.");
+    } finally {
+      setSending(false);
+    }
   }
 
   // UI hook for whenever a real outbound channel (WhatsApp/SMS/email) exists —
@@ -497,7 +514,12 @@ function LeadDetail() {
                 rows={3}
                 className="text-sm"
               />
-              <Button variant="outline" onClick={() => void sendMessage()} disabled={!message.trim()} aria-label="Send">
+              <Button
+                variant="outline"
+                onClick={() => void sendMessage()}
+                disabled={!message.trim() || sending}
+                aria-label="Send"
+              >
                 <Send className="h-4 w-4" />
               </Button>
             </div>

@@ -6,6 +6,7 @@ import {
   fetchMetaMediaAsBase64,
   markConnectionFailed,
   wasMessageAlreadyProcessed,
+  MetaOutsideWindowError,
 } from "@/lib/meta-whatsapp-server";
 import { handleInboundWhatsAppMessage, type ChannelAdapter } from "@/lib/whatsapp-conversation-server";
 
@@ -101,12 +102,23 @@ export const Route = createFileRoute("/api/whatsapp/meta-webhook")({
                 try {
                   await sendWhatsAppMessageMeta({ phoneNumberId, accessToken, to, body });
                 } catch (err) {
-                  // A send failing (not a webhook/signature problem, an
-                  // actual Meta-API-rejected-the-send problem) is the
-                  // clearest signal this connection is broken — an expired
-                  // or revoked token, most likely. Marked here, not deeper
-                  // in sendWhatsAppMessageMeta, which has no business
-                  // knowing about whatsapp_connections rows.
+                  if (err instanceof MetaOutsideWindowError) {
+                    // Not a connection problem — Meta requires a
+                    // pre-approved template outside the 24-hour
+                    // customer-service window, which this codebase doesn't
+                    // send yet (see ROADMAP.md). Logged, not marked as a
+                    // broken connection — a reconnect wouldn't fix this.
+                    console.error(
+                      `[Meta WhatsApp] send blocked by 24h window for tenant ${tenant.id}: ${err.message}`,
+                    );
+                    throw err;
+                  }
+                  // Any other send failure (not a webhook/signature
+                  // problem, an actual Meta-API-rejected-the-send problem)
+                  // is the clearest signal this connection is broken — an
+                  // expired or revoked token, most likely. Marked here, not
+                  // deeper in sendWhatsAppMessageMeta, which has no
+                  // business knowing about whatsapp_connections rows.
                   await markConnectionFailed(
                     connectionId,
                     err instanceof Error ? err.message : "WhatsApp send failed.",

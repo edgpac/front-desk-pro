@@ -66,6 +66,20 @@ export async function describeMetaError(response: Response): Promise<string> {
   return detail;
 }
 
+// The bare numeric error code, for callers that need to branch on which
+// specific error this was (see MetaOutsideWindowError below) rather than
+// just log the readable describeMetaError string. Takes its own Response —
+// callers pass a .clone() so this and describeMetaError can each read the
+// body once.
+async function metaErrorCode(response: Response): Promise<number | undefined> {
+  try {
+    const errorJson = (await response.json()) as { error?: { code?: number } };
+    return errorJson.error?.code;
+  } catch {
+    return undefined;
+  }
+}
+
 // redirect_uri is required, not optional: Meta binds the authorization
 // code to the exact redirect_uri the SDK's popup used when it opened (a
 // dynamic https://staticxx.facebook.com/x/connect/xd_arbiter/... URL,
@@ -371,6 +385,42 @@ export async function resolveActiveMetaConnection(
   };
 }
 
+// The reverse lookup direction from resolveActiveMetaConnection above: given
+// a tenant (not a phone_number_id), find their one active Meta connection,
+// if any — used by lead-reply-server.ts to decide whether a given tenant's
+// outbound WhatsApp reply should go through Meta at all, before it even
+// gets to picking Twilio vs Meta.
+export async function resolveActiveMetaConnectionForTenant(
+  tenantId: string,
+): Promise<{ connectionId: string; phoneNumberId: string; accessToken: string } | null> {
+  const admin = getAdminClient();
+  const { data } = await admin
+    .from("whatsapp_connections")
+    .select("id, meta_phone_number_id, meta_system_user_token")
+    .eq("tenant_id", tenantId)
+    .eq("status", "online")
+    .maybeSingle();
+  if (!data) return null;
+
+  const phoneNumberId = data["meta_phone_number_id"] as string | null;
+  const accessToken = data["meta_system_user_token"] as string | null;
+  if (!phoneNumberId || !accessToken) return null;
+
+  return { connectionId: data["id"] as string, phoneNumberId, accessToken };
+}
+
+// Meta's error code for "this free-form message is outside the 24-hour
+// customer-service window, send a pre-approved template instead" — see
+// https://developers.facebook.com/docs/whatsapp/cloud-api/support/error-codes.
+// Distinguished from every other send failure precisely so the caller can
+// tell "this connection is broken" apart from "this specific message needs
+// a template we don't send yet" — conflating them would mark a perfectly
+// healthy connection as failed and show the owner a misleading reconnect
+// prompt for something a reconnect can't fix.
+const OUTSIDE_WINDOW_ERROR_CODE = 131047;
+
+export class MetaOutsideWindowError extends Error {}
+
 export async function sendWhatsAppMessageMeta(params: {
   phoneNumberId: string;
   accessToken: string;
@@ -392,7 +442,12 @@ export async function sendWhatsAppMessageMeta(params: {
     }),
   });
   if (!response.ok) {
-    throw new Error(`Meta send failed (${response.status}): ${await describeMetaError(response)}`);
+    const detail = await describeMetaError(response.clone());
+    const errorCode = await metaErrorCode(response);
+    if (errorCode === OUTSIDE_WINDOW_ERROR_CODE) {
+      throw new MetaOutsideWindowError(`Meta send failed (${response.status}): ${detail}`);
+    }
+    throw new Error(`Meta send failed (${response.status}): ${detail}`);
   }
 }
 
