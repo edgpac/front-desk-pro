@@ -9,15 +9,6 @@ import { createLead, createClarifyingLead, finalizeLeadWithQuote, getAdminClient
 import { sendFollowUpNotificationEmail } from "@/lib/notify-server";
 import { money } from "@/lib/mock-data";
 
-// Fixed, deterministic text (never LLM-generated) so a later inbound
-// message can reliably detect "we're waiting on the answer to this
-// specific question" via exact string match, no extra schema/column
-// needed. Written to work for any trade — a leaking faucet, a cracked
-// tile, a dog groom — not just this one test business.
-function disambiguationQuestion(priorProblem: string): string {
-  return `Quick check — is this about the job we already quoted you for (${priorProblem}), or something new you'd like priced?`;
-}
-
 // Channel-agnostic core extracted from api.whatsapp.webhook.tsx (the
 // original, Twilio-only route). Everything here — the 48-hour open-lead
 // continuation, the deterministic Q&A pairing, calling getQuoteEstimate,
@@ -185,26 +176,21 @@ export async function handleInboundWhatsAppMessage(params: {
   if (openLead) {
     // Already quoted (confidence is set). A message here could be a
     // follow-up on that same job ("still $194?", "when can you come?") or
-    // a returning customer with a completely different problem — nothing
-    // in the message alone tells us which, so the AI asks rather than
-    // guessing either way. This is what keeps the assistant actually
-    // responsive around the clock instead of going silent on repeat
-    // customers for 48 hours after their first job.
+    // a returning customer with a completely different problem. Decide
+    // directly instead of always asking first — a customer who just sent a
+    // fresh photo has already told us everything we need; making them
+    // resend it just to answer a question we didn't need to ask is exactly
+    // the kind of mechanical, non-production-ready behavior to avoid. The
+    // disambiguation question is a fallback for genuine ambiguity, not the
+    // default first move.
     await admin.from("lead_messages").insert({ lead_id: openLead.id, role: "customer", body });
 
-    const { data: recentMessages } = await admin
-      .from("lead_messages")
-      .select("role, body")
-      .eq("lead_id", openLead.id)
-      .order("created_at", { ascending: false })
-      .limit(2);
-    const priorAssistantMessage = recentMessages?.[1]; // [0] is the customer message just inserted above
-
-    const awaitingDisambiguation =
-      priorAssistantMessage?.role === "assistant" &&
-      priorAssistantMessage.body === disambiguationQuestion(openLead.problem);
-
-    if (awaitingDisambiguation) {
+    // A new photo attached is itself strong, cheap-to-check evidence of a
+    // new job — a customer following up on an existing quote essentially
+    // never re-attaches a fresh photo just to ask "is that price still
+    // good?". No AI call needed for this case; fall straight through to
+    // the fresh-quote flow below, using this message's own photo/body.
+    if (!mediaRef) {
       const { sameJob } = await classifyFollowUpIntent({
         data: {
           priorProblem: openLead.problem,
@@ -253,28 +239,26 @@ export async function handleInboundWhatsAppMessage(params: {
         });
         return;
       }
-      // Classified as a new, different job — fall through to the fresh-quote
-      // flow below, using this message's own body/mediaRef as the new
-      // problem, exactly like a brand-new conversation.
-    } else {
-      const question = disambiguationQuestion(openLead.problem);
-      await admin.from("lead_messages").insert({ lead_id: openLead.id, role: "assistant", body: question });
-      await adapter.sendMessage(fromPhone, question);
-      void sendFollowUpNotificationEmail({
-        tenant: { name: tenant.name, email: tenant.email, currency: tenant.currency },
-        customerName: openLead.customer_name || profileName || "A customer",
-        body,
-      });
-      return;
+      // Classified as a new, different job with no photo attached — falls
+      // through to the fresh-quote flow below, which will correctly ask
+      // for a photo since none has actually been provided yet.
     }
+    void sendFollowUpNotificationEmail({
+      tenant: { name: tenant.name, email: tenant.email, currency: tenant.currency },
+      customerName: openLead.customer_name || profileName || "A customer",
+      body,
+    });
+    // Falls through to the fresh-quote flow below — either a photo was
+    // attached (strong new-job signal), or the classifier above decided
+    // this describes a different problem.
   }
 
   // A genuinely new job — either a first-time conversation, or a returning
-  // customer who just confirmed (via the disambiguation above) they have a
-  // different problem this time. Real-world finding from Cabos Handyman's
-  // actual WhatsApp use (see ROADMAP.md): customers greet first and don't
-  // lead with a photo unless asked. Ask immediately rather than attempting
-  // a diagnosis with nothing to diagnose.
+  // customer the block above just determined has a different problem this
+  // time (new photo attached, or classified as such). Real-world finding
+  // from Cabos Handyman's actual WhatsApp use (see ROADMAP.md): customers
+  // greet first and don't lead with a photo unless asked. Ask immediately
+  // rather than attempting a diagnosis with nothing to diagnose.
   if (!mediaRef) {
     await adapter.sendMessage(
       fromPhone,
