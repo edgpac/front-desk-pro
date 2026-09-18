@@ -206,21 +206,69 @@ lives in `/Users/edgartamarind/.claude/plans/zazzy-booping-kite.md`.
   `field-notes-server.ts` (list/create-with-synchronous-AI-summary/delete)
   and the `/dashboard/settings/field-notes.tsx` page (monthly-prompt panel +
   entry list), plus a link to it from the Qualifications page.
-- **The decision engine** ⬜ not started — `estimate-server.ts` needs a
-  6-step reasoning sequence (understand the problem → identify the actual
-  work required, reasoned rather than keyword-triggered → check against
-  capabilities/exclusions → check price-sheet relatedness → check
+- **The decision engine (full version)** ⬜ not started — `estimate-server.ts`
+  needs a 6-step reasoning sequence (understand the problem → identify the
+  actual work required, reasoned rather than keyword-triggered → check
+  against capabilities/exclusions → check price-sheet relatedness → check
   information sufficiency → only then price) and a `needsReview` result
-  shape for when it can't safely quote.
-- **The flag/review loop** ⬜ not started — `flagged` leads (with a
-  `flag_type`: missing capability, outside service scope, hazardous/
-  specialized, or conflicting information), owner-facing resolution
-  (dismiss, or add the capability), and the load-bearing rule that **adding
-  a capability never auto-quotes the lead that triggered it** — the owner
-  always prices or explicitly re-triggers the AI.
+  shape for when it can't safely quote. Depends on Business Capabilities
+  (done) and Field Notes (in progress) both existing first.
+- **The flag/review loop (full version)** ⬜ not started — `flagged` leads
+  (with a `flag_type`: missing capability, outside service scope,
+  hazardous/specialized, or conflicting information), owner-facing
+  resolution (dismiss, or add the capability), and the load-bearing rule
+  that **adding a capability never auto-quotes the lead that triggered
+  it** — the owner always prices or explicitly re-triggers the AI.
 
 Each of the four sub-items above is being built and approved separately,
 in that order — this file will move each to ✅ as it lands.
+
+#### Minimal flagged-leads slice — **required before this can be called production-ready**
+
+Prompted by a real Cabos Handyman WhatsApp conversation (2026-09-17): a
+customer's condo had ceiling water damage that two different in-person
+handymen and a realtor couldn't diagnose across multiple visits — conflicting
+theories (AC line vs. upstairs shower drain vs. no real leak at all, just
+failed drywall tape), a video that needed expert interpretation, a floor-plan
+comparison between stacked units, and ultimately a recommendation to pursue a
+developer warranty claim rather than a quotable repair. No AI should attempt
+to diagnose a case like that — the correct AI behavior is to recognize the
+ambiguity and hand it to the owner, not guess or clarify-loop forever.
+
+This does **not** require the full capabilities/field-notes system above —
+it's a smaller, self-contained slice that can ship on its own, ahead of
+Field Notes/the full decision engine finishing:
+
+1. **Migration** — add to `leads`: `'flagged'` as a valid `status`;
+   `flag_type` (text, nullable) — only `'conflicting_information'` and
+   `'needs_human_review'` for now (the other flag types from the full
+   design, like `missing_capability`, need the capabilities table and stay
+   out of scope for this slice); `flag_reason` (text, nullable) — the AI's
+   plain-language explanation.
+2. **Prompt change in `estimate-server.ts`** — one new reasoning step: if
+   the AI can't confidently produce a price *and* the gap isn't something a
+   clarifying question would resolve (that's already `needsClarification`'s
+   job) — conflicting reports, ambiguous media, anything requiring
+   physical/expert judgment — it returns a new `needsReview` result instead
+   of guessing or looping. **Must be written as general, universal
+   reasoning that applies to any service trade** — not tailored to
+   plumbing, not tailored to Cabos Handyman. The prompt reasons about
+   ambiguity/conflicting-information signals in the abstract, the same way
+   it already reasons about capabilities and price-sheet relatedness for
+   any business type.
+3. **Webhook wiring** — on `needsReview`, create the lead via a new
+   `createFlaggedLead` (sibling to today's `createClarifyingLead`), send one
+   neutral holding reply ("Thanks for the detail — let me have someone from
+   our team take a look and get back to you personally"), never fabricate a
+   diagnosis or a decline.
+4. **Dashboard** — `dashboard.leads.$id.index.tsx` shows the flag reason
+   plainly when `status === 'flagged'`, with a simple "mark reviewed" action
+   (no capability-add branch — that needs the capabilities table, out of
+   scope here). `dashboard.leads.index.tsx` gets a status pill for it.
+
+No new capabilities table, no field notes, no decision-engine rewrite beyond
+this one new branch. **Not implemented yet** — plan only, pending migration
+review same as every other schema change this session.
 
 ### Phase 2 — Trust & compliance
 

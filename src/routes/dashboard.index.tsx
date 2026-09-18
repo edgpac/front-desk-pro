@@ -5,6 +5,7 @@ import { toast } from "sonner";
 
 import { PageHeader, Panel } from "@/components/app/DashboardShell";
 import { StatusPill } from "@/components/app/StatusPill";
+import { WhatsAppStatusLight } from "@/components/app/WhatsAppStatusLight";
 import { Button } from "@/components/ui/button";
 import { copyText } from "@/lib/clipboard";
 import { useAuth } from "@/lib/use-auth";
@@ -79,6 +80,8 @@ function DashboardHome() {
           </Button>
         }
       />
+
+      {user ? <WhatsAppStatusLight /> : null}
 
       <div className="grid gap-4 sm:grid-cols-3">
         <Panel title="New">

@@ -121,6 +121,40 @@ export async function sendLeadNotificationEmail(params: {
   }
 }
 
+// Fires once, on the transition into a broken WhatsApp connection — see the
+// caller in meta-whatsapp-server.ts's markConnectionFailed, which only
+// invokes this the first time a connection flips to 'failed', not on every
+// subsequent send attempt while it's already broken. Without this, a dead
+// connection (expired token, revoked access) fails silently and the owner
+// only finds out when they notice leads have stopped arriving.
+export async function sendConnectionFailedNotificationEmail(params: {
+  tenant: { name: string; email: string };
+  reason: string;
+}): Promise<void> {
+  const mailer = getTransporter();
+  if (!mailer) return;
+  if (!params.tenant.email) return;
+
+  try {
+    await mailer.transporter.sendMail({
+      from: mailer.fromEmail,
+      to: params.tenant.email,
+      subject: "⚠️ Your WhatsApp connection needs attention",
+      html: `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #dc2626;">⚠️ WhatsApp connection failed</h2>
+        <p>Job It Ready couldn't send a message through your connected WhatsApp number. New customer messages may not be getting a reply until this is fixed.</p>
+        <div style="background: #fef2f2; padding: 15px; border-radius: 8px; margin: 20px 0;">
+          <p style="margin: 0;"><strong>Reason:</strong> ${escapeHtml(params.reason)}</p>
+        </div>
+        <p>Go to your dashboard's Settings page and reconnect your WhatsApp number to fix this.</p>
+        <p style="margin-top: 20px; color: #6b7280; font-size: 12px;">Sent from Job It Ready.</p>
+      </div>`,
+    });
+  } catch (err) {
+    console.error("Connection-failed notification email failed:", err);
+  }
+}
+
 // A much lighter notification for a customer continuing an existing
 // conversation — the business already has this lead in their inbox, this
 // just tells them someone replied, so they know to go answer it.

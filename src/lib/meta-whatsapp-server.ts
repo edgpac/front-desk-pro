@@ -3,6 +3,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { getAdminClient } from "@/lib/public-lead-server";
 import type { InboundWhatsAppTenant } from "@/lib/whatsapp-conversation-server";
+import { sendConnectionFailedNotificationEmail } from "@/lib/notify-server";
 
 // Meta WhatsApp Cloud API — Stage 2B: Embedded Signup + OAuth/token
 // exchange only. No webhook, no inbound/outbound messaging, no templates —
@@ -490,10 +491,28 @@ export async function fetchMetaMediaAsBase64(
 // reconnect prompt the owner didn't strictly need, not a broken feature.
 export async function markConnectionFailed(connectionId: string, reason: string): Promise<void> {
   const admin = getAdminClient();
+
+  // Read the status before updating it, so the notification below only
+  // fires on the actual transition into 'failed' — not on every subsequent
+  // send attempt against a connection that's already broken, which would
+  // spam the owner with a duplicate email for the same underlying problem.
+  const { data: before } = await admin
+    .from("whatsapp_connections")
+    .select("status, tenants!inner(name, email)")
+    .eq("id", connectionId)
+    .single();
+
   await admin
     .from("whatsapp_connections")
     .update({ status: "failed", error_reason: reason.slice(0, 500) })
     .eq("id", connectionId);
+
+  if (before && before["status"] !== "failed") {
+    const tenantRow = before["tenants"] as unknown as { name: string; email: string } | null;
+    if (tenantRow?.email) {
+      await sendConnectionFailedNotificationEmail({ tenant: tenantRow, reason });
+    }
+  }
 }
 
 // Duplicate-delivery dedup (Stage 2D, built in after auditing against
