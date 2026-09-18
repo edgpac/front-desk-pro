@@ -1,7 +1,22 @@
-import { getQuoteEstimate, type Answer, type PriceSheetItem } from "@/lib/estimate-server";
+import {
+  getQuoteEstimate,
+  getFollowUpAnswer,
+  classifyFollowUpIntent,
+  type Answer,
+  type PriceSheetItem,
+} from "@/lib/estimate-server";
 import { createLead, createClarifyingLead, finalizeLeadWithQuote, getAdminClient } from "@/lib/public-lead-server";
 import { sendFollowUpNotificationEmail } from "@/lib/notify-server";
 import { money } from "@/lib/mock-data";
+
+// Fixed, deterministic text (never LLM-generated) so a later inbound
+// message can reliably detect "we're waiting on the answer to this
+// specific question" via exact string match, no extra schema/column
+// needed. Written to work for any trade — a leaking faucet, a cracked
+// tile, a dog groom — not just this one test business.
+function disambiguationQuestion(priorProblem: string): string {
+  return `Quick check — is this about the job we already quoted you for (${priorProblem}), or something new you'd like priced?`;
+}
 
 // Channel-agnostic core extracted from api.whatsapp.webhook.tsx (the
 // original, Twilio-only route). Everything here — the 48-hour open-lead
@@ -46,7 +61,7 @@ export async function handleInboundWhatsAppMessage(params: {
   // duplicate.
   const { data: openLead } = await admin
     .from("leads")
-    .select("id, customer_name, photo_url, problem, confidence")
+    .select("id, customer_name, photo_url, problem, confidence, diagnosis")
     .eq("tenant_id", tenant.id)
     .eq("phone", fromPhone)
     .gte("created_at", new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString())
@@ -168,23 +183,98 @@ export async function handleInboundWhatsAppMessage(params: {
   }
 
   if (openLead) {
-    // Already quoted (confidence is set): continuing an existing
-    // conversation as a human follow-up reply — record it and let the
-    // business reply from their already-built dashboard message thread,
-    // rather than re-running AI diagnosis.
+    // Already quoted (confidence is set). A message here could be a
+    // follow-up on that same job ("still $194?", "when can you come?") or
+    // a returning customer with a completely different problem — nothing
+    // in the message alone tells us which, so the AI asks rather than
+    // guessing either way. This is what keeps the assistant actually
+    // responsive around the clock instead of going silent on repeat
+    // customers for 48 hours after their first job.
     await admin.from("lead_messages").insert({ lead_id: openLead.id, role: "customer", body });
-    void sendFollowUpNotificationEmail({
-      tenant: { name: tenant.name, email: tenant.email, currency: tenant.currency },
-      customerName: openLead.customer_name || profileName || "A customer",
-      body,
-    });
-    return;
+
+    const { data: recentMessages } = await admin
+      .from("lead_messages")
+      .select("role, body")
+      .eq("lead_id", openLead.id)
+      .order("created_at", { ascending: false })
+      .limit(2);
+    const priorAssistantMessage = recentMessages?.[1]; // [0] is the customer message just inserted above
+
+    const awaitingDisambiguation =
+      priorAssistantMessage?.role === "assistant" &&
+      priorAssistantMessage.body === disambiguationQuestion(openLead.problem);
+
+    if (awaitingDisambiguation) {
+      const { sameJob } = await classifyFollowUpIntent({
+        data: {
+          priorProblem: openLead.problem,
+          priorDiagnosis: openLead.diagnosis || "",
+          customerReply: body,
+        },
+      });
+
+      if (sameJob) {
+        const { data: lineItemRows } = await admin
+          .from("lead_line_items")
+          .select("description, rate, qty")
+          .eq("lead_id", openLead.id);
+        const lineItemsForAnswer = (lineItemRows ?? []).map((row) => ({
+          description: row.description,
+          detail: "",
+          amount: row.rate * row.qty,
+        }));
+
+        const { data: historyRows } = await admin
+          .from("lead_messages")
+          .select("role, body")
+          .eq("lead_id", openLead.id)
+          .order("created_at", { ascending: true });
+        const history = (historyRows ?? []).map((m) => ({
+          role: m.role === "customer" ? ("customer" as const) : ("desk" as const),
+          text: m.body,
+        }));
+
+        const answer = await getFollowUpAnswer({
+          data: {
+            businessName: tenant.name,
+            diagnosis: openLead.diagnosis || "",
+            lineItems: lineItemsForAnswer,
+            question: body,
+            history,
+          },
+        });
+
+        await admin.from("lead_messages").insert({ lead_id: openLead.id, role: "assistant", body: answer });
+        await adapter.sendMessage(fromPhone, answer);
+        void sendFollowUpNotificationEmail({
+          tenant: { name: tenant.name, email: tenant.email, currency: tenant.currency },
+          customerName: openLead.customer_name || profileName || "A customer",
+          body,
+        });
+        return;
+      }
+      // Classified as a new, different job — fall through to the fresh-quote
+      // flow below, using this message's own body/mediaRef as the new
+      // problem, exactly like a brand-new conversation.
+    } else {
+      const question = disambiguationQuestion(openLead.problem);
+      await admin.from("lead_messages").insert({ lead_id: openLead.id, role: "assistant", body: question });
+      await adapter.sendMessage(fromPhone, question);
+      void sendFollowUpNotificationEmail({
+        tenant: { name: tenant.name, email: tenant.email, currency: tenant.currency },
+        customerName: openLead.customer_name || profileName || "A customer",
+        body,
+      });
+      return;
+    }
   }
 
-  // New conversation. Real-world finding from Cabos Handyman's actual
-  // WhatsApp use (see ROADMAP.md): customers greet first and don't lead
-  // with a photo unless asked. Ask immediately rather than attempting a
-  // diagnosis with nothing to diagnose.
+  // A genuinely new job — either a first-time conversation, or a returning
+  // customer who just confirmed (via the disambiguation above) they have a
+  // different problem this time. Real-world finding from Cabos Handyman's
+  // actual WhatsApp use (see ROADMAP.md): customers greet first and don't
+  // lead with a photo unless asked. Ask immediately rather than attempting
+  // a diagnosis with nothing to diagnose.
   if (!mediaRef) {
     await adapter.sendMessage(
       fromPhone,

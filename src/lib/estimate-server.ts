@@ -292,6 +292,57 @@ export const getQuoteEstimate = createServerFn({ method: "POST" })
     };
   });
 
+// Classifies a customer's reply to the "same job or something new?"
+// disambiguation question (see whatsapp-conversation-server.ts). Kept
+// separate from getFollowUpAnswer below — this only decides which branch
+// to take (continue the existing job vs. start a fresh quote), it never
+// generates customer-facing text itself. Deliberately business-agnostic:
+// works the same whether the prior job was a leaking faucet or a dog groom.
+export type FollowUpClassifyInput = {
+  priorProblem: string;
+  priorDiagnosis: string;
+  customerReply: string;
+};
+
+export const classifyFollowUpIntent = createServerFn({ method: "POST" })
+  .validator((input: FollowUpClassifyInput) => input)
+  .handler(async ({ data }): Promise<{ sameJob: boolean }> => {
+    if (!withinRateLimit()) {
+      throw new Error("This demo is getting a lot of traffic right now — try again in a minute.");
+    }
+
+    const prompt = `A customer already received a quote for this job:
+
+PRIOR PROBLEM DESCRIBED: "${data.priorProblem}"
+DIAGNOSIS GIVEN: "${data.priorDiagnosis}"
+
+You just asked them: "Is this about the job above, or something new you'd like priced?"
+
+THEIR REPLY: "${data.customerReply}"
+
+Decide: is their reply continuing the SAME job above (asking about price, timing, scope, confirming, or anything related to it — however they phrase it, including questions worded completely differently from before), or describing a DIFFERENT, NEW problem entirely?
+
+Respond with ONLY valid JSON, no markdown fences: {"sameJob": true} or {"sameJob": false}`;
+
+    const response = await callClaude({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 50,
+      temperature: 0,
+      messages: [{ role: "user", content: prompt }],
+    });
+
+    const raw: string | undefined = response.content?.[0]?.text?.trim();
+    const cleaned = (raw ?? "").replace(/```json\n?|\n?```/g, "").trim();
+    try {
+      const parsed = JSON.parse(cleaned);
+      return { sameJob: Boolean(parsed.sameJob) };
+    } catch {
+      // Ambiguous/unparseable — default to "same job" rather than risk
+      // splitting one real job into two duplicate leads.
+      return { sameJob: true };
+    }
+  });
+
 export type FollowUpInput = {
   businessName: string;
   diagnosis: string;
