@@ -322,50 +322,67 @@ function LeadDetail() {
             <p className="mt-3 text-sm text-foreground">{lead.problem}</p>
           </Panel>
 
-          <Panel
-            title={
-              <span className="flex flex-col gap-0.5">
-                AI diagnosis
-                <span className="text-[11px] font-normal normal-case tracking-normal text-muted-foreground">
-                  Double check responses
+          {lead.status === "flagged" ? (
+            <Panel title="Needs your review">
+              <p className="text-sm text-foreground">
+                {lead.flagReason || "The AI couldn't safely quote this automatically."}
+              </p>
+              <p className="mt-2 text-xs text-muted-foreground">
+                No price was invented for this — reply to the customer yourself from the message thread below once
+                you've worked out a number.
+              </p>
+              <div className="mt-3 flex justify-end">
+                <Button size="sm" variant="outline" onClick={() => void changeStatus("new")}>
+                  Mark reviewed
+                </Button>
+              </div>
+            </Panel>
+          ) : (
+            <Panel
+              title={
+                <span className="flex flex-col gap-0.5">
+                  AI diagnosis
+                  <span className="text-[11px] font-normal normal-case tracking-normal text-muted-foreground">
+                    Double check responses
+                  </span>
                 </span>
-              </span>
-            }
-            aside={
-              <button
-                className="inline-flex items-center gap-1.5 text-xs font-semibold text-primary hover:underline"
-                onClick={() => toast.info("Re-analysis needs this lead wired to a live backend first.")}
-              >
-                <RefreshCw className="h-3.5 w-3.5" /> Ask AI to re-analyze
-              </button>
-            }
-          >
-            <p className="text-xs text-muted-foreground">
-              Confidence: <span className="font-semibold text-foreground">{lead.confidence}</span>
-              {aiSnapshot && !isEdited && (
-                <span className="ml-2 rounded-sm bg-muted px-1.5 py-0.5 text-[11px] font-semibold text-muted-foreground">
-                  Matches AI pricing — nothing edited
-                </span>
-              )}
-              {diagnosisEdited && (
-                <span className="ml-2 rounded-sm bg-muted px-1.5 py-0.5 text-[11px] font-semibold text-muted-foreground">
-                  Diagnosis edited by you
-                </span>
-              )}
-            </p>
-            <Textarea
-              value={diagnosis}
-              onChange={(e) => setDiagnosis(e.target.value)}
-              className="mt-2 text-sm leading-relaxed"
-              rows={4}
-              aria-label="AI diagnosis"
-            />
-            <div className="mt-2 flex justify-end">
-              <Button size="sm" variant="outline" onClick={() => void saveDiagnosis()} disabled={savingDiagnosis}>
-                {savingDiagnosis ? "Saving…" : "Save diagnosis"}
-              </Button>
-            </div>
-          </Panel>
+              }
+              aside={
+                <button
+                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-primary hover:underline"
+                  onClick={() => toast.info("Re-analysis needs this lead wired to a live backend first.")}
+                >
+                  <RefreshCw className="h-3.5 w-3.5" /> Ask AI to re-analyze
+                </button>
+              }
+            >
+              <p className="text-xs text-muted-foreground">
+                Confidence: <span className="font-semibold text-foreground">{lead.confidence}</span>
+                {aiSnapshot && !isEdited && (
+                  <span className="ml-2 rounded-sm bg-muted px-1.5 py-0.5 text-[11px] font-semibold text-muted-foreground">
+                    Matches AI pricing — nothing edited
+                  </span>
+                )}
+                {diagnosisEdited && (
+                  <span className="ml-2 rounded-sm bg-muted px-1.5 py-0.5 text-[11px] font-semibold text-muted-foreground">
+                    Diagnosis edited by you
+                  </span>
+                )}
+              </p>
+              <Textarea
+                value={diagnosis}
+                onChange={(e) => setDiagnosis(e.target.value)}
+                className="mt-2 text-sm leading-relaxed"
+                rows={4}
+                aria-label="AI diagnosis"
+              />
+              <div className="mt-2 flex justify-end">
+                <Button size="sm" variant="outline" onClick={() => void saveDiagnosis()} disabled={savingDiagnosis}>
+                  {savingDiagnosis ? "Saving…" : "Save diagnosis"}
+                </Button>
+              </div>
+            </Panel>
+          )}
 
           <Panel title="Line items — edit before sending">
             <ul className="divide-y divide-border">

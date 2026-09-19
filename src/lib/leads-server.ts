@@ -17,6 +17,7 @@ type LeadRow = {
   problem: string;
   diagnosis: string;
   confidence: Lead["confidence"] | null;
+  flag_reason: string | null;
   ai_line_items_snapshot: LineItem[] | null;
   created_at: string;
 };
@@ -46,7 +47,7 @@ export const listMyLeads = createServerFn({ method: "GET" })
     const tenantId = await getTenantId(context.supabase, context.userId);
     const { data: leads, error } = await context.supabase
       .from("leads")
-      .select("id, customer_name, phone, address, channel, status, photo_url, problem, diagnosis, confidence, ai_line_items_snapshot, created_at")
+      .select("id, customer_name, phone, address, channel, status, photo_url, problem, diagnosis, confidence, ai_line_items_snapshot, created_at, flag_reason")
       .eq("tenant_id", tenantId)
       .order("created_at", { ascending: false });
     if (error) throw new Error(`Could not load leads: ${error.message}`);
@@ -85,6 +86,7 @@ export const listMyLeads = createServerFn({ method: "GET" })
       lineItems: itemsByLead.get(row.id) ?? [],
       followUps: [],
       createdAt: row.created_at,
+      flagReason: row.flag_reason,
     }));
   });
 
@@ -96,7 +98,7 @@ export const getMyLead = createServerFn({ method: "GET" })
 
     const { data: row, error } = await context.supabase
       .from("leads")
-      .select("id, customer_name, phone, address, channel, status, photo_url, problem, diagnosis, confidence, ai_line_items_snapshot, created_at")
+      .select("id, customer_name, phone, address, channel, status, photo_url, problem, diagnosis, confidence, ai_line_items_snapshot, created_at, flag_reason")
       .eq("tenant_id", tenantId)
       .eq("id", id)
       .single();
@@ -138,6 +140,7 @@ export const getMyLead = createServerFn({ method: "GET" })
       })),
       followUps: (messages as MessageRow[]).map((m) => ({ role: m.role, text: m.body })),
       aiLineItemsSnapshot: lead.ai_line_items_snapshot,
+      flagReason: lead.flag_reason,
     };
   });
 

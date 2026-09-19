@@ -7,6 +7,7 @@ const styles: Record<LeadStatus, string> = {
   booked: "bg-warn/20 text-foreground border-warn/50",
   won: "bg-success/12 text-success border-success/35",
   lost: "bg-muted text-muted-foreground border-border-strong",
+  flagged: "bg-destructive/12 text-destructive border-destructive/35",
 };
 
 export function StatusPill({ status, className }: { status: LeadStatus; className?: string }) {

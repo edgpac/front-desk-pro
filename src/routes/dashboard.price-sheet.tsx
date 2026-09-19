@@ -223,6 +223,13 @@ function PriceSheetPage() {
         }
       />
 
+      <div className="border border-warn/50 bg-warn/10 px-4 py-3 text-sm text-foreground">
+        <strong className="font-semibold">If you leave out a service, you're leaving money on the table.</strong>{" "}
+        Your price sheet is the middleman between your customers and your business — the AI only ever quotes what's
+        listed here. Anything missing gets passed to you as a manual request instead of an instant price, so the
+        more complete this is, the fewer leads you have to price by hand.
+      </div>
+
       <Panel title="Import from a web page">
         <div className="flex flex-wrap items-center gap-2">
           <Input

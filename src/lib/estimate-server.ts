@@ -31,8 +31,14 @@ export type LineItem = { description: string; detail: string; amount: number };
 
 export type QuoteResult =
   | { needsClarification: true; questions: ClarifyingQuestion[] }
+  // Nothing on the tenant's own price sheet reasonably covers this — the
+  // price sheet is the sole source of truth for what this business charges,
+  // so when it doesn't apply, the AI defers to a human instead of guessing
+  // a number. See ROADMAP.md's flagged-leads slice.
+  | { needsClarification: false; outOfScope: true }
   | {
       needsClarification: false;
+      outOfScope: false;
       isEmergency: boolean;
       issueType: string;
       severity: "Low" | "Medium" | "High";
@@ -103,6 +109,13 @@ export const SAMPLE_PRICE_SHEET: PriceSheetItem[] = [
 ];
 
 const MAX_DESCRIPTION_LENGTH = 2000;
+
+// Shared placeholder for "a photo arrived with no caption text" — a single
+// exported constant instead of each caller inventing its own wording, so
+// buildPrompt can reliably detect this exact case (getQuoteEstimate's own
+// validator rejects a genuinely empty description, so callers need
+// something non-empty to pass through it).
+export const NO_DESCRIPTION_PLACEHOLDER = "(no description provided, photo only)";
 
 // Spanish heuristic ported from Cabos Handyman's api/analyze-parts.js
 // detectSpanish() — fast, free (no extra API call) instead of asking Claude
@@ -199,32 +212,47 @@ function buildPrompt(input: QuoteInput): string {
       : "";
 
   const hasPhoto = Boolean(input.imageBase64);
-  const photoStatus = hasPhoto
-    ? "A customer sent a photo and a description of a problem."
-    : "A customer sent only a text description — no photo was attached.";
+  const hasDescription = input.description.trim() !== NO_DESCRIPTION_PLACEHOLDER;
+  const photoStatus =
+    hasPhoto && hasDescription
+      ? "A customer sent a photo and a description of a problem."
+      : hasPhoto
+        ? "A customer sent only a photo — no description of the problem."
+        : "A customer sent only a text description — no photo was attached.";
 
-  return `You are the AI front desk for ${input.businessName}, a trades business. ${photoStatus} Diagnose it and produce a priced estimate the way an experienced tradesperson would after seeing the photo and asking a couple of clarifying questions.${languageInstruction}
+  return `You are the AI front desk for ${input.businessName}. ${photoStatus} Work out what's actually being requested and produce a priced estimate the way an experienced professional at this specific business would after seeing the photo and asking a couple of clarifying questions. This business isn't necessarily a repair trade — it could be a service business of any kind (grooming, installation, cleaning, maintenance, anything else this business's own price sheet below implies). Read what kind of business ${input.businessName} actually is from its price sheet, and reason and phrase everything accordingly — never assume something is "broken" or "wrong" by default.${languageInstruction}
 
 CUSTOMER'S DESCRIPTION: "${input.description}"${answersBlock}
 
-THE BUSINESS'S OWN PRICE SHEET (use these numbers when the job matches; otherwise estimate reasonably against the $${input.laborRate}/hr labor rate):
-${sheetLines || "(no price sheet provided — estimate using the labor rate only)"}
+THE BUSINESS'S OWN PRICE SHEET — this is the sole source of truth for what this business charges. Do not invent a price for anything that isn't reasonably covered by it:
+${sheetLines || "(no price sheet provided)"}
 
-Service call fee: $${input.serviceCallFee} (covers diagnosis plus the first hour of labor; only hours beyond the first are billed at $${input.laborRate}/hr).
+Service call fee: $${input.serviceCallFee} (covers the initial assessment plus the first hour of work; only hours beyond the first are billed at $${input.laborRate}/hr, and only for a job that otherwise matches something on the price sheet).
 
 RULES:
-1. If the photo and description together are not enough to price this confidently, respond with 1-2 short clarifying questions instead of guessing. Give each question 2-4 short tappable answer options. Only ask if the answer would actually change the price. ${hasPhoto ? "" : "No photo was provided — a photo is almost always the single most useful thing you're missing, so make your first clarifying question a request for one (with an option for 'I don't have a photo handy' so the conversation isn't blocked) rather than asking about a detail a photo would answer faster."}
-2. If you have enough information, give a plain-language diagnosis (what's actually wrong, not just a restatement of the question), a severity (Low/Medium/High — High means it risks getting worse or is a safety issue), your confidence in reading the photo, and a line-item cost breakdown.
-3. Only include line items that make sense for what was described — don't pad the estimate.
-4. If this describes an active emergency (active flooding, sparking, a gas smell, no power to the whole house), set isEmergency to true and say so plainly in the diagnosis.
+1. If the photo and description together are not enough to price this confidently, respond with 1-2 short clarifying questions instead of guessing. Give each question 2-4 short tappable answer options. Only ask if the answer would actually change the price. ${
+    hasPhoto && !hasDescription
+      ? "No description was provided — a photo alone rarely tells you everything (what's actually needed, relevant history, what the customer wants done), so make your first clarifying question an open-ended request for the customer to describe what they need in their own words, rather than guessing from the image alone or asking a narrower multiple-choice question first. Phrase it naturally for whatever this business actually does — not every photo represents something broken (a repair job, a grooming request, an installation) — don't assume 'problem' framing where it doesn't fit."
+      : hasPhoto
+        ? ""
+        : "No photo was provided — a photo is almost always the single most useful thing you're missing, so make your first clarifying question a request for one (with an option for 'I don't have a photo handy' so the conversation isn't blocked) rather than asking about a detail a photo would answer faster."
+  }
+2. Once you have enough information, check the price sheet: does this request reasonably match one or more line items (the same kind of job, even if the exact quantity/scope differs — e.g. "3 outlets" against a per-outlet price is fine)? If yes, price it from those items' numbers — your job here is mostly to apply the business's own numbers correctly, not to invent your own. If nothing on the price sheet reasonably covers what's being asked — a genuinely different kind of job the business hasn't priced at all — respond with {"needsClarification": false, "outOfScope": true} instead of guessing a number. Never estimate a price for something with no reasonable match on the price sheet, even using the labor rate.
+3. When you do price it, give a plain-language summary of what's actually going on and what's being done about it (not just a restatement of the question), a severity (Low/Medium/High — High means it risks getting worse, or is a safety/wellbeing risk), your confidence in reading the photo, and a line-item cost breakdown drawn from the matched price-sheet item(s).
+4. Only include line items that make sense for what was described — don't pad the estimate.
+5. If this describes something urgent — an active safety risk, active damage in progress, or a real risk to a person's, pet's, or property's wellbeing if it waits — set isEmergency to true and say so plainly. What counts as urgent depends entirely on what this business actually does; reason about it rather than assuming a specific trade's examples (a repair business's emergency looks nothing like a grooming or events business's).
 
-Respond with ONLY valid JSON, no markdown fences, matching exactly one of these two shapes:
+Respond with ONLY valid JSON, no markdown fences, matching exactly one of these three shapes:
 
 {"needsClarification": true, "questions": [{"question": "...", "options": ["...", "..."]}]}
 
 or
 
-{"needsClarification": false, "isEmergency": false, "issueType": "...", "severity": "Low|Medium|High", "confidence": "High|Medium|Low", "diagnosis": "...", "lineItems": [{"description": "...", "detail": "...", "amount": 120}], "totalLow": 100, "totalHigh": 140}`;
+{"needsClarification": false, "outOfScope": true}
+
+or
+
+{"needsClarification": false, "outOfScope": false, "isEmergency": false, "issueType": "...", "severity": "Low|Medium|High", "confidence": "High|Medium|Low", "diagnosis": "...", "lineItems": [{"description": "...", "detail": "...", "amount": 120}], "totalLow": 100, "totalHigh": 140}`;
 }
 
 export const getQuoteEstimate = createServerFn({ method: "POST" })
@@ -257,7 +285,7 @@ export const getQuoteEstimate = createServerFn({ method: "POST" })
       max_tokens: 1024,
       temperature: 0.3,
       system:
-        "You are an expert trades estimator. Respond with ONLY valid JSON, no markdown code fences, matching the shape described in the prompt exactly.",
+        "You are an expert estimator for service businesses of any kind. Respond with ONLY valid JSON, no markdown code fences, matching the shape described in the prompt exactly.",
       messages: [{ role: "user", content }],
     });
 
@@ -276,11 +304,16 @@ export const getQuoteEstimate = createServerFn({ method: "POST" })
       return { needsClarification: true, questions: parsed.questions ?? [] };
     }
 
+    if (parsed.outOfScope) {
+      return { needsClarification: false, outOfScope: true };
+    }
+
     const lineItems: LineItem[] = Array.isArray(parsed.lineItems) ? parsed.lineItems : [];
     const total = lineItems.reduce((sum, i) => sum + (Number(i.amount) || 0), 0);
 
     return {
       needsClarification: false,
+      outOfScope: false,
       isEmergency: Boolean(parsed.isEmergency),
       issueType: parsed.issueType || "Maintenance Issue",
       severity: parsed.severity || "Medium",
@@ -381,7 +414,7 @@ ${historyText ? `\nCONVERSATION SO FAR:\n${historyText}` : ""}
 
 CUSTOMER'S QUESTION: "${data.question}"
 
-Answer briefly (2-4 sentences), in plain language, staying consistent with the estimate above.${languageInstruction} If you don't know something (exact timing, whether a part is in stock), say the business will confirm it, don't invent specifics.`;
+Answer briefly (2-4 sentences), in plain language, staying consistent with the estimate above.${languageInstruction} If you don't know something (exact timing, availability, specifics outside what was already quoted), say the business will confirm it, don't invent specifics.`;
 
     const response = await callClaude({
       model: "claude-haiku-4-5-20251001",

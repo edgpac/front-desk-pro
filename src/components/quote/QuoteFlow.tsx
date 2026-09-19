@@ -17,7 +17,7 @@ import {
   type LineItem,
   type PriceSheetItem,
 } from "@/lib/estimate-server";
-import { createLead } from "@/lib/public-lead-server";
+import { createLead, createFlaggedLead } from "@/lib/public-lead-server";
 import leakPhoto from "@/assets/leak-detail.jpg";
 import panelPhoto from "@/assets/electrician-panel.jpg";
 import sinkPhoto from "@/assets/plumber-under-sink.jpg";
@@ -45,7 +45,7 @@ const SAMPLE_PHOTOS: SamplePhoto[] = [
   },
 ];
 
-type Stage = "intake" | "loading" | "clarify" | "result" | "error";
+type Stage = "intake" | "loading" | "clarify" | "result" | "outOfScope" | "error";
 
 type ResultState = {
   isEmergency: boolean;
@@ -143,6 +143,11 @@ export function QuoteFlow({
         return;
       }
 
+      if (outcome.outOfScope) {
+        setStage("outOfScope");
+        return;
+      }
+
       setResult(outcome);
       setStage("result");
     } catch (err) {
@@ -236,6 +241,39 @@ export function QuoteFlow({
       });
       setLeadSent(true);
       toast.success("Sent — the business will reach out.");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Couldn't send that — try again.");
+    } finally {
+      setSendingLead(false);
+    }
+  }
+
+  async function sendFlaggedRequest() {
+    if (!tenantSlug) {
+      toast.success("Request sent to the team");
+      setLeadSent(true);
+      return;
+    }
+    if (!customerName.trim() || !phone.trim()) {
+      toast.error("Add your name and phone so the business can reach you.");
+      return;
+    }
+    setSendingLead(true);
+    try {
+      await createFlaggedLead({
+        data: {
+          tenantSlug,
+          customerName: customerName.trim(),
+          phone: phone.trim(),
+          channel: "Quote link",
+          photoUrl: null,
+          problem: description,
+          flagType: "outside_service_scope",
+          flagReason: `Nothing on the price sheet covers: ${description}`,
+        },
+      });
+      setLeadSent(true);
+      toast.success("Sent — the business will reach out with a custom quote.");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Couldn't send that — try again.");
     } finally {
@@ -378,6 +416,49 @@ export function QuoteFlow({
           <Button className="mt-4" variant="outline" onClick={() => setStage("intake")}>
             Back
           </Button>
+        </div>
+      )}
+
+      {stage === "outOfScope" && (
+        <div className="p-5">
+          <p className="label-caps text-accent">Not on our standard price list</p>
+          <p className="mt-2 text-sm text-foreground">
+            {businessName} doesn't have set pricing for this specific request. I can pass it along to the team
+            for a custom quote — want me to do that?
+          </p>
+          {!leadSent && (
+            <div className="mt-4 flex flex-wrap gap-2">
+              <Input
+                value={customerName}
+                onChange={(e) => setCustomerName(e.target.value)}
+                placeholder="Your name"
+                className="max-w-[200px]"
+                aria-label="Your name"
+                disabled={sendingLead}
+              />
+              <Input
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                placeholder="(512) 555-0182"
+                className="max-w-[200px]"
+                aria-label="Phone number for the quote"
+                disabled={sendingLead}
+              />
+            </div>
+          )}
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <Button
+              size="lg"
+              style={accentStyle}
+              disabled={sendingLead || leadSent}
+              onClick={() => void sendFlaggedRequest()}
+            >
+              {leadSent ? "Sent — the team will reach out" : sendingLead ? "Sending…" : "Yes, send my request"}
+            </Button>
+            <Button variant="outline" size="lg" onClick={() => setStage("intake")}>
+              Never mind
+            </Button>
+          </div>
         </div>
       )}
 

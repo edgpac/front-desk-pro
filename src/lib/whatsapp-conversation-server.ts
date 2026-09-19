@@ -2,10 +2,17 @@ import {
   getQuoteEstimate,
   getFollowUpAnswer,
   classifyFollowUpIntent,
+  NO_DESCRIPTION_PLACEHOLDER,
   type Answer,
   type PriceSheetItem,
 } from "@/lib/estimate-server";
-import { createLead, createClarifyingLead, finalizeLeadWithQuote, getAdminClient } from "@/lib/public-lead-server";
+import {
+  createLead,
+  createClarifyingLead,
+  createFlaggedLead,
+  finalizeLeadWithQuote,
+  getAdminClient,
+} from "@/lib/public-lead-server";
 import { sendFollowUpNotificationEmail } from "@/lib/notify-server";
 import { money } from "@/lib/mock-data";
 
@@ -142,6 +149,26 @@ export async function handleInboundWhatsAppMessage(params: {
       return;
     }
 
+    if (clarifyResult.outOfScope) {
+      const passAlongMessage = "I can pass your request along to the team for a custom quote — want me to do that?";
+      await admin
+        .from("leads")
+        .update({
+          status: "flagged",
+          flag_type: "outside_service_scope",
+          flag_reason: `Nothing on the price sheet covers: ${openLead.problem}`,
+        })
+        .eq("id", openLead.id);
+      await admin.from("lead_messages").insert({ lead_id: openLead.id, role: "assistant", body: passAlongMessage });
+      await adapter.sendMessage(fromPhone, passAlongMessage);
+      void sendFollowUpNotificationEmail({
+        tenant: { name: tenant.name, email: tenant.email, currency: tenant.currency },
+        customerName: openLead.customer_name || profileName || "A customer",
+        body: `[Outside price sheet] ${openLead.problem}`,
+      });
+      return;
+    }
+
     const clarifyLineItems = clarifyResult.lineItems.map((item) => ({
       description: item.description,
       qty: 1,
@@ -262,7 +289,7 @@ export async function handleInboundWhatsAppMessage(params: {
   if (!mediaRef) {
     await adapter.sendMessage(
       fromPhone,
-      `Thanks for reaching out to ${tenant.name}! To get you a fast, accurate price, please send a photo of the problem along with a quick description.`,
+      `Thanks for reaching out to ${tenant.name}! To get you a fast, accurate price, please send a photo along with a quick description of what you need.`,
     );
     return;
   }
@@ -298,7 +325,7 @@ export async function handleInboundWhatsAppMessage(params: {
       laborRate: tenant.laborRate,
       serviceCallFee: tenant.serviceCallFee,
       priceSheet,
-      description: body || "(no description provided, photo only)",
+      description: body || NO_DESCRIPTION_PLACEHOLDER,
       imageBase64,
       imageMediaType,
     },
@@ -313,7 +340,7 @@ export async function handleInboundWhatsAppMessage(params: {
     // just replying and discarding the original photo/description — that
     // discard was the root cause of the clarification conversation losing
     // context on later rounds.
-    const openingProblem = body || "(photo only, no description provided)";
+    const openingProblem = body || NO_DESCRIPTION_PLACEHOLDER;
     const { id: leadId } = await createClarifyingLead({
       data: {
         tenantSlug: tenant.slug,
@@ -328,6 +355,32 @@ export async function handleInboundWhatsAppMessage(params: {
     await admin.from("lead_messages").insert({ lead_id: leadId, role: "assistant", body: questionText });
 
     await adapter.sendMessage(fromPhone, questionText);
+    return;
+  }
+
+  if (result.outOfScope) {
+    const openingProblem = body || NO_DESCRIPTION_PLACEHOLDER;
+    const passAlongMessage = "I can pass your request along to the team for a custom quote — want me to do that?";
+    const { id: leadId } = await createFlaggedLead({
+      data: {
+        tenantSlug: tenant.slug,
+        customerName: profileName || "WhatsApp customer",
+        phone: fromPhone,
+        channel,
+        photoUrl: mediaRef,
+        problem: openingProblem,
+        flagType: "outside_service_scope",
+        flagReason: `Nothing on the price sheet covers: ${openingProblem}`,
+      },
+    });
+    await admin.from("lead_messages").insert({ lead_id: leadId, role: "customer", body: openingProblem });
+    await admin.from("lead_messages").insert({ lead_id: leadId, role: "assistant", body: passAlongMessage });
+    await adapter.sendMessage(fromPhone, passAlongMessage);
+    void sendFollowUpNotificationEmail({
+      tenant: { name: tenant.name, email: tenant.email, currency: tenant.currency },
+      customerName: profileName || "A customer",
+      body: `[Outside price sheet] ${openingProblem}`,
+    });
     return;
   }
 
@@ -347,7 +400,7 @@ export async function handleInboundWhatsAppMessage(params: {
       address: "",
       channel,
       photoUrl: mediaRef,
-      problem: body || "(photo only, no description provided)",
+      problem: body || NO_DESCRIPTION_PLACEHOLDER,
       diagnosis: result.diagnosis,
       confidence: result.confidence,
       isEmergency: result.isEmergency,

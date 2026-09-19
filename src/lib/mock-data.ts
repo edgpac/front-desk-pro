@@ -2,7 +2,7 @@ import leakPhoto from "@/assets/leak-detail.jpg";
 import panelPhoto from "@/assets/electrician-panel.jpg";
 import sinkPhoto from "@/assets/plumber-under-sink.jpg";
 
-export type LeadStatus = "new" | "quoted" | "booked" | "won" | "lost";
+export type LeadStatus = "new" | "quoted" | "booked" | "won" | "lost" | "flagged";
 
 export const STATUS_LABEL: Record<LeadStatus, string> = {
   new: "New",
@@ -10,6 +10,7 @@ export const STATUS_LABEL: Record<LeadStatus, string> = {
   booked: "Booked",
   won: "Won",
   lost: "Lost",
+  flagged: "Needs review",
 };
 
 export type LineItem = {
@@ -38,6 +39,8 @@ export type Lead = {
   // their "requested" strings ("Today, 8:10 AM") are hand-authored display
   // text, not backed by a real date to bucket by.
   createdAt?: string;
+  // Only set when status === "flagged" — see ROADMAP.md's flagged-leads slice.
+  flagReason?: string | null;
 };
 
 export const lineItemsTotal = (items: LineItem[]) =>

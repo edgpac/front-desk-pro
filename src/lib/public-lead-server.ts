@@ -173,6 +173,57 @@ export const createLead = createServerFn({ method: "POST" })
     return { id: lead.id as string };
   });
 
+type CreateFlaggedLeadInput = {
+  tenantSlug: string;
+  customerName: string;
+  phone: string;
+  channel: "Widget" | "Quote link" | "Shared link" | "WhatsApp";
+  photoUrl: string | null;
+  problem: string;
+  flagType: "conflicting_information" | "needs_human_review" | "outside_service_scope";
+  flagReason: string;
+};
+
+// Minimal flagged-leads slice (see ROADMAP.md Phase 1.5) — sibling to
+// createClarifyingLead above, same shape, but for the case where the AI
+// shouldn't attempt a price at all (right now: nothing on the price sheet
+// covers the request) rather than needing more information to price it.
+export const createFlaggedLead = createServerFn({ method: "POST" })
+  .validator((input: CreateFlaggedLeadInput) => input)
+  .handler(async ({ data }) => {
+    const admin = getAdminClient();
+
+    const { data: tenant, error: tenantError } = await admin
+      .from("tenants")
+      .select("id")
+      .eq("slug", data.tenantSlug)
+      .single();
+    if (tenantError || !tenant) {
+      throw new Error("Business not found.");
+    }
+
+    const { data: lead, error: leadError } = await admin
+      .from("leads")
+      .insert({
+        tenant_id: tenant.id,
+        customer_name: data.customerName,
+        phone: data.phone,
+        channel: data.channel,
+        photo_url: data.photoUrl,
+        problem: data.problem,
+        status: "flagged",
+        flag_type: data.flagType,
+        flag_reason: data.flagReason,
+      })
+      .select("id")
+      .single();
+    if (leadError || !lead) {
+      throw new Error(`Could not save lead: ${leadError?.message ?? "unknown error"}`);
+    }
+
+    return { id: lead.id as string };
+  });
+
 type CreateClarifyingLeadInput = {
   tenantSlug: string;
   customerName: string;
