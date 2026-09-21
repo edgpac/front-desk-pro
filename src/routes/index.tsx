@@ -350,7 +350,7 @@ function Landing() {
           <div>
             <h2 className="text-3xl">Flat monthly price. Cancel whenever.</h2>
             <p className="mt-2 max-w-lg text-sm text-muted-foreground">
-              $8/mo solo, $19/mo for a crew. One extra booked service call covers it.
+              $19.99/mo solo, $39.99/mo for a crew. One extra booked service call covers it.
             </p>
             <p className="mt-2 max-w-lg text-sm text-muted-foreground">
               Every day you wait is a day someone else in your market might already be answering

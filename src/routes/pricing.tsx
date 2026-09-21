@@ -13,9 +13,9 @@ export const Route = createFileRoute("/pricing")({
       {
         name: "description",
         content:
-          "$8/mo solo, $19/mo for a crew. Try the sample dashboard free, no signup — subscribe when you're ready, cancel anytime.",
+          "$19.99/mo solo, $39.99/mo for a crew. Try the sample dashboard free, no signup — subscribe when you're ready, cancel anytime.",
       },
-      { property: "og:title", content: "Job It Ready pricing — $8/mo solo, $19/mo crew" },
+      { property: "og:title", content: "Job It Ready pricing — $19.99/mo solo, $39.99/mo crew" },
       {
         property: "og:description",
         content: "One extra booked service call a month covers it. See it work first — no card required.",
@@ -28,7 +28,7 @@ export const Route = createFileRoute("/pricing")({
 const tiers = [
   {
     name: "Solo",
-    price: "$8",
+    price: "$19.99",
     per: "/mo",
     for: "One person, one truck.",
     points: ["Unlimited quote requests", "Photo estimates off your price sheet", "Lead inbox", "Branded proposals", "Widget + shareable link"],
@@ -37,7 +37,7 @@ const tiers = [
   },
   {
     name: "Crew",
-    price: "$19",
+    price: "$39.99",
     per: "/mo",
     for: "Two to five techs.",
     points: [

@@ -6,8 +6,8 @@ import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 // Prices defined inline at session-creation time (no pre-created Stripe
 // Product/Price IDs needed in the dashboard) — mirrors pricing.tsx exactly.
 const PLAN_PRICE_CENTS: Record<"solo" | "crew", number> = {
-  solo: 800,
-  crew: 1900,
+  solo: 1999,
+  crew: 3999,
 };
 
 const PLAN_LABEL: Record<"solo" | "crew", string> = {

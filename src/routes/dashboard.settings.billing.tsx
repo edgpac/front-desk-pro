@@ -13,13 +13,13 @@ export const Route = createFileRoute("/dashboard/settings/billing")({
 });
 
 const PLANS = [
-  { id: "solo" as const, label: "Solo", price: "$8/mo" },
-  { id: "crew" as const, label: "Crew", price: "$19/mo" },
+  { id: "solo" as const, label: "Solo", price: "$19.99/mo" },
+  { id: "crew" as const, label: "Crew", price: "$39.99/mo" },
 ];
 
 const PLAN_DISPLAY: Record<"solo" | "crew", string> = {
-  solo: "Solo — $8/mo",
-  crew: "Crew — $19/mo",
+  solo: "Solo — $19.99/mo",
+  crew: "Crew — $39.99/mo",
 };
 
 function capitalize(s: string) {
@@ -87,7 +87,7 @@ function BillingSettings() {
         <Panel title="Current plan">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div>
-              <p className="text-lg font-semibold text-foreground">Crew — $19/mo</p>
+              <p className="text-lg font-semibold text-foreground">Crew — $39.99/mo</p>
               <p className="text-sm text-muted-foreground">Cancel anytime.</p>
             </div>
             <div className="flex flex-wrap gap-2">
