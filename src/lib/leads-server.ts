@@ -1,6 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
+import { myPlanHasFeature } from "@/lib/entitlements-server";
 import type { Lead, LeadStatus, LineItem } from "@/lib/mock-data";
 
 const NO_PHOTO =
@@ -142,6 +143,82 @@ export const getMyLead = createServerFn({ method: "GET" })
       aiLineItemsSnapshot: lead.ai_line_items_snapshot,
       flagReason: lead.flag_reason,
     };
+  });
+
+// CSV escaping — wrap in quotes if the value contains a comma, quote, or
+// newline; double any internal quotes. Minimal but correct for the plain
+// text fields leads actually have (no formulas/injection-relevant content).
+function csvField(value: string): string {
+  if (/[",\n]/.test(value)) return `"${value.replace(/"/g, '""')}"`;
+  return value;
+}
+
+// Crew-only (see entitlements-server.ts). Enforced here, server-side, on
+// every call — the UI hiding the button for Solo is a courtesy, not the
+// actual protection. Same tenant-scoped query shape as listMyLeads above,
+// not a new pattern: context.supabase (RLS-scoped to the caller's own
+// session) plus an explicit tenant_id filter as defense-in-depth.
+export const exportMyLeadsCsv = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }): Promise<string> => {
+    const allowed = await myPlanHasFeature(context.supabase, "csvExport");
+    if (!allowed) {
+      throw new Error("CSV export is available on the Crew plan — upgrade to export your leads.");
+    }
+
+    const tenantId = await getTenantId(context.supabase, context.userId);
+    const { data: leads, error } = await context.supabase
+      .from("leads")
+      .select("id, customer_name, phone, address, channel, problem, status, created_at")
+      .eq("tenant_id", tenantId)
+      .order("created_at", { ascending: false });
+    if (error) throw new Error(`Could not load leads: ${error.message}`);
+
+    const leadRows = (leads ?? []) as Array<{
+      id: string;
+      customer_name: string;
+      phone: string;
+      address: string;
+      channel: string;
+      problem: string;
+      status: string;
+      created_at: string;
+    }>;
+    if (leadRows.length === 0) {
+      return "Name,Phone,Address,Channel,Problem,Estimate,Status,Created\n";
+    }
+
+    const { data: items, error: itemsError } = await context.supabase
+      .from("lead_line_items")
+      .select("lead_id, qty, rate")
+      .in(
+        "lead_id",
+        leadRows.map((l) => l.id),
+      );
+    if (itemsError) throw new Error(`Could not load line items: ${itemsError.message}`);
+
+    const totalByLead = new Map<string, number>();
+    for (const item of (items ?? []) as Array<{ lead_id: string; qty: number; rate: number }>) {
+      totalByLead.set(item.lead_id, (totalByLead.get(item.lead_id) ?? 0) + item.qty * item.rate);
+    }
+
+    const header = ["Name", "Phone", "Address", "Channel", "Problem", "Estimate", "Status", "Created"];
+    const rows = leadRows.map((l) =>
+      [
+        l.customer_name,
+        l.phone,
+        l.address,
+        l.channel,
+        l.problem,
+        (totalByLead.get(l.id) ?? 0).toFixed(2),
+        l.status,
+        l.created_at,
+      ]
+        .map((v) => csvField(String(v)))
+        .join(","),
+    );
+
+    return [header.join(","), ...rows].join("\n");
   });
 
 export const updateLeadStatus = createServerFn({ method: "POST" })

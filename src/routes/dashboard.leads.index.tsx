@@ -8,9 +8,10 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/use-auth";
-import { listMyLeads } from "@/lib/leads-server";
+import { listMyLeads, exportMyLeadsCsv } from "@/lib/leads-server";
 import { createLead } from "@/lib/public-lead-server";
 import { getMyTenant } from "@/lib/tenant-server";
+import { getMyBillingInfo } from "@/lib/stripe-server";
 import { LEADS, type Lead, type LeadStatus, STATUS_LABEL, lineItemsTotal, money } from "@/lib/mock-data";
 
 export const Route = createFileRoute("/dashboard/leads/")({
@@ -26,6 +27,8 @@ function LeadInbox() {
   const [filter, setFilter] = useState<LeadStatus | "all">("all");
   const [search, setSearch] = useState("");
   const [sendingTest, setSendingTest] = useState(false);
+  const [plan, setPlan] = useState<"solo" | "crew" | null>(null);
+  const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
     if (authLoading) return;
@@ -45,10 +48,40 @@ function LeadInbox() {
       .finally(() => {
         if (active) setLoading(false);
       });
+    // Only used to decide which control to render (real export vs. upgrade
+    // prompt) — the actual protection is server-side in exportMyLeadsCsv,
+    // this is just so Solo isn't shown a button that would fail on click.
+    getMyBillingInfo()
+      .then((info) => {
+        if (active) setPlan(info.plan);
+      })
+      .catch(() => {
+        // Non-fatal — leave plan null, which just shows the upgrade prompt.
+      });
     return () => {
       active = false;
     };
   }, [authLoading, user]);
+
+  async function exportCsv() {
+    setExporting(true);
+    try {
+      const csv = await exportMyLeadsCsv();
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `job-it-ready-leads-${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Couldn't export leads.");
+    } finally {
+      setExporting(false);
+    }
+  }
 
   async function sendTestLead() {
     setSendingTest(true);
@@ -95,9 +128,23 @@ function LeadInbox() {
           : {})}
         actions={
           user ? (
-            <Button variant="outline" size="sm" onClick={() => void sendTestLead()} disabled={sendingTest}>
-              {sendingTest ? "Sending…" : "Send yourself a test lead"}
-            </Button>
+            <div className="flex flex-wrap items-center gap-2">
+              {plan === "crew" ? (
+                <Button variant="outline" size="sm" onClick={() => void exportCsv()} disabled={exporting}>
+                  {exporting ? "Exporting…" : "Export CSV"}
+                </Button>
+              ) : (
+                <span className="text-xs text-muted-foreground">
+                  CSV export is available on Crew.{" "}
+                  <Link to="/pricing" className="font-semibold text-primary underline-offset-4 hover:underline">
+                    Upgrade
+                  </Link>
+                </span>
+              )}
+              <Button variant="outline" size="sm" onClick={() => void sendTestLead()} disabled={sendingTest}>
+                {sendingTest ? "Sending…" : "Send yourself a test lead"}
+              </Button>
+            </div>
           ) : undefined
         }
       />
