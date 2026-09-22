@@ -338,6 +338,14 @@ export const getQuoteEstimate = createServerFn({ method: "POST" })
     }
 
     const content: Array<Record<string, unknown>> = [{ type: "text", text: buildPrompt(data) }];
+    // TEMPORARY DIAGNOSTIC — remove after confirming live prompt contents.
+    // Business-configured price-sheet data only, never customer text.
+    console.error(
+      "DIAGNOSTIC price sheet sent to Claude:",
+      JSON.stringify(
+        data.priceSheet.map((i) => ({ task: i.task, keywords: i.keywords, bundleable: i.bundleable })),
+      ),
+    );
     if (data.imageBase64) {
       content.unshift({
         type: "image",
