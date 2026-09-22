@@ -98,14 +98,17 @@ export async function handleInboundWhatsAppMessage(params: {
 
     const { data: clarifyPriceSheetRows } = await admin
       .from("price_sheet_items")
-      .select("task, keywords, price_min, price_max, hours")
+      .select("task, category, keywords, pricing_type, price_min, price_max, hours, bundleable")
       .eq("tenant_id", tenant.id);
     const clarifyPriceSheet: PriceSheetItem[] = (clarifyPriceSheetRows ?? []).map((row) => ({
       task: row.task,
+      category: row.category,
       keywords: row.keywords,
+      pricingType: row.pricing_type,
       priceMin: row.price_min,
       priceMax: row.price_max,
       hours: row.hours,
+      bundleable: row.bundleable,
     }));
 
     // The original photo stays canonical regardless of whether this reply
@@ -296,15 +299,18 @@ export async function handleInboundWhatsAppMessage(params: {
 
   const { data: priceSheetRows } = await admin
     .from("price_sheet_items")
-    .select("task, keywords, price_min, price_max, hours")
+    .select("task, category, keywords, pricing_type, price_min, price_max, hours, bundleable")
     .eq("tenant_id", tenant.id);
 
   const priceSheet: PriceSheetItem[] = (priceSheetRows ?? []).map((row) => ({
     task: row.task,
+    category: row.category,
     keywords: row.keywords,
+    pricingType: row.pricing_type,
     priceMin: row.price_min,
     priceMax: row.price_max,
     hours: row.hours,
+    bundleable: row.bundleable,
   }));
 
   let imageBase64: string;

@@ -49,6 +49,7 @@ function newRow(): PriceSheetRow {
     priceMin: 0,
     priceMax: 0,
     hours: 0,
+    bundleable: false,
   };
 }
 
@@ -137,6 +138,7 @@ function PriceSheetPage() {
             priceMin: row.priceMin,
             priceMax: row.priceMax,
             hours: row.hours,
+            bundleable: row.bundleable,
           })),
         },
       });
@@ -325,6 +327,15 @@ function PriceSheetPage() {
                 className="text-xs"
                 aria-label={`Keywords for ${row.task}`}
               />
+              <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={row.bundleable}
+                  onChange={(e) => updateRow(row.id, { bundleable: e.target.checked })}
+                  className="h-3.5 w-3.5"
+                />
+                Bundle multiple of these into one visit charge
+              </label>
             </li>
           ))}
         </ul>
