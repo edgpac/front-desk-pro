@@ -14,13 +14,11 @@ const PLAN_FEATURES: Record<PlanId, Record<Feature, boolean>> = {
 };
 
 // Reads the authenticated user's real, current plan straight from their own
-// Supabase auth metadata (written by api.stripe.webhook.tsx on a successful
-// checkout) — never trusts anything a client claims about its own plan.
-// subscriptionStatus must be exactly "active"; anything else (or missing
-// entirely) has no entitlements. Known gap, not fixed here: the webhook only
-// listens for checkout.session.completed today, so a cancellation made
-// elsewhere in Stripe won't flip this back to inactive yet — see
-// ROADMAP.md's Stripe billing entry.
+// Supabase auth metadata (written by api.stripe.webhook.tsx on checkout,
+// renewals, cancellations, failed payments, and plan changes) — never
+// trusts anything a client claims about its own plan. subscriptionStatus
+// must be exactly "active"; anything else (or missing entirely) has no
+// entitlements.
 export async function getMyPlan(supabase: SupabaseClient): Promise<PlanId | null> {
   const { data, error } = await supabase.auth.getUser();
   if (error || !data.user) return null;
