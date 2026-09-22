@@ -5,7 +5,13 @@ import { toast } from "sonner";
 import { PageHeader, Panel } from "@/components/app/DashboardShell";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/use-auth";
-import { createCheckoutSession, createBillingPortalSession, getMyBillingInfo, type BillingInfo } from "@/lib/stripe-server";
+import {
+  createCheckoutSession,
+  changeMyPlan,
+  createBillingPortalSession,
+  getMyBillingInfo,
+  type BillingInfo,
+} from "@/lib/stripe-server";
 import { INVOICES } from "@/lib/mock-data";
 
 export const Route = createFileRoute("/dashboard/settings/billing")({
@@ -58,10 +64,21 @@ function BillingSettings() {
   async function startCheckout(plan: "solo" | "crew") {
     setCheckingOut(plan);
     try {
+      // Already subscribed → change the existing subscription in place.
+      // Going through createCheckoutSession here would create a second,
+      // separate subscription instead of replacing this one.
+      if (billing?.plan) {
+        await changeMyPlan({ data: { plan } });
+        toast.success(`Switched to ${plan === "solo" ? "Solo" : "Crew"} — this may take a moment to reflect below.`);
+        const info = await getMyBillingInfo();
+        setBilling(info);
+        setCheckingOut(null);
+        return;
+      }
       const { url } = await createCheckoutSession({ data: { plan } });
       window.location.href = url;
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Couldn't start checkout.");
+      toast.error(err instanceof Error ? err.message : "Couldn't update your plan.");
       setCheckingOut(null);
     }
   }
@@ -183,6 +200,11 @@ function BillingSettings() {
             ? `${capitalize(billing.paymentMethod.brand)} ending in ${billing.paymentMethod.last4}`
             : "No card on file yet."}
         </p>
+        {hasPlan && (
+          <p className="mt-3 text-xs text-muted-foreground">
+            Cancel anytime — "Manage in Stripe" above also has a Cancel subscription option.
+          </p>
+        )}
       </Panel>
 
       <Panel title="Invoice history">

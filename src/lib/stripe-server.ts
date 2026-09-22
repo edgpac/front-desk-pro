@@ -5,7 +5,10 @@ import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 
 // Prices defined inline at session-creation time (no pre-created Stripe
 // Product/Price IDs needed in the dashboard) — mirrors pricing.tsx exactly.
-const PLAN_PRICE_CENTS: Record<"solo" | "crew", number> = {
+// Exported so api.stripe.webhook.tsx can map a subscription's unit_amount
+// back to a plan id for lifecycle events (renewals, plan changes) that
+// don't otherwise carry a plan the way a fresh checkout's metadata does.
+export const PLAN_PRICE_CENTS: Record<"solo" | "crew", number> = {
   solo: 1999,
   crew: 3999,
 };
@@ -39,11 +42,28 @@ export const createCheckoutSession = createServerFn({ method: "POST" })
       throw new Error("Couldn't read your account email — try logging in again.");
     }
 
+    // Reuse the same Stripe Customer across a user's whole lifetime (created
+    // once, first time they ever check out) instead of letting each Checkout
+    // Session implicitly create a new one from customer_email — otherwise a
+    // second signup (e.g. resubscribing after a cancellation) would silently
+    // fork into a second, disconnected Stripe customer. Every customer we
+    // create carries metadata.userId, which is how the webhook resolves
+    // lifecycle events (renewals, cancellations, failed payments — anything
+    // that isn't the checkout flow itself) back to this Supabase user.
+    let customerId = userData.user.user_metadata?.["stripeCustomerId"] as string | undefined;
+    if (!customerId) {
+      const customer = await stripe.customers.create({
+        email: userData.user.email,
+        metadata: { userId: context.userId },
+      });
+      customerId = customer.id;
+    }
+
     const siteUrl = process.env["SITE_URL"] || "http://localhost:8080";
 
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
-      customer_email: userData.user.email,
+      customer: customerId,
       client_reference_id: context.userId,
       line_items: [
         {
@@ -57,12 +77,67 @@ export const createCheckoutSession = createServerFn({ method: "POST" })
         },
       ],
       metadata: { userId: context.userId, plan: data.plan },
+      // Stamped onto the Subscription object itself too (not just the
+      // Checkout Session, which the webhook never sees again) — this is
+      // what lets customer.subscription.updated/.deleted resolve straight
+      // to a userId without an extra Stripe API round-trip on every event.
+      subscription_data: { metadata: { userId: context.userId, plan: data.plan } },
       success_url: `${siteUrl}/dashboard/settings/billing?checkout=success`,
       cancel_url: `${siteUrl}/dashboard/settings/billing`,
     });
 
     if (!session.url) throw new Error("Stripe didn't return a checkout URL.");
     return { url: session.url };
+  });
+
+// Changing plans on an *existing* active subscription must never go back
+// through createCheckoutSession — Checkout always creates a brand-new
+// subscription, which would leave the customer with two active
+// subscriptions (and two charges) instead of one changed one. This updates
+// the same subscription's line item in place; Stripe prorates automatically
+// and fires customer.subscription.updated, which is what actually persists
+// the new plan to Supabase — this function only ever talks to Stripe.
+export const changeMyPlan = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .validator((input: CheckoutInput) => input)
+  .handler(async ({ data, context }) => {
+    const stripe = getStripe();
+    const { data: userData, error } = await context.supabase.auth.getUser();
+    const stripeCustomerId = userData?.user?.user_metadata?.["stripeCustomerId"] as string | undefined;
+    if (error || !stripeCustomerId) {
+      throw new Error("No billing account on file yet — start a plan first.");
+    }
+
+    const subscriptions = await stripe.subscriptions.list({
+      customer: stripeCustomerId,
+      status: "active",
+      limit: 1,
+    });
+    const subscription = subscriptions.data[0];
+    const item = subscription?.items.data[0];
+    if (!subscription || !item) {
+      throw new Error("No active subscription found — start a plan first.");
+    }
+
+    // Unlike a Checkout Session line item, a subscription item's price_data
+    // has no product_data field — it needs a real Price id. Creating one
+    // here (with product_data, which Prices *does* support) keeps the same
+    // "no pre-made Stripe Products needed" approach the rest of this file
+    // uses, just via one extra call.
+    const price = await stripe.prices.create({
+      currency: "usd",
+      recurring: { interval: "month" },
+      unit_amount: PLAN_PRICE_CENTS[data.plan],
+      product_data: { name: PLAN_LABEL[data.plan] },
+    });
+
+    await stripe.subscriptions.update(subscription.id, {
+      items: [{ id: item.id, price: price.id }],
+      proration_behavior: "create_prorations",
+      metadata: { userId: context.userId, plan: data.plan },
+    });
+
+    return { ok: true as const };
   });
 
 export type BillingInfo = {
