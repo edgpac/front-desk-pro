@@ -67,6 +67,7 @@ export function QuoteFlow({
   serviceCallFee = 60,
   priceSheet = SAMPLE_PRICE_SHEET,
   tenantSlug,
+  channel = "Quote link",
 }: {
   businessName: string;
   accent?: string;
@@ -76,6 +77,11 @@ export function QuoteFlow({
   serviceCallFee?: number;
   priceSheet?: PriceSheetItem[];
   tenantSlug?: string;
+  // Which intake surface this instance is running on — threaded straight
+  // through to createLead/createFlaggedLead so a lead's origin (embedded
+  // widget vs. the standalone /quote/:slug link) is recorded accurately
+  // instead of every non-WhatsApp lead looking like it came from the link.
+  channel?: "Quote link" | "Widget";
 }) {
   const [stage, setStage] = useState<Stage>("intake");
   const [selectedSample, setSelectedSample] = useState<SamplePhoto | null>(null);
@@ -226,7 +232,7 @@ export function QuoteFlow({
           customerName: customerName.trim(),
           phone: phone.trim(),
           address: "",
-          channel: "Quote link",
+          channel,
           problem: description,
           diagnosis: result.diagnosis,
           confidence: result.confidence,
@@ -265,7 +271,7 @@ export function QuoteFlow({
           tenantSlug,
           customerName: customerName.trim(),
           phone: phone.trim(),
-          channel: "Quote link",
+          channel,
           photoUrl: null,
           problem: description,
           flagType: "outside_service_scope",

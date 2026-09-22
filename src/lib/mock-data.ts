@@ -277,9 +277,13 @@ export const TENANT: Tenant = {
   whatsappNumber: "",
 };
 
+// Served as a static asset from the same domain (public/widget.js) rather
+// than a separate cdn.jobitready.com subdomain — that subdomain was never
+// actually provisioned (no DNS/Vercel domain), so the embed code was
+// pointing nowhere real.
 export const embedSnippet = (slug: string) =>
   `<!-- Job It Ready quote widget -->
-<script src="https://cdn.jobitready.com/widget.js"
+<script src="https://www.jobitready.com/widget.js"
         data-shop="${slug}"
         data-position="bottom-right"
         async></script>`;

@@ -27,6 +27,7 @@ import { Route as DashboardPriceSheetRouteImport } from './routes/dashboard.pric
 import { Route as DashboardWidgetRouteImport } from './routes/dashboard.widget'
 import { Route as OnboardingIndexRouteImport } from './routes/onboarding.index'
 import { Route as QuoteSlugRouteImport } from './routes/quote.$slug'
+import { Route as WidgetSlugRouteImport } from './routes/widget.$slug'
 import { Route as ApiStripeWebhookRouteImport } from './routes/api.stripe.webhook'
 import { Route as ApiWhatsappMetaWebhookRouteImport } from './routes/api.whatsapp.meta-webhook'
 import { Route as ApiWhatsappWebhookRouteImport } from './routes/api.whatsapp.webhook'
@@ -130,6 +131,11 @@ const QuoteSlugRoute = QuoteSlugRouteImport.update({
   path: '/quote/$slug',
   getParentRoute: () => rootRouteImport,
 } as any)
+const WidgetSlugRoute = WidgetSlugRouteImport.update({
+  id: '/widget/$slug',
+  path: '/widget/$slug',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiStripeWebhookRoute = ApiStripeWebhookRouteImport.update({
   id: '/api/stripe/webhook',
   path: '/api/stripe/webhook',
@@ -212,6 +218,7 @@ export interface FileRoutesByFullPath {
   '/dashboard/price-sheet': typeof DashboardPriceSheetRoute
   '/dashboard/widget': typeof DashboardWidgetRoute
   '/quote/$slug': typeof QuoteSlugRoute
+  '/widget/$slug': typeof WidgetSlugRoute
   '/dashboard/': typeof DashboardIndexRoute
   '/onboarding/': typeof OnboardingIndexRoute
   '/api/stripe/webhook': typeof ApiStripeWebhookRoute
@@ -241,6 +248,7 @@ export interface FileRoutesByTo {
   '/dashboard/price-sheet': typeof DashboardPriceSheetRoute
   '/dashboard/widget': typeof DashboardWidgetRoute
   '/quote/$slug': typeof QuoteSlugRoute
+  '/widget/$slug': typeof WidgetSlugRoute
   '/dashboard': typeof DashboardIndexRoute
   '/onboarding': typeof OnboardingIndexRoute
   '/api/stripe/webhook': typeof ApiStripeWebhookRoute
@@ -273,6 +281,7 @@ export interface FileRoutesById {
   '/dashboard/price-sheet': typeof DashboardPriceSheetRoute
   '/dashboard/widget': typeof DashboardWidgetRoute
   '/quote/$slug': typeof QuoteSlugRoute
+  '/widget/$slug': typeof WidgetSlugRoute
   '/dashboard/': typeof DashboardIndexRoute
   '/onboarding/': typeof OnboardingIndexRoute
   '/api/stripe/webhook': typeof ApiStripeWebhookRoute
@@ -307,6 +316,7 @@ export interface FileRouteTypes {
     | '/dashboard/price-sheet'
     | '/dashboard/widget'
     | '/quote/$slug'
+    | '/widget/$slug'
     | '/dashboard/'
     | '/onboarding/'
     | '/api/stripe/webhook'
@@ -336,6 +346,7 @@ export interface FileRouteTypes {
     | '/dashboard/price-sheet'
     | '/dashboard/widget'
     | '/quote/$slug'
+    | '/widget/$slug'
     | '/dashboard'
     | '/onboarding'
     | '/api/stripe/webhook'
@@ -367,6 +378,7 @@ export interface FileRouteTypes {
     | '/dashboard/price-sheet'
     | '/dashboard/widget'
     | '/quote/$slug'
+    | '/widget/$slug'
     | '/dashboard/'
     | '/onboarding/'
     | '/api/stripe/webhook'
@@ -396,6 +408,7 @@ export interface RootRouteChildren {
   TermsRoute: typeof TermsRoute
   ApiMetaTestExchangeRoute: typeof ApiMetaTestExchangeRoute
   QuoteSlugRoute: typeof QuoteSlugRoute
+  WidgetSlugRoute: typeof WidgetSlugRoute
   ApiStripeWebhookRoute: typeof ApiStripeWebhookRoute
   ApiWhatsappMetaWebhookRoute: typeof ApiWhatsappMetaWebhookRoute
   ApiWhatsappWebhookRoute: typeof ApiWhatsappWebhookRoute
@@ -527,6 +540,13 @@ declare module '@tanstack/react-router' {
       path: '/quote/$slug'
       fullPath: '/quote/$slug'
       preLoaderRoute: typeof QuoteSlugRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/widget/$slug': {
+      id: '/widget/$slug'
+      path: '/widget/$slug'
+      fullPath: '/widget/$slug'
+      preLoaderRoute: typeof WidgetSlugRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/stripe/webhook': {
@@ -698,6 +718,7 @@ const rootRouteChildren: RootRouteChildren = {
   TermsRoute: TermsRoute,
   ApiMetaTestExchangeRoute: ApiMetaTestExchangeRoute,
   QuoteSlugRoute: QuoteSlugRoute,
+  WidgetSlugRoute: WidgetSlugRoute,
   ApiStripeWebhookRoute: ApiStripeWebhookRoute,
   ApiWhatsappMetaWebhookRoute: ApiWhatsappMetaWebhookRoute,
   ApiWhatsappWebhookRoute: ApiWhatsappWebhookRoute,
