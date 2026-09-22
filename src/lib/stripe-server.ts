@@ -59,6 +59,21 @@ export const createCheckoutSession = createServerFn({ method: "POST" })
       customerId = customer.id;
     }
 
+    // Hard server-side guard, checked against Stripe itself rather than
+    // trusting anything the client believes about its own plan state — a
+    // stale page, a double-click, or navigating back mid-transition could
+    // otherwise still reach this function while a subscription already
+    // exists, creating a second one instead of changing the first. Plan
+    // changes belong in the Stripe portal ("Change plan" on the billing
+    // page); this function is only for a genuinely new subscriber.
+    const existingSubscriptions = await stripe.subscriptions.list({ customer: customerId, status: "all", limit: 10 });
+    const hasLiveSubscription = existingSubscriptions.data.some(
+      (sub) => sub.status !== "canceled" && sub.status !== "incomplete_expired",
+    );
+    if (hasLiveSubscription) {
+      throw new Error('You already have a subscription — use "Change plan" instead of starting a new one.');
+    }
+
     const siteUrl = process.env["SITE_URL"] || "http://localhost:8080";
 
     const session = await stripe.checkout.sessions.create({
