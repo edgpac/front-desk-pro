@@ -1,4 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { createServerFn } from "@tanstack/react-start";
+import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 
 // Single source of truth for what each plan actually unlocks. Add new
 // features here as they're built — never scatter `plan === "crew"` checks
@@ -35,3 +37,13 @@ export async function myPlanHasFeature(supabase: SupabaseClient, feature: Featur
   if (!plan) return false;
   return PLAN_FEATURES[plan][feature];
 }
+
+// Client-callable wrapper around getMyPlan — for chrome that just needs to
+// know "does this user have an active plan, and which one" (e.g. the
+// sidebar) without pulling in stripe-server.ts's real Stripe API calls
+// (payment method, invoices) the way the full billing page does.
+export const getMyPlanSummary = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }): Promise<{ plan: PlanId | null }> => {
+    return { plan: await getMyPlan(context.supabase) };
+  });

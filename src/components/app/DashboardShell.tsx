@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/lib/use-auth";
 import { getMyTenant } from "@/lib/tenant-server";
+import { getMyPlanSummary, type PlanId } from "@/lib/entitlements-server";
 import { TENANT } from "@/lib/mock-data";
 import { cn } from "@/lib/utils";
 
@@ -65,12 +66,14 @@ export function DashboardShell() {
   const { user, loading: authLoading } = useAuth();
   const [businessName, setBusinessName] = useState(TENANT.name);
   const [businessArea, setBusinessArea] = useState(TENANT.area);
+  const [plan, setPlan] = useState<PlanId | null>(null);
 
   useEffect(() => {
     if (authLoading) return;
     if (!user) {
       setBusinessName(TENANT.name);
       setBusinessArea(TENANT.area);
+      setPlan(null);
       return;
     }
     let active = true;
@@ -84,6 +87,17 @@ export function DashboardShell() {
         // Sidebar chrome — fail quietly rather than toast on every page nav,
         // the page content itself already surfaces a real error if the
         // tenant fetch is broken.
+      });
+    // Same authoritative check entitlements/billing already use (Supabase
+    // user_metadata, subscriptionStatus === "active") — no Stripe calls,
+    // no separate logic, just the plan half of what getMyBillingInfo
+    // returns, so the sidebar can't disagree with the billing page.
+    getMyPlanSummary()
+      .then(({ plan: currentPlan }) => {
+        if (active) setPlan(currentPlan);
+      })
+      .catch(() => {
+        // Sidebar chrome — fail quietly, same as the tenant fetch above.
       });
     return () => {
       active = false;
@@ -111,10 +125,23 @@ export function DashboardShell() {
         </div>
         <div className="mt-auto space-y-3">
           <div className="rounded-sm border border-white/10 p-3">
-            <p className="text-xs text-ink-muted">No trial — a plan is required</p>
-            <Button asChild size="sm" className="mt-2 w-full">
-              <Link to="/pricing">Pick a plan</Link>
-            </Button>
+            {plan ? (
+              <>
+                <p className="text-xs text-ink-muted">
+                  {plan.charAt(0).toUpperCase() + plan.slice(1)} plan — active
+                </p>
+                <Button asChild size="sm" variant="outline" className="mt-2 w-full">
+                  <Link to="/dashboard/settings/billing">Manage billing</Link>
+                </Button>
+              </>
+            ) : (
+              <>
+                <p className="text-xs text-ink-muted">No trial — a plan is required</p>
+                <Button asChild size="sm" className="mt-2 w-full">
+                  <Link to="/pricing">Pick a plan</Link>
+                </Button>
+              </>
+            )}
           </div>
           {user ? (
             <button
