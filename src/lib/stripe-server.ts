@@ -90,56 +90,6 @@ export const createCheckoutSession = createServerFn({ method: "POST" })
     return { url: session.url };
   });
 
-// Changing plans on an *existing* active subscription must never go back
-// through createCheckoutSession — Checkout always creates a brand-new
-// subscription, which would leave the customer with two active
-// subscriptions (and two charges) instead of one changed one. This updates
-// the same subscription's line item in place; Stripe prorates automatically
-// and fires customer.subscription.updated, which is what actually persists
-// the new plan to Supabase — this function only ever talks to Stripe.
-export const changeMyPlan = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
-  .validator((input: CheckoutInput) => input)
-  .handler(async ({ data, context }) => {
-    const stripe = getStripe();
-    const { data: userData, error } = await context.supabase.auth.getUser();
-    const stripeCustomerId = userData?.user?.user_metadata?.["stripeCustomerId"] as string | undefined;
-    if (error || !stripeCustomerId) {
-      throw new Error("No billing account on file yet — start a plan first.");
-    }
-
-    const subscriptions = await stripe.subscriptions.list({
-      customer: stripeCustomerId,
-      status: "active",
-      limit: 1,
-    });
-    const subscription = subscriptions.data[0];
-    const item = subscription?.items.data[0];
-    if (!subscription || !item) {
-      throw new Error("No active subscription found — start a plan first.");
-    }
-
-    // Unlike a Checkout Session line item, a subscription item's price_data
-    // has no product_data field — it needs a real Price id. Creating one
-    // here (with product_data, which Prices *does* support) keeps the same
-    // "no pre-made Stripe Products needed" approach the rest of this file
-    // uses, just via one extra call.
-    const price = await stripe.prices.create({
-      currency: "usd",
-      recurring: { interval: "month" },
-      unit_amount: PLAN_PRICE_CENTS[data.plan],
-      product_data: { name: PLAN_LABEL[data.plan] },
-    });
-
-    await stripe.subscriptions.update(subscription.id, {
-      items: [{ id: item.id, price: price.id }],
-      proration_behavior: "create_prorations",
-      metadata: { userId: context.userId, plan: data.plan },
-    });
-
-    return { ok: true as const };
-  });
-
 export type BillingInfo = {
   plan: "solo" | "crew" | null;
   subscriptionStatus: string | null;

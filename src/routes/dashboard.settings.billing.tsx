@@ -7,7 +7,6 @@ import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/use-auth";
 import {
   createCheckoutSession,
-  changeMyPlan,
   createBillingPortalSession,
   getMyBillingInfo,
   type BillingInfo,
@@ -61,28 +60,25 @@ function BillingSettings() {
     };
   }, [authLoading, user]);
 
+  // Only for a genuinely new subscriber (no existing plan) — creates a
+  // fresh Checkout Session, which is correct here since there's no
+  // existing subscription to collide with.
   async function startCheckout(plan: "solo" | "crew") {
     setCheckingOut(plan);
     try {
-      // Already subscribed → change the existing subscription in place.
-      // Going through createCheckoutSession here would create a second,
-      // separate subscription instead of replacing this one.
-      if (billing?.plan) {
-        await changeMyPlan({ data: { plan } });
-        toast.success(`Switched to ${plan === "solo" ? "Solo" : "Crew"} — this may take a moment to reflect below.`);
-        const info = await getMyBillingInfo();
-        setBilling(info);
-        setCheckingOut(null);
-        return;
-      }
       const { url } = await createCheckoutSession({ data: { plan } });
       window.location.href = url;
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Couldn't update your plan.");
+      toast.error(err instanceof Error ? err.message : "Couldn't start checkout.");
       setCheckingOut(null);
     }
   }
 
+  // Already-subscribed plan changes also go through here (same portal the
+  // "Manage in Stripe" button below opens) — a visible, Stripe-hosted page
+  // instead of a silent in-app call. Going through createCheckoutSession
+  // for a plan change would create a second, separate subscription instead
+  // of replacing this one, so that stays off the table.
   async function openPortal() {
     setOpeningPortal(true);
     try {
@@ -166,24 +162,28 @@ function BillingSettings() {
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
-            {PLANS.filter((plan) => plan.id !== billing?.plan).map((plan) => (
-              <Button
-                key={plan.id}
-                variant="outline"
-                onClick={() => void startCheckout(plan.id)}
-                disabled={checkingOut !== null}
-              >
-                {checkingOut === plan.id
-                  ? "Redirecting…"
-                  : hasPlan
-                    ? `Switch to ${plan.label} — ${plan.price}`
-                    : `Start ${plan.label} — ${plan.price}`}
+            {hasPlan ? (
+              <Button variant="outline" onClick={() => void openPortal()} disabled={openingPortal}>
+                {openingPortal ? "Redirecting…" : "Change plan"}
               </Button>
-            ))}
+            ) : (
+              PLANS.map((plan) => (
+                <Button
+                  key={plan.id}
+                  variant="outline"
+                  onClick={() => void startCheckout(plan.id)}
+                  disabled={checkingOut !== null}
+                >
+                  {checkingOut === plan.id ? "Redirecting…" : `Start ${plan.label} — ${plan.price}`}
+                </Button>
+              ))
+            )}
           </div>
         </div>
         <p className="mt-3 text-xs text-muted-foreground">
-          Checkout uses the email on your Job It Ready account — no need to type it again.
+          {hasPlan
+            ? "Change plan opens Stripe's billing portal, where you can switch plans or cancel."
+            : "Checkout uses the email on your Job It Ready account — no need to type it again."}
         </p>
       </Panel>
 

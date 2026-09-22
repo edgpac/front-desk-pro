@@ -25,10 +25,11 @@ function getAdminClient() {
 }
 
 // Every event below needs to resolve back to a Supabase user id. Subscription
-// events carry it directly, stamped at creation/plan-change time
-// (createCheckoutSession's subscription_data.metadata, changeMyPlan's
-// metadata) — that's tried first since it needs no extra API call. Anything
-// without it (invoices, or a subscription that predates this change) falls
+// events carry it directly, stamped at creation time
+// (createCheckoutSession's subscription_data.metadata) — that's tried first
+// since it needs no extra API call. Anything without it (invoices, plan
+// changes made via the Stripe portal, or a subscription that predates this
+// change) falls
 // back to the Stripe Customer's own metadata.userId, set once when the
 // customer is first created — never re-derived from email, which isn't
 // guaranteed stable/unique the way a Stripe id is.
@@ -149,8 +150,9 @@ export const Route = createFileRoute("/api/stripe/webhook")({
           } else if (event.type === "customer.subscription.updated" || event.type === "customer.subscription.created") {
             // Covers renewals settling back to "active", a failed renewal
             // moving to "past_due"/"unpaid", a plan change (Solo <-> Crew,
-            // via changeMyPlan), and a cancellation scheduled for period end
-            // (status stays "active" until it actually ends — see .deleted).
+            // made via the Stripe billing portal), and a cancellation
+            // scheduled for period end (status stays "active" until it
+            // actually ends — see .deleted).
             const subscription = event.data.object as Stripe.Subscription;
             const userId = await resolveUserId(stripe, subscription.customer, subscription.metadata?.["userId"]);
             if (!userId) {
