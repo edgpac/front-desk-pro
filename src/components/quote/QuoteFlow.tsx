@@ -56,8 +56,6 @@ type ResultState = {
   lineItems: LineItem[];
   totalLow: number;
   totalHigh: number;
-  // TEMPORARY DIAGNOSTIC — see debugPriceSheetSeen on QuoteResult.
-  debugPriceSheetSeen?: Array<{ task: string; keywords: string[]; bundleable: boolean }>;
 };
 
 export function QuoteFlow({
@@ -520,14 +518,6 @@ export function QuoteFlow({
 
       {stage === "result" && result && (
         <div className="p-5">
-          {result.debugPriceSheetSeen && (
-            <div className="mb-4 border-2 border-dashed border-amber-500 bg-amber-50 p-3 text-xs text-amber-900">
-              <p className="font-bold">TEMPORARY DEBUG — price sheet Claude actually received:</p>
-              <pre className="mt-1.5 whitespace-pre-wrap break-words">
-                {JSON.stringify(result.debugPriceSheetSeen, null, 2)}
-              </pre>
-            </div>
-          )}
           {result.isEmergency && (
             <div className="mb-4 border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
               This sounds urgent — a real business would surface a "call now" prompt here instead of

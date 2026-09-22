@@ -61,11 +61,6 @@ export type QuoteResult =
       lineItems: LineItem[];
       totalLow: number;
       totalHigh: number;
-      // TEMPORARY DIAGNOSTIC — remove once price-sheet matching is
-      // confirmed working. Echoes exactly what price-sheet data this
-      // request actually sent, so it's visible right on the estimate page
-      // without needing to dig through server logs.
-      debugPriceSheetSeen?: Array<{ task: string; keywords: string[]; bundleable: boolean }>;
     };
 
 export const SAMPLE_PRICE_SHEET: PriceSheetItem[] = [
@@ -343,12 +338,6 @@ export const getQuoteEstimate = createServerFn({ method: "POST" })
     }
 
     const content: Array<Record<string, unknown>> = [{ type: "text", text: buildPrompt(data) }];
-    // TEMPORARY DIAGNOSTIC — see debugPriceSheetSeen on QuoteResult above.
-    const debugPriceSheetSeen = data.priceSheet.map((i) => ({
-      task: i.task,
-      keywords: i.keywords,
-      bundleable: i.bundleable,
-    }));
     if (data.imageBase64) {
       content.unshift({
         type: "image",
@@ -402,7 +391,6 @@ export const getQuoteEstimate = createServerFn({ method: "POST" })
       lineItems,
       totalLow: parsed.totalLow ?? total,
       totalHigh: parsed.totalHigh ?? total,
-      debugPriceSheetSeen,
     };
   });
 
