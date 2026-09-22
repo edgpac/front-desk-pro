@@ -139,6 +139,7 @@ export function QuoteFlow({
           imageBase64: base64,
           imageMediaType: mediaType,
           answers: answersForThisRound,
+          tenantSlug,
         },
       });
 
@@ -186,6 +187,7 @@ export function QuoteFlow({
           lineItems: result.lineItems,
           question,
           history: thread,
+          tenantSlug,
         },
       });
       setThread((t) => [...t, { role: "desk", text: answer }]);
@@ -591,11 +593,11 @@ export function QuoteFlow({
                 disabled={sendingLead || leadSent}
                 onClick={() => void sendQuoteToBusiness()}
               >
-                {leadSent ? "Sent — the business will reach out" : sendingLead ? "Sending…" : "Text me this quote"}
+                {leadSent ? "Sent — the business will reach out" : sendingLead ? "Sending…" : "Send my request"}
               </Button>
               {!leadSent && (
                 <span className="text-xs text-muted-foreground">
-                  We'll text the estimate so you can decide later.
+                  The business gets notified right away and will follow up with you directly.
                 </span>
               )}
             </div>

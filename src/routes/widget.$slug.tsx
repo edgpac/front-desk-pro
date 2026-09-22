@@ -51,7 +51,7 @@ function WidgetEmbedPage() {
   if (notFound || !tenant) {
     return (
       <div className="flex h-screen items-center justify-center bg-background p-6 text-center text-sm text-muted-foreground">
-        This business's widget isn't set up at that address.
+        This estimate service isn't available right now — please contact the business directly.
       </div>
     );
   }

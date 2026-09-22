@@ -1,7 +1,14 @@
 import { createServerFn } from "@tanstack/react-start";
 import { createClient } from "@supabase/supabase-js";
 import { sendLeadNotificationEmail } from "@/lib/notify-server";
+import { hasActiveSubscriptionForOwner } from "@/lib/entitlements-server";
 import type { PriceSheetItem } from "@/lib/estimate-server";
+
+// Every function below is anonymous/unauthenticated by design (the public
+// quote page and widget). This is the one deliberately generic error they
+// all throw whenever the tenant doesn't exist OR its subscription isn't
+// active — a visitor must never be able to tell those two cases apart.
+const INTAKE_UNAVAILABLE_MESSAGE = "This business's estimate service is currently unavailable.";
 
 // Deliberately separate from leads-server.ts: everything there runs behind
 // requireSupabaseAuth (the tenant owner acting on their own account). This
@@ -44,11 +51,20 @@ export const getTenantForQuote = createServerFn({ method: "GET" })
 
     const { data: tenant, error: tenantError } = await admin
       .from("tenants")
-      .select("id, name, slug, currency, labor_rate, service_call_fee, calendar_link")
+      .select("id, user_id, name, slug, currency, labor_rate, service_call_fee, calendar_link")
       .eq("slug", slug)
       .single();
     if (tenantError || !tenant) {
-      throw new Error("Business not found.");
+      throw new Error(INTAKE_UNAVAILABLE_MESSAGE);
+    }
+
+    // Public intake (this page, the embeddable widget, and the AI/lead
+    // calls below) is a subscriber-only feature — a canceled/past_due/
+    // unpaid/never-subscribed business's link and widget must stop working,
+    // not just have their dashboard buttons hidden. One authoritative check
+    // (entitlements-server.ts), no separate rule maintained here.
+    if (!(await hasActiveSubscriptionForOwner(admin, tenant["user_id"] as string))) {
+      throw new Error(INTAKE_UNAVAILABLE_MESSAGE);
     }
 
     // The tenant-isolation boundary: price_sheet_items is explicitly
@@ -107,11 +123,14 @@ export const createLead = createServerFn({ method: "POST" })
 
     const { data: tenant, error: tenantError } = await admin
       .from("tenants")
-      .select("id, name, email, currency")
+      .select("id, user_id, name, email, currency")
       .eq("slug", data.tenantSlug)
       .single();
     if (tenantError || !tenant) {
-      throw new Error("Business not found.");
+      throw new Error(INTAKE_UNAVAILABLE_MESSAGE);
+    }
+    if (!(await hasActiveSubscriptionForOwner(admin, tenant["user_id"] as string))) {
+      throw new Error(INTAKE_UNAVAILABLE_MESSAGE);
     }
 
     const { data: lead, error: leadError } = await admin
@@ -195,11 +214,14 @@ export const createFlaggedLead = createServerFn({ method: "POST" })
 
     const { data: tenant, error: tenantError } = await admin
       .from("tenants")
-      .select("id")
+      .select("id, user_id")
       .eq("slug", data.tenantSlug)
       .single();
     if (tenantError || !tenant) {
-      throw new Error("Business not found.");
+      throw new Error(INTAKE_UNAVAILABLE_MESSAGE);
+    }
+    if (!(await hasActiveSubscriptionForOwner(admin, tenant["user_id"] as string))) {
+      throw new Error(INTAKE_UNAVAILABLE_MESSAGE);
     }
 
     const { data: lead, error: leadError } = await admin

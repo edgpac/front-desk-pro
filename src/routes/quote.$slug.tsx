@@ -47,7 +47,7 @@ function QuotePage() {
         <div className="mx-auto max-w-3xl px-5 py-12">
           <p className="label-caps text-primary">Get an estimate</p>
           <h1 className="mt-3 text-4xl sm:text-5xl">
-            {loading ? "Loading…" : notFound ? "We couldn't find this business" : tenant?.name}
+            {loading ? "Loading…" : notFound ? "Estimate service unavailable" : tenant?.name}
           </h1>
           {!loading && !notFound && (
             <p className="mt-4 max-w-xl text-[15px] text-muted-foreground">
@@ -56,7 +56,7 @@ function QuotePage() {
           )}
           {notFound && (
             <p className="mt-4 max-w-xl text-[15px] text-muted-foreground">
-              Double-check the link — this business's quote page isn't set up at that address.
+              This estimate service isn't available right now — please contact the business directly.
             </p>
           )}
         </div>

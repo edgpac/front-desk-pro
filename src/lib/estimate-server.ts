@@ -1,4 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
+import { getAdminClient } from "@/lib/public-lead-server";
+import { requireActiveSubscriptionForSlug } from "@/lib/entitlements-server";
 
 // Generalized version of the vision+pricing logic proven out in Cabos
 // Handyman's api/analyze-parts.js — same shape (photo in, clarify-or-price
@@ -24,6 +26,13 @@ export type QuoteInput = {
   imageBase64?: string | undefined;
   imageMediaType?: string | undefined;
   answers?: Answer[] | undefined;
+  // Present for real tenant traffic (the public quote page, the embeddable
+  // widget — see QuoteFlow.tsx); absent for /demo's sample flow, which has
+  // no real tenant and stays open regardless. When present, this function
+  // is a public/unauthenticated entry point in its own right (not just
+  // reachable through the page), so it re-checks the tenant's subscription
+  // itself rather than trusting that the page already did.
+  tenantSlug?: string | undefined;
 };
 
 export type ClarifyingQuestion = { question: string; options: string[] };
@@ -270,6 +279,9 @@ export const getQuoteEstimate = createServerFn({ method: "POST" })
     if (data.description.length > MAX_DESCRIPTION_LENGTH) {
       throw new Error("Description is too long.");
     }
+    if (data.tenantSlug) {
+      await requireActiveSubscriptionForSlug(getAdminClient(), data.tenantSlug);
+    }
 
     const content: Array<Record<string, unknown>> = [{ type: "text", text: buildPrompt(data) }];
     if (data.imageBase64) {
@@ -385,6 +397,9 @@ export type FollowUpInput = {
   lineItems: LineItem[];
   question: string;
   history: { role: "customer" | "desk"; text: string }[];
+  // Same as QuoteInput.tenantSlug — present for real tenant traffic, absent
+  // for /demo.
+  tenantSlug?: string | undefined;
 };
 
 export const getFollowUpAnswer = createServerFn({ method: "POST" })
@@ -395,6 +410,9 @@ export const getFollowUpAnswer = createServerFn({ method: "POST" })
     }
     if (!data.question || data.question.trim().length === 0) {
       throw new Error("Question is required.");
+    }
+    if (data.tenantSlug) {
+      await requireActiveSubscriptionForSlug(getAdminClient(), data.tenantSlug);
     }
 
     const itemsText = data.lineItems.map((i) => `- ${i.description}: $${i.amount}`).join("\n");
