@@ -304,6 +304,18 @@ function PriceSheetPage() {
                     />
                   </div>
                 )}
+                <div className="flex items-center gap-1.5">
+                  <Input
+                    type="number"
+                    step="0.5"
+                    min="0"
+                    value={row.hours}
+                    onChange={(e) => updateRow(row.id, { hours: e.target.valueAsNumber || 0 })}
+                    className="w-20 text-right"
+                    aria-label="Typical hours"
+                  />
+                  <span className="text-sm text-muted-foreground">hrs</span>
+                </div>
                 <span className="ml-auto num text-sm font-semibold text-foreground">{formatPrice(row)}</span>
                 <button
                   onClick={() => removeRow(row.id)}
