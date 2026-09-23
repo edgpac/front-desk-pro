@@ -345,6 +345,7 @@ function buildPrompt(input: QuoteInput): string {
 
   const hasPhoto = Boolean(input.imageBase64);
   const hasDescription = input.description.trim() !== NO_DESCRIPTION_PLACEHOLDER;
+  const isFirstRound = !input.answers?.length;
   const photoStatus =
     hasPhoto && hasDescription
       ? "A customer sent a photo and a description of a problem."
@@ -394,12 +395,14 @@ For either non-included policy: the line item's "amount" is always exactly the r
 Each matched item's policy is independent — a request matching one "included" item and one "customer_pays_receipt" item treats them completely separately; there is no single policy for the whole estimate.
 
 RULES:
-1. If the photo and description together are not enough to price this confidently, respond with 1-2 short clarifying questions instead of guessing. Give each question 2-4 short tappable answer options. Only ask if the answer would actually change the price. ${
+1. If the photo and description together are not enough to price this confidently, respond with 1-2 short clarifying questions instead of guessing. Give each question 2-4 short tappable answer options. Only ask if the answer would actually change the price. Never ask about something the customer has already been asked (see CUSTOMER'S ANSWERS TO YOUR FOLLOW-UP QUESTIONS above, if present) — a "no"/"I don't have one"/"not sure" answer is still an answer; treat it as final and move on rather than asking the same or a reworded version of the same question again. If, after that, no further price-changing question actually remains, stop asking and price the job now using what you have. ${
     hasPhoto && !hasDescription
       ? "No description was provided — a photo alone rarely tells you everything (what's actually needed, relevant history, what the customer wants done), so make your first clarifying question an open-ended request for the customer to describe what they need in their own words, rather than guessing from the image alone or asking a narrower multiple-choice question first. Phrase it naturally for whatever this business actually does — not every photo represents something broken (a repair job, a grooming request, an installation) — don't assume 'problem' framing where it doesn't fit."
       : hasPhoto
         ? ""
-        : "No photo was provided — a photo is almost always the single most useful thing you're missing, so make your first clarifying question a request for one (with an option for 'I don't have a photo handy' so the conversation isn't blocked) rather than asking about a detail a photo would answer faster."
+        : isFirstRound
+          ? "No photo was provided — a photo is almost always the single most useful thing you're missing, so make your first clarifying question a request for one (with an option for 'I don't have a photo handy' so the conversation isn't blocked) rather than asking about a detail a photo would answer faster."
+          : "No photo has been provided, and the customer has already been asked about this — do NOT ask for a photo again under any circumstance, even if you still don't have one. Proceed using the description and answers already given; if a genuinely different, price-changing detail remains, ask about that instead, otherwise price the job now."
   }
 2. Once you have enough information, follow the PRICE-SHEET MATCHING RULES above exactly — starting with the matchedServices enumeration — for identifying and pricing every distinct task. If nothing on the price sheet reasonably covers what's being asked — a genuinely different kind of job the business hasn't priced at all — respond with {"needsClarification": false, "outOfScope": true} instead of guessing a number. Never estimate a price for something with no reasonable match on the price sheet, even using the labor rate.
 3. When you do price it, give a plain-language summary of what's actually going on and what's being done about it (not just a restatement of the question), a severity (Low/Medium/High — High means it risks getting worse, or is a safety/wellbeing risk), your confidence in reading the photo, and a line-item cost breakdown drawn from matchedServices per the PRICE-SHEET MATCHING RULES above. If a service-call/diagnostic-style charge is one of those line items alongside real other work, this summary is where the "goes toward the approved repair" wording belongs — don't let the other structural requirements above crowd it out.
