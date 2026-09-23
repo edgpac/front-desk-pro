@@ -14,13 +14,25 @@ import {
   extractPriceSheetFromUrl,
   type ExtractedPriceSheetItem,
 } from "@/lib/price-sheet-server";
-import { formatPrice, PRICE_SHEET, type PriceSheetRow, type PricingType } from "@/lib/mock-data";
+import {
+  formatPrice,
+  PRICE_SHEET,
+  type PriceSheetRow,
+  type PricingType,
+  type MaterialsPolicy,
+} from "@/lib/mock-data";
 
 export const Route = createFileRoute("/dashboard/price-sheet")({
   component: PriceSheetPage,
 });
 
 const PRICING_TYPES: PricingType[] = ["flat", "hourly", "range"];
+
+const MATERIALS_POLICIES: { value: MaterialsPolicy; label: string }[] = [
+  { value: "included", label: "Materials included in price" },
+  { value: "customer_pays_receipt", label: "Customer pays receipt cost" },
+  { value: "confirmed_after_inspection", label: "Priced after inspection" },
+];
 
 function fileToBase64(file: File): Promise<{ base64: string; mediaType: string }> {
   return new Promise((resolve, reject) => {
@@ -341,15 +353,34 @@ function PriceSheetPage() {
                 className="text-xs"
                 aria-label={`Keywords for ${row.task}`}
               />
-              <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                <input
-                  type="checkbox"
-                  checked={row.bundleable}
-                  onChange={(e) => updateRow(row.id, { bundleable: e.target.checked })}
-                  className="h-3.5 w-3.5"
-                />
-                Bundle multiple of these into one visit charge
-              </label>
+              <div className="flex flex-wrap items-center gap-4">
+                <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={row.bundleable}
+                    onChange={(e) => updateRow(row.id, { bundleable: e.target.checked })}
+                    className="h-3.5 w-3.5"
+                  />
+                  Bundle multiple of these into one visit charge
+                </label>
+                <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                  Materials/parts:
+                  <select
+                    value={row.materialsPolicy}
+                    onChange={(e) =>
+                      updateRow(row.id, { materialsPolicy: e.target.value as MaterialsPolicy })
+                    }
+                    className="h-8 rounded-sm border border-border-strong bg-background px-2 text-xs"
+                    aria-label={`Materials policy for ${row.task}`}
+                  >
+                    {MATERIALS_POLICIES.map((p) => (
+                      <option key={p.value} value={p.value}>
+                        {p.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
             </li>
           ))}
         </ul>
