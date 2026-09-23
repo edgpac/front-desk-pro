@@ -399,7 +399,7 @@ function buildPrompt(input: QuoteInput): string {
   // state, or charge a dollar amount for it in that mode.
   const serviceCallSection =
     input.serviceCallFeeMode === "negotiated"
-      ? `This business's generic service call/diagnostic fee is NOT a fixed amount — it depends on the conversation with the customer, so it is deliberately unknown to you. The sentinel id "${SERVICE_CALL_SENTINEL_ID}" is INVALID in this mode: never use it as a priceSheetItemId in matchedServices or lineItems, never state or invent a dollar figure for it (not $89, not any other number, not a guess, not a range), and never create a priced line item for it. If a price-sheet item's own task name or keywords describe the same real-world concept as this generic fee (service call, diagnostic, trip fee, assessment, visit), that item still supersedes it and IS priced normally using that item's own id and configured price — this only concerns the generic, unmatched case.
+      ? `This business's generic service call/diagnostic fee is NOT a fixed amount — it depends on the conversation with the customer, so it is deliberately unknown to you. The sentinel id "${SERVICE_CALL_SENTINEL_ID}" is INVALID in this mode: never use it as a priceSheetItemId in matchedServices or lineItems, never state or invent a dollar figure for it (not $89, not any other number, not a guess, not a range), and never create a priced line item for it. If a price-sheet item's own task name or keywords describe the same real-world concept as this generic fee (service call, diagnostic, trip fee, assessment, visit), that item still supersedes it and IS priced normally using that item's own id and configured price — this only concerns the generic, unmatched case. Whenever a specific row DOES end up matched and priced this way, its price is real and final for that issue — never also say the amount for that same issue will be "confirmed later" or "confirmed when we contact you"; that wording is exclusively for an issue whose matchedServices entry has priceSheetItemId: null. Saying a price is deferred right next to a real number for the same thing is a direct contradiction the customer will notice.
 
 A described problem you can't confidently diagnose without seeing it in person, but that's still plausibly something this business would handle, is NOT a null match and is NOT something to silently drop — enumerate it in matchedServices with priceSheetItemId: null, which in this mode specifically means "acknowledged, pricing deferred" (never "nothing on the price sheet covers this"). In the diagnosis text, in natural language appropriate to the customer (and their language, if not English), say plainly that a service-call/diagnostic fee applies and the exact amount will be confirmed when the business contacts them to schedule — no dollar amount, ever, anywhere in your response for this. Never say it is credited toward, applied toward, or deducted from any other line item's price, and never imply a "remaining balance" — there is nothing to do that arithmetic with, since no amount was ever stated. Any other, separately matched and fully-priced work in the same response stays exactly as priced, completely unaffected by this — not discounted, not credited, not combined with it in any way. A true null match (mentioned in the diagnosis, no line item, no fee language at all) is still reserved for something this business's price sheet gives no real indication it would ever handle at all — a categorically different kind of work.`
       : `Service call fee: $${input.serviceCallFee} (covers the initial assessment; hours of genuinely unmatched work beyond the first hour are billed at $${input.laborRate}/hr). Its id, if you need to reference it as a line item's source, is "${SERVICE_CALL_SENTINEL_ID}" — never a price-sheet item's id. See PRICE-SHEET MATCHING RULES below for exactly how this relates to specifically-priced items — short version: it never replaces one. If a price-sheet item's own task name or keywords describe the same real-world concept as this service call fee (service call, diagnostic, trip fee, assessment, visit), that item supersedes the fee for this response — price it using that item's own id and configured price, and do not separately add the service-call-fee narrative on top; they are the same charge, not two. If your response includes a service-call/diagnostic-style line item alongside real matched repair work, make the diagnosis text clear that this fee goes toward the approved repair rather than reading as a separate, additional cost on top of it — wording only, this never changes any lineItem's amount.
@@ -810,6 +810,26 @@ function validateQuoteAgainstPriceSheet(
     if (!mentionsNegotiated) {
       failures.push(
         `The diagnosis describes a service-call/diagnostic situation, and this tenant's service_call_fee_mode is "negotiated", but the text doesn't say the fee will be confirmed when the business contacts the customer to schedule — add that language (in the customer's own language), still with no dollar amount.`,
+      );
+    }
+  }
+
+  // The inverse contradiction, independent of the branches above (which
+  // only look at whether a service-call-LIKE lineItem exists — a specific
+  // price-sheet row can supersede the generic fee and get matched/priced
+  // normally without ever being classified as "service-call-like" itself,
+  // e.g. an "Electrical Service" row matching a vague electrical complaint).
+  // "Deferred, confirmed later" wording is only ever true when something was
+  // genuinely left unpriced — if every described issue in matchedServices
+  // already resolved to a real priceSheetItemId, nothing is actually
+  // deferred, and saying otherwise directly contradicts the real price the
+  // customer is shown right next to it.
+  if (serviceCallFeeMode === "negotiated") {
+    const mentionsNegotiatedAnywhere = NEGOTIATED_WORDING_INDICATORS.some((phrase) => diagnosisText.includes(phrase));
+    const hasDeferredMatch = matchedServices.some((m) => m?.priceSheetItemId == null);
+    if (mentionsNegotiatedAnywhere && !hasDeferredMatch) {
+      failures.push(
+        `The diagnosis says a service-call/diagnostic fee amount will be confirmed later, but every described issue in matchedServices already has a real, non-null priceSheetItemId — nothing was actually left unpriced, so this contradicts the real price already shown. Remove the deferred-pricing language for any issue that was confidently matched and priced; only use it for an issue whose matchedServices entry has priceSheetItemId: null.`,
       );
     }
   }
