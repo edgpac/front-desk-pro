@@ -118,13 +118,6 @@ export type QuoteResult =
       lineItems: LineItem[];
       totalLow: number;
       totalHigh: number;
-      // Present only when a service-call/diagnostic-style line item shares
-      // this quote with genuine other matched work — the fee is a credit
-      // toward the job, not an add-on (see buildQuoteResult), so the UI can
-      // show "due at the visit" vs. "remaining balance" instead of implying
-      // the customer pays the fee on top of the total.
-      dueAtVisit?: number;
-      balanceAfterVisit?: number;
       // True when every line item is a diagnosis/service-call-style charge
       // — nothing was confidently priced yet. totalLow/totalHigh here is
       // the visit fee, not a job estimate; the UI must say so plainly
@@ -756,34 +749,31 @@ function buildQuoteResult(parsed: any, priceSheet: PriceSheetItem[]): QuoteResul
   // customer seeing a $209 headline over $120 of visible line items, with
   // no way to tell where the other $89 came from).
   //
-  // The service-call fee is a credit toward the job, not an add-on, when
-  // real other matched work is also present — "goes toward the repair"
-  // only means something if the headline total actually reflects that.
-  // Each line item's own amount is untouched (still individually verified
-  // in full against the price sheet); only the AGGREGATE the customer sees
-  // as "the total" changes: it's the job cost (other work), with the fee
-  // called out separately as due now / credited, not summed on top of it.
-  // If the service call is the ONLY line item (a pure diagnostic visit,
-  // nothing else matched yet), it IS the whole charge — no credit to show.
+  // A service-call/diagnosis-fee line item's own eventual full price is, by
+  // definition, still unknown (that's the entire reason a fee was charged
+  // instead of a firm price) — so crediting it against some OTHER, already
+  // fully-priced line item is only valid when that other item is genuinely
+  // the same job being diagnosed. This engine has no structural way to
+  // verify that (a generic service-call fee doesn't reference a specific
+  // row, and a per-row diagnosis fee is never shown alongside that same
+  // row's own full price in one response — see the "never both" validation
+  // rule). Blindly crediting against unrelated other work is a real
+  // correctness bug, not just wording — it understates what a firmly-priced,
+  // unrelated job actually costs (e.g. crediting a dishwasher's diagnostic
+  // fee against an unrelated sink replacement's own complete price).
+  //
+  // So: the ONLY case with a well-defined, honest "this is the fee, nothing
+  // else is priced yet" quote is when EVERY line item is service-call-like
+  // (nothing else matched at all) — isDiagnosisOnly, unchanged from before.
+  // Whenever a service-call/diagnosis charge coexists with other, separately
+  // matched work, every line item is simply summed — each amount is its own
+  // full, correct, independently-verified price; the "goes toward the
+  // approved repair" language (required by the credit-wording check above)
+  // stays wording-only there, not a number this engine computes or implies.
   const serviceCallLine = lineItems.find((li) => isServiceCallLineItem(li, priceSheet));
   const otherLines = lineItems.filter((li) => !isServiceCallLineItem(li, priceSheet));
-  const hasCreditableWork = Boolean(serviceCallLine) && otherLines.length > 0;
-  // Nothing was confidently priced at all — every line item is a
-  // diagnosis/service-call-style charge, no real matched work yet. This
-  // quote isn't "the job price," it's an in-person-visit fee that a real
-  // price gets built on top of later — the UI/WhatsApp copy needs to say
-  // that plainly instead of using "your estimate" / "firm once we see it in
-  // person" language written for an already-priced job.
   const isDiagnosisOnly = Boolean(serviceCallLine) && otherLines.length === 0;
-  const total = hasCreditableWork
-    ? otherLines.reduce((sum, i) => sum + (Number(i.amount) || 0), 0)
-    : lineItems.reduce((sum, i) => sum + (Number(i.amount) || 0), 0);
-  const creditFields: { dueAtVisit: number; balanceAfterVisit: number } | Record<string, never> = hasCreditableWork
-    ? {
-        dueAtVisit: Number(serviceCallLine!.amount) || 0,
-        balanceAfterVisit: Math.max(0, total - (Number(serviceCallLine!.amount) || 0)),
-      }
-    : {};
+  const total = lineItems.reduce((sum, i) => sum + (Number(i.amount) || 0), 0);
   return {
     needsClarification: false,
     outOfScope: false,
@@ -793,7 +783,6 @@ function buildQuoteResult(parsed: any, priceSheet: PriceSheetItem[]): QuoteResul
     confidence: parsed.confidence || "Medium",
     diagnosis: parsed.diagnosis || "",
     lineItems,
-    ...creditFields,
     isDiagnosisOnly,
     totalLow: total,
     totalHigh: total,

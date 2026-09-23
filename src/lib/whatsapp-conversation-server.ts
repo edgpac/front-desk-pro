@@ -17,25 +17,21 @@ import {
 import { sendFollowUpNotificationEmail } from "@/lib/notify-server";
 import { money } from "@/lib/mock-data";
 
-// Mirrors QuoteFlow.tsx's rendering of the same fields — when a service-call
-// fee shares the quote with real other work, it's a credit toward the total,
-// not an add-on, so the customer-facing price line must say so explicitly
-// rather than quoting only the flat total (which would silently overstate
-// what they end up paying if the job is approved).
-function formatQuotePriceLine(
-  totalLow: number,
-  currency: string,
-  dueAtVisit: number | undefined,
-  balanceAfterVisit: number | undefined,
-  isDiagnosisOnly: boolean,
-): string {
+// Mirrors QuoteFlow.tsx's rendering of the same field — a pure diagnosis
+// visit (nothing else matched yet) needs to say so plainly rather than
+// presenting the visit fee as if it were a completed job price. Any other
+// case is a simple, fully-additive total: each line item is independently
+// verified and correct, and a service-call/diagnosis-style charge that
+// coexists with other, separately-matched work is never blended into a
+// "credited, X remaining" figure — that number can't be computed honestly
+// (the diagnosed item's own eventual price is still unknown), so it isn't
+// attempted. The "goes toward the approved repair" language lives in the
+// diagnosis text itself (see CREDIT_WORDING_INDICATORS), wording only.
+function formatQuotePriceLine(totalLow: number, currency: string, isDiagnosisOnly: boolean): string {
   if (isDiagnosisOnly) {
     return `Diagnosis visit fee: ${money(totalLow, currency)}, due for an in-person visit — this applies toward the total repair cost once we know what's needed.`;
   }
-  if (dueAtVisit == null || balanceAfterVisit == null) {
-    return `Estimated price: ${money(totalLow, currency)}.`;
-  }
-  return `Estimated price: ${money(totalLow, currency)} (${money(dueAtVisit, currency)} due at the visit, credited toward this total — ${money(balanceAfterVisit, currency)} remaining once the work is approved).`;
+  return `Estimated price: ${money(totalLow, currency)}.`;
 }
 
 // Channel-agnostic core extracted from api.whatsapp.webhook.tsx (the
@@ -232,7 +228,7 @@ export async function handleInboundWhatsAppMessage(params: {
 
     await adapter.sendMessage(
       fromPhone,
-      `${clarifyResult.diagnosis} ${formatQuotePriceLine(clarifyResult.totalLow, tenant.currency, clarifyResult.dueAtVisit, clarifyResult.balanceAfterVisit, clarifyResult.isDiagnosisOnly)} This estimate is based on the photos and information provided remotely. If the actual issue or scope of work is different than what was presented, the final price may change after inspection. Want me to get this booked in?`,
+      `${clarifyResult.diagnosis} ${formatQuotePriceLine(clarifyResult.totalLow, tenant.currency, clarifyResult.isDiagnosisOnly)} This estimate is based on the photos and information provided remotely. If the actual issue or scope of work is different than what was presented, the final price may change after inspection. Want me to get this booked in?`,
     );
 
     return;
@@ -464,6 +460,6 @@ export async function handleInboundWhatsAppMessage(params: {
 
   await adapter.sendMessage(
     fromPhone,
-    `${result.diagnosis} ${formatQuotePriceLine(result.totalLow, tenant.currency, result.dueAtVisit, result.balanceAfterVisit, result.isDiagnosisOnly)} This estimate is based on the photos and information provided remotely. If the actual issue or scope of work is different than what was presented, the final price may change after inspection. Want me to get this booked in?`,
+    `${result.diagnosis} ${formatQuotePriceLine(result.totalLow, tenant.currency, result.isDiagnosisOnly)} This estimate is based on the photos and information provided remotely. If the actual issue or scope of work is different than what was presented, the final price may change after inspection. Want me to get this booked in?`,
   );
 }
