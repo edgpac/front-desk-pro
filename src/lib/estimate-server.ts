@@ -696,14 +696,25 @@ function validateQuoteAgainstPriceSheet(
   const isServiceCallLike = (li: LineItem): boolean => isServiceCallLineItem(li, priceSheet);
   const hasServiceCallLine = lineItems.some(isServiceCallLike);
   const hasOtherWork = lineItems.some((li) => !isServiceCallLike(li));
+  const diagnosisText = typeof parsed.diagnosis === "string" ? parsed.diagnosis.toLowerCase() : "";
+  const mentionsCredit = CREDIT_WORDING_INDICATORS.some((phrase) => diagnosisText.includes(phrase));
+  const mentionsServiceCallLanguage = SERVICE_CALL_SYNONYMS.some((syn) => diagnosisText.includes(syn));
   if (hasServiceCallLine && hasOtherWork) {
-    const diagnosisText = typeof parsed.diagnosis === "string" ? parsed.diagnosis.toLowerCase() : "";
-    const mentionsCredit = CREDIT_WORDING_INDICATORS.some((phrase) => diagnosisText.includes(phrase));
     if (!mentionsCredit) {
       failures.push(
         "The diagnosis includes a service-call/diagnostic charge alongside real repair work but doesn't state that the fee applies toward the approved repair — add that language to the diagnosis text (wording only, don't change any amounts).",
       );
     }
+  } else if (!hasServiceCallLine && mentionsServiceCallLanguage && mentionsCredit) {
+    // The mirror-image bug: the diagnosis narrates a service-call/diagnostic
+    // fee being charged and credited toward the work, but no such line item
+    // actually exists — a hallucinated charge in the prose, even though the
+    // real dollar total (computed from lineItems alone) is unaffected. Just
+    // as much a correctness problem as an under- or over-charge, since the
+    // customer reads this text as describing what they're actually paying.
+    failures.push(
+      "The diagnosis describes a service-call/diagnostic fee being charged or credited toward the work, but no such lineItem exists in your response — either add the corresponding lineItem if a service-call charge is genuinely intended, or remove that language from the diagnosis entirely.",
+    );
   }
 
   // Materials-policy wording check — same soft-check shape as the
