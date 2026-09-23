@@ -1120,6 +1120,15 @@ export const getQuoteEstimate = createServerFn({ method: "POST" })
 
     const failures2 = validateQuoteAgainstPriceSheet(parsed2, data.priceSheet, data.serviceCallFee, data.serviceCallFeeMode);
     if (failures2.length > 0) {
+      // TEMPORARY — Batch 1 (P0A) live verification only, remove once the
+      // Hebrew inspection-policy wording gap is diagnosed and fixed. Logs
+      // the actual diagnosis/lineItem text (no PII, business-configured
+      // content only) so a real failure like this can be fixed against the
+      // model's actual phrasing instead of guessed at.
+      console.error("Quote failed validation twice — raw diagnosis/lineItems:", {
+        diagnosis: (parsed2 as any)?.diagnosis,
+        lineItems: (parsed2 as any)?.lineItems,
+      });
       console.error("Quote failed validation twice, refusing to return it:", failures2);
       throw new Error("Couldn't put together a reliable estimate for that — try rephrasing, or the business will follow up manually.");
     }
