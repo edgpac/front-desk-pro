@@ -595,32 +595,41 @@ const CREDIT_WORDING_INDICATORS = [
 // would fail this check on essentially every Spanish-language response,
 // which matters directly here since negotiated mode's first real tenant
 // (a Mexico-based business) will get mostly Spanish customer messages.
+// Live-tested collision found: bare "confirmed"/"confirmado"/"יאושר" are
+// generic enough to also match legitimate materials-policy "confirmed
+// after inspection" wording (INSPECTION_POLICY_INDICATORS below shares
+// the exact same root in every language — Spanish "se confirmará"
+// literally appears verbatim in both lists). That caused a real false
+// positive: a response correctly describing deferred MATERIALS pricing
+// got flagged as a contradiction about the (unrelated) generic service-
+// call fee. Narrowed to the actual distinguishing feature — confirmed
+// specifically WHEN WE CONTACT YOU / AT SCHEDULING, a different temporal
+// anchor than "after inspection" — which is what the prompt instructs the
+// model to say anyway, so this doesn't weaken genuine detection.
 const NEGOTIATED_WORDING_INDICATORS = [
   // English
-  "confirmed",
-  "confirm",
   "when we contact",
   "when we call",
   "when scheduling",
   "at scheduling",
   "to be confirmed",
+  "we'll follow up",
+  "we'll be in touch",
   // Spanish
-  "confirmado",
-  "confirmaremos",
-  "confirmará",
-  "se confirmará",
-  "por confirmar",
   "al programar",
   "al agendar",
   "cuando nos comuniquemos",
   "cuando te contactemos",
   "cuando lo contactemos",
-  // Hebrew
-  "יאושר",
-  "נאשר",
+  "por confirmar",
+  // Hebrew — "כשניצור" alone (not "כשניצור קשר") since natural phrasing
+  // often inserts an object between verb and noun ("כשניצור איתך קשר" —
+  // "when we make contact WITH YOU" — which a fixed phrase would miss)
   "בעת התיאום",
-  "כשניצור קשר",
+  "כשניצור",
   "כשנתאם",
+  "כשנחזור אליך",
+  "בשיחת התיאום",
 ];
 
 // Wording indicators for the two non-"included" materials policies — same
