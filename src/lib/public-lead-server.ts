@@ -73,7 +73,7 @@ export const getTenantForQuote = createServerFn({ method: "GET" })
     // leak another tenant's prices.
     const { data: items, error: itemsError } = await admin
       .from("price_sheet_items")
-      .select("task, category, keywords, pricing_type, price_min, price_max, hours, bundleable")
+      .select("id, task, category, keywords, pricing_type, price_min, price_max, hours, bundleable")
       .eq("tenant_id", tenant.id)
       .order("sort_order", { ascending: true });
     if (itemsError) {
@@ -88,6 +88,7 @@ export const getTenantForQuote = createServerFn({ method: "GET" })
       serviceCallFee: tenant.service_call_fee as number,
       calendarLink: tenant.calendar_link as string,
       priceSheet: (items ?? []).map((item) => ({
+        id: item["id"] as string,
         task: item["task"] as string,
         category: item["category"] as string,
         keywords: item["keywords"] as string[],

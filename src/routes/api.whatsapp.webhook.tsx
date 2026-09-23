@@ -75,23 +75,40 @@ export const Route = createFileRoute("/api/whatsapp/webhook")({
           return emptyTwiml();
         }
 
-        await handleInboundWhatsAppMessage({
-          tenant: {
-            id: tenant.id,
-            slug: tenant.slug,
-            name: tenant.name,
-            email: tenant.email,
-            currency: tenant.currency,
-            laborRate: tenant.labor_rate,
-            serviceCallFee: tenant.service_call_fee,
-          },
-          fromPhone,
-          body,
-          mediaRef: numMedia > 0 ? mediaUrl : undefined,
-          profileName,
-          channel: "WhatsApp",
-          adapter: twilioAdapter,
-        });
+        try {
+          await handleInboundWhatsAppMessage({
+            tenant: {
+              id: tenant.id,
+              slug: tenant.slug,
+              name: tenant.name,
+              email: tenant.email,
+              currency: tenant.currency,
+              laborRate: tenant.labor_rate,
+              serviceCallFee: tenant.service_call_fee,
+            },
+            fromPhone,
+            body,
+            mediaRef: numMedia > 0 ? mediaUrl : undefined,
+            profileName,
+            channel: "WhatsApp",
+            adapter: twilioAdapter,
+          });
+        } catch (err) {
+          // A failure anywhere in the conversation logic (including a
+          // getQuoteEstimate validation/retry exhaustion) must never crash
+          // the webhook response with no reply sent — the customer always
+          // gets a graceful message, and Twilio always gets its 200 so it
+          // doesn't retry-storm this same event.
+          console.error(`WhatsApp conversation error for tenant ${tenant.slug}:`, err);
+          try {
+            await twilioAdapter.sendMessage(
+              fromPhone,
+              "Sorry, I couldn't put together a reliable estimate for that just now — I'll have the team follow up with you directly.",
+            );
+          } catch (sendErr) {
+            console.error("Also failed to send the WhatsApp fallback message:", sendErr);
+          }
+        }
 
         return emptyTwiml();
       },

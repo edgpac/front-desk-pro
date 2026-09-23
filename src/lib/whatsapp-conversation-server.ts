@@ -98,9 +98,10 @@ export async function handleInboundWhatsAppMessage(params: {
 
     const { data: clarifyPriceSheetRows } = await admin
       .from("price_sheet_items")
-      .select("task, category, keywords, pricing_type, price_min, price_max, hours, bundleable")
+      .select("id, task, category, keywords, pricing_type, price_min, price_max, hours, bundleable")
       .eq("tenant_id", tenant.id);
     const clarifyPriceSheet: PriceSheetItem[] = (clarifyPriceSheetRows ?? []).map((row) => ({
+      id: row.id,
       task: row.task,
       category: row.category,
       keywords: row.keywords,
@@ -173,7 +174,7 @@ export async function handleInboundWhatsAppMessage(params: {
     }
 
     const clarifyLineItems = clarifyResult.lineItems.map((item) => ({
-      description: item.description,
+      description: item.detail ? `${item.description} — ${item.detail}` : item.description,
       qty: 1,
       unit: "job",
       rate: item.amount,
@@ -299,10 +300,11 @@ export async function handleInboundWhatsAppMessage(params: {
 
   const { data: priceSheetRows } = await admin
     .from("price_sheet_items")
-    .select("task, category, keywords, pricing_type, price_min, price_max, hours, bundleable")
+    .select("id, task, category, keywords, pricing_type, price_min, price_max, hours, bundleable")
     .eq("tenant_id", tenant.id);
 
   const priceSheet: PriceSheetItem[] = (priceSheetRows ?? []).map((row) => ({
+    id: row.id,
     task: row.task,
     category: row.category,
     keywords: row.keywords,
@@ -391,7 +393,7 @@ export async function handleInboundWhatsAppMessage(params: {
   }
 
   const lineItems = result.lineItems.map((item) => ({
-    description: item.description,
+    description: item.detail ? `${item.description} — ${item.detail}` : item.description,
     qty: 1,
     unit: "job",
     rate: item.amount,
