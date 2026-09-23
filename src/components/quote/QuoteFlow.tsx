@@ -56,6 +56,8 @@ type ResultState = {
   lineItems: LineItem[];
   totalLow: number;
   totalHigh: number;
+  dueAtVisit?: number;
+  balanceAfterVisit?: number;
 };
 
 export function QuoteFlow({
@@ -538,6 +540,12 @@ export function QuoteFlow({
           <p className="mt-1.5 text-sm text-muted-foreground">
             Firm once we see it in person. If it comes in under, you pay the under.
           </p>
+          {result.dueAtVisit != null && result.balanceAfterVisit != null && (
+            <p className="mt-1.5 text-sm text-muted-foreground">
+              {money(result.dueAtVisit)} due at the visit, credited toward the total — {money(result.balanceAfterVisit)}{" "}
+              remaining once the work is approved.
+            </p>
+          )}
 
           <div className="mt-5 border-t border-border-strong pt-4">
             <p className="label-caps text-muted-foreground">

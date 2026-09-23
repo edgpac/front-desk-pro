@@ -97,6 +97,13 @@ export type QuoteResult =
       lineItems: LineItem[];
       totalLow: number;
       totalHigh: number;
+      // Present only when a service-call/diagnostic-style line item shares
+      // this quote with genuine other matched work — the fee is a credit
+      // toward the job, not an add-on (see buildQuoteResult), so the UI can
+      // show "due at the visit" vs. "remaining balance" instead of implying
+      // the customer pays the fee on top of the total.
+      dueAtVisit?: number;
+      balanceAfterVisit?: number;
     };
 
 export const SAMPLE_PRICE_SHEET: PriceSheetItem[] = [
@@ -436,6 +443,17 @@ const AMOUNT_TOLERANCE = 0.01;
 // compares — it never invents or infers anything itself. Returns a list of
 // human-readable failure descriptions (empty = valid).
 const SERVICE_CALL_SYNONYMS = ["service call", "diagnostic", "trip fee", "assessment", "visit"];
+
+// Shared by the validator's credit-wording check and buildQuoteResult's
+// total computation — both need the same answer to "is this line item the
+// service-call/diagnostic charge, or genuine matched repair work?"
+function isServiceCallLineItem(li: LineItem, priceSheet: PriceSheetItem[]): boolean {
+  if (li.priceSheetItemId === SERVICE_CALL_SENTINEL_ID) return true;
+  const item = li.priceSheetItemId ? priceSheet.find((p) => p.id === li.priceSheetItemId) : undefined;
+  if (!item) return false;
+  const haystack = `${item.task} ${item.keywords.join(" ")}`.toLowerCase();
+  return SERVICE_CALL_SYNONYMS.some((syn) => haystack.includes(syn));
+}
 const CREDIT_WORDING_INDICATORS = [
   "toward",
   "credited",
@@ -579,13 +597,7 @@ function validateQuoteAgainstPriceSheet(
   // the case where the structural rules (ids, enumeration) crowd out a
   // narrative instruction the model would otherwise satisfy fine on its
   // own for a simpler request.
-  const isServiceCallLike = (li: LineItem): boolean => {
-    if (li.priceSheetItemId === SERVICE_CALL_SENTINEL_ID) return true;
-    const item = li.priceSheetItemId ? byId.get(li.priceSheetItemId) : undefined;
-    if (!item) return false;
-    const haystack = `${item.task} ${item.keywords.join(" ")}`.toLowerCase();
-    return SERVICE_CALL_SYNONYMS.some((syn) => haystack.includes(syn));
-  };
+  const isServiceCallLike = (li: LineItem): boolean => isServiceCallLineItem(li, priceSheet);
   const hasServiceCallLine = lineItems.some(isServiceCallLike);
   const hasOtherWork = lineItems.some((li) => !isServiceCallLike(li));
   if (hasServiceCallLine && hasOtherWork) {
@@ -624,7 +636,7 @@ function validateQuoteAgainstPriceSheet(
   return failures;
 }
 
-function buildQuoteResult(parsed: any): QuoteResult {
+function buildQuoteResult(parsed: any, priceSheet: PriceSheetItem[]): QuoteResult {
   const lineItems: LineItem[] = Array.isArray(parsed.lineItems) ? parsed.lineItems : [];
   // Always the mechanical sum of the (already-validated) line items —
   // never whatever Claude separately reported. Every line item already
@@ -634,7 +646,28 @@ function buildQuoteResult(parsed: any): QuoteResult {
   // the class of bug this whole validation layer exists to close (a
   // customer seeing a $209 headline over $120 of visible line items, with
   // no way to tell where the other $89 came from).
-  const total = lineItems.reduce((sum, i) => sum + (Number(i.amount) || 0), 0);
+  //
+  // The service-call fee is a credit toward the job, not an add-on, when
+  // real other matched work is also present — "goes toward the repair"
+  // only means something if the headline total actually reflects that.
+  // Each line item's own amount is untouched (still individually verified
+  // in full against the price sheet); only the AGGREGATE the customer sees
+  // as "the total" changes: it's the job cost (other work), with the fee
+  // called out separately as due now / credited, not summed on top of it.
+  // If the service call is the ONLY line item (a pure diagnostic visit,
+  // nothing else matched yet), it IS the whole charge — no credit to show.
+  const serviceCallLine = lineItems.find((li) => isServiceCallLineItem(li, priceSheet));
+  const otherLines = lineItems.filter((li) => !isServiceCallLineItem(li, priceSheet));
+  const hasCreditableWork = Boolean(serviceCallLine) && otherLines.length > 0;
+  const total = hasCreditableWork
+    ? otherLines.reduce((sum, i) => sum + (Number(i.amount) || 0), 0)
+    : lineItems.reduce((sum, i) => sum + (Number(i.amount) || 0), 0);
+  const creditFields: { dueAtVisit: number; balanceAfterVisit: number } | Record<string, never> = hasCreditableWork
+    ? {
+        dueAtVisit: Number(serviceCallLine!.amount) || 0,
+        balanceAfterVisit: Math.max(0, total - (Number(serviceCallLine!.amount) || 0)),
+      }
+    : {};
   return {
     needsClarification: false,
     outOfScope: false,
@@ -644,6 +677,7 @@ function buildQuoteResult(parsed: any): QuoteResult {
     confidence: parsed.confidence || "Medium",
     diagnosis: parsed.diagnosis || "",
     lineItems,
+    ...creditFields,
     totalLow: total,
     totalHigh: total,
   };
@@ -715,7 +749,7 @@ export const getQuoteEstimate = createServerFn({ method: "POST" })
 
     const failures1 = validateQuoteAgainstPriceSheet(parsed1, data.priceSheet, data.serviceCallFee);
     if (failures1.length === 0) {
-      return buildQuoteResult(parsed1);
+      return buildQuoteResult(parsed1, data.priceSheet);
     }
 
     // One corrective retry, same conversation, told exactly what was wrong
@@ -745,7 +779,7 @@ export const getQuoteEstimate = createServerFn({ method: "POST" })
       throw new Error("Couldn't put together a reliable estimate for that — try rephrasing, or the business will follow up manually.");
     }
 
-    return buildQuoteResult(parsed2);
+    return buildQuoteResult(parsed2, data.priceSheet);
   });
 
 // Classifies a customer's reply to the "same job or something new?"

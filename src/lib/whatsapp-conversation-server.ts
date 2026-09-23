@@ -17,6 +17,23 @@ import {
 import { sendFollowUpNotificationEmail } from "@/lib/notify-server";
 import { money } from "@/lib/mock-data";
 
+// Mirrors QuoteFlow.tsx's rendering of the same fields — when a service-call
+// fee shares the quote with real other work, it's a credit toward the total,
+// not an add-on, so the customer-facing price line must say so explicitly
+// rather than quoting only the flat total (which would silently overstate
+// what they end up paying if the job is approved).
+function formatQuotePriceLine(
+  totalLow: number,
+  currency: string,
+  dueAtVisit: number | undefined,
+  balanceAfterVisit: number | undefined,
+): string {
+  if (dueAtVisit == null || balanceAfterVisit == null) {
+    return `Estimated price: ${money(totalLow, currency)}.`;
+  }
+  return `Estimated price: ${money(totalLow, currency)} (${money(dueAtVisit, currency)} due at the visit, credited toward this total — ${money(balanceAfterVisit, currency)} remaining once the work is approved).`;
+}
+
 // Channel-agnostic core extracted from api.whatsapp.webhook.tsx (the
 // original, Twilio-only route). Everything here — the 48-hour open-lead
 // continuation, the deterministic Q&A pairing, calling getQuoteEstimate,
@@ -190,7 +207,6 @@ export async function handleInboundWhatsAppMessage(params: {
       unit: "job",
       rate: item.amount,
     }));
-    const clarifyTotal = clarifyLineItems.reduce((sum, item) => sum + item.rate, 0);
 
     await finalizeLeadWithQuote({
       data: {
@@ -209,7 +225,7 @@ export async function handleInboundWhatsAppMessage(params: {
 
     await adapter.sendMessage(
       fromPhone,
-      `${clarifyResult.diagnosis} Estimated price: ${money(clarifyTotal, tenant.currency)}. This estimate is based on the photos and information provided remotely. If the actual issue or scope of work is different than what was presented, the final price may change after inspection. Want me to get this booked in?`,
+      `${clarifyResult.diagnosis} ${formatQuotePriceLine(clarifyResult.totalLow, tenant.currency, clarifyResult.dueAtVisit, clarifyResult.balanceAfterVisit)} This estimate is based on the photos and information provided remotely. If the actual issue or scope of work is different than what was presented, the final price may change after inspection. Want me to get this booked in?`,
     );
 
     return;
@@ -419,7 +435,6 @@ export async function handleInboundWhatsAppMessage(params: {
     unit: "job",
     rate: item.amount,
   }));
-  const total = lineItems.reduce((sum, item) => sum + item.rate, 0);
 
   await createLead({
     data: {
@@ -439,6 +454,6 @@ export async function handleInboundWhatsAppMessage(params: {
 
   await adapter.sendMessage(
     fromPhone,
-    `${result.diagnosis} Estimated price: ${money(total, tenant.currency)}. This estimate is based on the photos and information provided remotely. If the actual issue or scope of work is different than what was presented, the final price may change after inspection. Want me to get this booked in?`,
+    `${result.diagnosis} ${formatQuotePriceLine(result.totalLow, tenant.currency, result.dueAtVisit, result.balanceAfterVisit)} This estimate is based on the photos and information provided remotely. If the actual issue or scope of work is different than what was presented, the final price may change after inspection. Want me to get this booked in?`,
   );
 }
