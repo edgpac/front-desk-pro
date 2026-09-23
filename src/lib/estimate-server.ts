@@ -130,6 +130,11 @@ export type QuoteResult =
       // rather than using "your estimate" / "firm once we see it" copy
       // written for an already-priced job.
       isDiagnosisOnly: boolean;
+      // True when lineItems is genuinely empty — nothing was priced at all
+      // (a "negotiated" service-call-fee-mode response with nothing else
+      // matched). totalLow/totalHigh are 0 here but that's not a real price
+      // of $0 — the UI must not show a "$0–$0" headline for this.
+      hasNoPricedWork: boolean;
     };
 
 export const SAMPLE_PRICE_SHEET: PriceSheetItem[] = [
@@ -899,6 +904,15 @@ function buildQuoteResult(parsed: any, priceSheet: PriceSheetItem[]): QuoteResul
   const serviceCallLine = lineItems.find((li) => isServiceCallLineItem(li, priceSheet));
   const otherLines = lineItems.filter((li) => !isServiceCallLineItem(li, priceSheet));
   const isDiagnosisOnly = Boolean(serviceCallLine) && otherLines.length === 0;
+  // Distinct from isDiagnosisOnly: that case still has a real, priced
+  // service-call lineItem to show a number for (fixed mode, or a per-service
+  // diagnosis fee). A "negotiated" mode fully-deferred response has NO
+  // lineItem at all for the acknowledged issue — nothing was priced,
+  // nothing CAN be priced, so lineItems is genuinely empty. "$0–$0" would be
+  // actively wrong there (it reads as "this costs nothing," not "unknown,
+  // to be confirmed") — the UI needs a third distinct state, not the normal
+  // priced-job headline.
+  const hasNoPricedWork = lineItems.length === 0;
   const total = lineItems.reduce((sum, i) => sum + (Number(i.amount) || 0), 0);
   return {
     needsClarification: false,
@@ -910,6 +924,7 @@ function buildQuoteResult(parsed: any, priceSheet: PriceSheetItem[]): QuoteResul
     diagnosis: parsed.diagnosis || "",
     lineItems,
     isDiagnosisOnly,
+    hasNoPricedWork,
     totalLow: total,
     totalHigh: total,
   };

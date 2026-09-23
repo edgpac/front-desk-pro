@@ -57,6 +57,7 @@ type ResultState = {
   totalLow: number;
   totalHigh: number;
   isDiagnosisOnly: boolean;
+  hasNoPricedWork: boolean;
 };
 
 export function QuoteFlow({
@@ -537,19 +538,31 @@ export function QuoteFlow({
               waiting on a booking link.
             </div>
           )}
-          <p className="label-caps text-primary">{result.isDiagnosisOnly ? "Diagnosis visit fee" : "Your estimate"}</p>
-          <p className="num mt-2 font-display text-4xl font-extrabold text-foreground">
-            {money(result.totalLow, currency)} – {money(result.totalHigh, currency)}
-          </p>
-          {result.isDiagnosisOnly ? (
-            <p className="mt-1.5 text-sm text-muted-foreground">
-              Due for an in-person visit to see exactly what's needed. This amount applies toward the total
-              repair cost — we'll confirm the full price once we know what the fix requires.
-            </p>
+          {result.hasNoPricedWork ? (
+            <>
+              <p className="label-caps text-primary">Diagnostic fee — confirmed later</p>
+              <p className="mt-2 text-sm text-muted-foreground">
+                We can't price this without seeing it in person. A service-call/diagnostic fee applies — we'll
+                confirm the exact amount when we contact you to schedule the visit.
+              </p>
+            </>
           ) : (
-            <p className="mt-1.5 text-sm text-muted-foreground">
-              Firm once we see it in person. If it comes in under, you pay the under.
-            </p>
+            <>
+              <p className="label-caps text-primary">{result.isDiagnosisOnly ? "Diagnosis visit fee" : "Your estimate"}</p>
+              <p className="num mt-2 font-display text-4xl font-extrabold text-foreground">
+                {money(result.totalLow, currency)} – {money(result.totalHigh, currency)}
+              </p>
+              {result.isDiagnosisOnly ? (
+                <p className="mt-1.5 text-sm text-muted-foreground">
+                  Due for an in-person visit to see exactly what's needed. This amount applies toward the total
+                  repair cost — we'll confirm the full price once we know what the fix requires.
+                </p>
+              ) : (
+                <p className="mt-1.5 text-sm text-muted-foreground">
+                  Firm once we see it in person. If it comes in under, you pay the under.
+                </p>
+              )}
+            </>
           )}
 
           <div className="mt-5 border-t border-border-strong pt-4">
@@ -559,17 +572,19 @@ export function QuoteFlow({
             <p className="mt-2 text-sm leading-relaxed text-foreground">{result.diagnosis}</p>
           </div>
 
-          <ul className="mt-5 divide-y divide-border border-y border-border">
-            {result.lineItems.map((i) => (
-              <li key={i.description} className="flex items-start justify-between gap-4 py-3">
-                <span>
-                  <span className="block text-sm font-medium text-foreground">{i.description}</span>
-                  <span className="block text-xs text-muted-foreground">{i.detail}</span>
-                </span>
-                <span className="num text-sm font-semibold text-foreground">{money(i.amount, currency)}</span>
-              </li>
-            ))}
-          </ul>
+          {!result.hasNoPricedWork && (
+            <ul className="mt-5 divide-y divide-border border-y border-border">
+              {result.lineItems.map((i) => (
+                <li key={i.description} className="flex items-start justify-between gap-4 py-3">
+                  <span>
+                    <span className="block text-sm font-medium text-foreground">{i.description}</span>
+                    <span className="block text-xs text-muted-foreground">{i.detail}</span>
+                  </span>
+                  <span className="num text-sm font-semibold text-foreground">{money(i.amount, currency)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
 
           <div className="mt-4 flex flex-wrap gap-2">
             <Button size="lg" style={accentStyle} asChild={Boolean(bookingLink)}>

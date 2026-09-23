@@ -27,7 +27,18 @@ import { money } from "@/lib/mock-data";
 // (the diagnosed item's own eventual price is still unknown), so it isn't
 // attempted. The "goes toward the approved repair" language lives in the
 // diagnosis text itself (see CREDIT_WORDING_INDICATORS), wording only.
-function formatQuotePriceLine(totalLow: number, currency: string, isDiagnosisOnly: boolean): string {
+function formatQuotePriceLine(
+  totalLow: number,
+  currency: string,
+  isDiagnosisOnly: boolean,
+  hasNoPricedWork: boolean,
+): string {
+  if (hasNoPricedWork) {
+    // Distinct from isDiagnosisOnly: that case still has a real, priced fee
+    // to state a number for. This is "negotiated" mode with nothing else
+    // matched at all — no lineItem, no number, "$0" would be a lie.
+    return `We can't price this without seeing it in person — a service-call/diagnostic fee applies, and we'll confirm the exact amount when we contact you to schedule the visit.`;
+  }
   if (isDiagnosisOnly) {
     return `Diagnosis visit fee: ${money(totalLow, currency)}, due for an in-person visit — this applies toward the total repair cost once we know what's needed.`;
   }
@@ -230,7 +241,7 @@ export async function handleInboundWhatsAppMessage(params: {
 
     await adapter.sendMessage(
       fromPhone,
-      `${clarifyResult.diagnosis} ${formatQuotePriceLine(clarifyResult.totalLow, tenant.currency, clarifyResult.isDiagnosisOnly)} This estimate is based on the photos and information provided remotely. If the actual issue or scope of work is different than what was presented, the final price may change after inspection. Want me to get this booked in?`,
+      `${clarifyResult.diagnosis} ${formatQuotePriceLine(clarifyResult.totalLow, tenant.currency, clarifyResult.isDiagnosisOnly, clarifyResult.hasNoPricedWork)} This estimate is based on the photos and information provided remotely. If the actual issue or scope of work is different than what was presented, the final price may change after inspection. Want me to get this booked in?`,
     );
 
     return;
@@ -463,6 +474,6 @@ export async function handleInboundWhatsAppMessage(params: {
 
   await adapter.sendMessage(
     fromPhone,
-    `${result.diagnosis} ${formatQuotePriceLine(result.totalLow, tenant.currency, result.isDiagnosisOnly)} This estimate is based on the photos and information provided remotely. If the actual issue or scope of work is different than what was presented, the final price may change after inspection. Want me to get this booked in?`,
+    `${result.diagnosis} ${formatQuotePriceLine(result.totalLow, tenant.currency, result.isDiagnosisOnly, result.hasNoPricedWork)} This estimate is based on the photos and information provided remotely. If the actual issue or scope of work is different than what was presented, the final price may change after inspection. Want me to get this booked in?`,
   );
 }
