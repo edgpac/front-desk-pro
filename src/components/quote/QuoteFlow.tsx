@@ -58,6 +58,7 @@ type ResultState = {
   totalHigh: number;
   dueAtVisit?: number;
   balanceAfterVisit?: number;
+  isDiagnosisOnly: boolean;
 };
 
 export function QuoteFlow({
@@ -533,13 +534,20 @@ export function QuoteFlow({
               waiting on a booking link.
             </div>
           )}
-          <p className="label-caps text-primary">Your estimate</p>
+          <p className="label-caps text-primary">{result.isDiagnosisOnly ? "Diagnosis visit fee" : "Your estimate"}</p>
           <p className="num mt-2 font-display text-4xl font-extrabold text-foreground">
             {money(result.totalLow)} – {money(result.totalHigh)}
           </p>
-          <p className="mt-1.5 text-sm text-muted-foreground">
-            Firm once we see it in person. If it comes in under, you pay the under.
-          </p>
+          {result.isDiagnosisOnly ? (
+            <p className="mt-1.5 text-sm text-muted-foreground">
+              Due for an in-person visit to see exactly what's needed. This amount applies toward the total
+              repair cost — we'll confirm the full price once we know what the fix requires.
+            </p>
+          ) : (
+            <p className="mt-1.5 text-sm text-muted-foreground">
+              Firm once we see it in person. If it comes in under, you pay the under.
+            </p>
+          )}
           {result.dueAtVisit != null && result.balanceAfterVisit != null && (
             <p className="mt-1.5 text-sm text-muted-foreground">
               {money(result.dueAtVisit)} due at the visit, credited toward the total — {money(result.balanceAfterVisit)}{" "}

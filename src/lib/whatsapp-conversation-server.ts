@@ -27,7 +27,11 @@ function formatQuotePriceLine(
   currency: string,
   dueAtVisit: number | undefined,
   balanceAfterVisit: number | undefined,
+  isDiagnosisOnly: boolean,
 ): string {
+  if (isDiagnosisOnly) {
+    return `Diagnosis visit fee: ${money(totalLow, currency)}, due for an in-person visit — this applies toward the total repair cost once we know what's needed.`;
+  }
   if (dueAtVisit == null || balanceAfterVisit == null) {
     return `Estimated price: ${money(totalLow, currency)}.`;
   }
@@ -228,7 +232,7 @@ export async function handleInboundWhatsAppMessage(params: {
 
     await adapter.sendMessage(
       fromPhone,
-      `${clarifyResult.diagnosis} ${formatQuotePriceLine(clarifyResult.totalLow, tenant.currency, clarifyResult.dueAtVisit, clarifyResult.balanceAfterVisit)} This estimate is based on the photos and information provided remotely. If the actual issue or scope of work is different than what was presented, the final price may change after inspection. Want me to get this booked in?`,
+      `${clarifyResult.diagnosis} ${formatQuotePriceLine(clarifyResult.totalLow, tenant.currency, clarifyResult.dueAtVisit, clarifyResult.balanceAfterVisit, clarifyResult.isDiagnosisOnly)} This estimate is based on the photos and information provided remotely. If the actual issue or scope of work is different than what was presented, the final price may change after inspection. Want me to get this booked in?`,
     );
 
     return;
@@ -460,6 +464,6 @@ export async function handleInboundWhatsAppMessage(params: {
 
   await adapter.sendMessage(
     fromPhone,
-    `${result.diagnosis} ${formatQuotePriceLine(result.totalLow, tenant.currency, result.dueAtVisit, result.balanceAfterVisit)} This estimate is based on the photos and information provided remotely. If the actual issue or scope of work is different than what was presented, the final price may change after inspection. Want me to get this booked in?`,
+    `${result.diagnosis} ${formatQuotePriceLine(result.totalLow, tenant.currency, result.dueAtVisit, result.balanceAfterVisit, result.isDiagnosisOnly)} This estimate is based on the photos and information provided remotely. If the actual issue or scope of work is different than what was presented, the final price may change after inspection. Want me to get this booked in?`,
   );
 }

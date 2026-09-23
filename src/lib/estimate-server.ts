@@ -125,6 +125,12 @@ export type QuoteResult =
       // the customer pays the fee on top of the total.
       dueAtVisit?: number;
       balanceAfterVisit?: number;
+      // True when every line item is a diagnosis/service-call-style charge
+      // — nothing was confidently priced yet. totalLow/totalHigh here is
+      // the visit fee, not a job estimate; the UI must say so plainly
+      // rather than using "your estimate" / "firm once we see it" copy
+      // written for an already-priced job.
+      isDiagnosisOnly: boolean;
     };
 
 export const SAMPLE_PRICE_SHEET: PriceSheetItem[] = [
@@ -749,6 +755,13 @@ function buildQuoteResult(parsed: any, priceSheet: PriceSheetItem[]): QuoteResul
   const serviceCallLine = lineItems.find((li) => isServiceCallLineItem(li, priceSheet));
   const otherLines = lineItems.filter((li) => !isServiceCallLineItem(li, priceSheet));
   const hasCreditableWork = Boolean(serviceCallLine) && otherLines.length > 0;
+  // Nothing was confidently priced at all — every line item is a
+  // diagnosis/service-call-style charge, no real matched work yet. This
+  // quote isn't "the job price," it's an in-person-visit fee that a real
+  // price gets built on top of later — the UI/WhatsApp copy needs to say
+  // that plainly instead of using "your estimate" / "firm once we see it in
+  // person" language written for an already-priced job.
+  const isDiagnosisOnly = Boolean(serviceCallLine) && otherLines.length === 0;
   const total = hasCreditableWork
     ? otherLines.reduce((sum, i) => sum + (Number(i.amount) || 0), 0)
     : lineItems.reduce((sum, i) => sum + (Number(i.amount) || 0), 0);
@@ -768,6 +781,7 @@ function buildQuoteResult(parsed: any, priceSheet: PriceSheetItem[]): QuoteResul
     diagnosis: parsed.diagnosis || "",
     lineItems,
     ...creditFields,
+    isDiagnosisOnly,
     totalLow: total,
     totalHigh: total,
   };
