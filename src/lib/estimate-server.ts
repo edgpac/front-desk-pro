@@ -682,11 +682,19 @@ const INSPECTION_POLICY_INDICATORS = [
   "confirmaremos el alcance",
   "se confirmará",
   // Hebrew
-  "יאושר לאחר הבדיקה",
-  "לאחר הבדיקה",
+  // Live-tested gap: the model wrote "יאושרו לאחר בדיקה" (plural verb,
+  // matching plural "materials," no definite article) — none of the
+  // original phrases matched since they all required the singular verb
+  // AND the definite article "ה". "אחר בדיקה" alone is prefix/article
+  // independent and covers "לאחר בדיקה"/"לאחר הבדיקה" either way; "יאושר"
+  // alone (no trailing phrase) covers both יאושר and יאושרו as a substring.
+  "אחר בדיקה",
+  "יאושר",
+  "תאושר",
+  "מאושר",
   "לאחר שנבדוק",
   "לאחר שנבחן",
-  "היקף העבודה יאושר",
+  "היקף העבודה",
 ];
 
 function validateQuoteAgainstPriceSheet(
