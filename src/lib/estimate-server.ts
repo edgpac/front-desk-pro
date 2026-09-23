@@ -1137,15 +1137,6 @@ export const getQuoteEstimate = createServerFn({ method: "POST" })
 
     const failures2 = validateQuoteAgainstPriceSheet(parsed2, data.priceSheet, data.serviceCallFee, data.serviceCallFeeMode);
     if (failures2.length > 0) {
-      // TEMPORARY — Batch 1 (P0A) live verification only, remove once the
-      // Hebrew inspection-policy wording gap is diagnosed and fixed. Logs
-      // the actual diagnosis/lineItem text (no PII, business-configured
-      // content only) so a real failure like this can be fixed against the
-      // model's actual phrasing instead of guessed at.
-      console.error("Quote failed validation twice — raw diagnosis/lineItems:", {
-        diagnosis: (parsed2 as any)?.diagnosis,
-        lineItems: (parsed2 as any)?.lineItems,
-      });
       console.error("Quote failed validation twice, refusing to return it:", failures2);
       throw new Error("Couldn't put together a reliable estimate for that — try rephrasing, or the business will follow up manually.");
     }
@@ -1213,6 +1204,13 @@ export type FollowUpInput = {
   // Same as QuoteInput.tenantSlug — present for real tenant traffic, absent
   // for /demo.
   tenantSlug?: string | undefined;
+  // Same meaning as QuoteResult.hasNoPricedWork — lineItems is empty
+  // because pricing is genuinely deferred (negotiated service-call mode),
+  // not because the job is free. Without this, an empty lineItems produces
+  // an empty itemsText with no explanation, and the model has no way to
+  // distinguish "nothing priced yet, by design" from "something went
+  // wrong" when answering a pricing question.
+  hasNoPricedWork?: boolean;
 };
 
 export const getFollowUpAnswer = createServerFn({ method: "POST" })
@@ -1228,7 +1226,9 @@ export const getFollowUpAnswer = createServerFn({ method: "POST" })
       await requireActiveSubscriptionForSlug(getAdminClient(), data.tenantSlug);
     }
 
-    const itemsText = data.lineItems.map((i) => `- ${i.description}: $${i.amount}`).join("\n");
+    const itemsText = data.hasNoPricedWork
+      ? "(none — pricing for this is genuinely deferred, not zero-dollar; see PRICING STATUS below)"
+      : data.lineItems.map((i) => `- ${i.description}: $${i.amount}`).join("\n");
     const historyText = data.history
       .map((m) => `${m.role === "customer" ? "Customer" : "You"}: ${m.text}`)
       .join("\n");
@@ -1239,11 +1239,15 @@ export const getFollowUpAnswer = createServerFn({ method: "POST" })
         ? ` Reply in ${LANGUAGE_NAME[language]} — the conversation so far has been in ${LANGUAGE_NAME[language]}.`
         : "";
 
+    const pricingStatusBlock = data.hasNoPricedWork
+      ? `\n\nPRICING STATUS: pending. No final price has been determined for this yet — the service-call/diagnostic fee is confirmed directly with the customer, not quoted automatically. Never state or imply $0, never invent a number, and never treat the empty line items above as "free" or "nothing to pay." If asked about price, say plainly that it will be confirmed when the business is in touch.`
+      : "";
+
     const prompt = `You are answering a follow-up question on behalf of ${data.businessName} about an estimate you already gave a customer.
 
 DIAGNOSIS GIVEN: ${data.diagnosis}
 LINE ITEMS:
-${itemsText}
+${itemsText}${pricingStatusBlock}
 ${historyText ? `\nCONVERSATION SO FAR:\n${historyText}` : ""}
 
 CUSTOMER'S QUESTION: "${data.question}"

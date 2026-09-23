@@ -193,7 +193,7 @@ function LeadInbox() {
                 </div>
                 <span className="hidden text-xs text-muted-foreground sm:inline">{lead.requested}</span>
                 <span className="num hidden text-sm font-medium text-foreground sm:inline">
-                  {money(lineItemsTotal(lead.lineItems))}
+                  {lead.flagType === "pending_negotiated_price" ? "Price pending" : money(lineItemsTotal(lead.lineItems))}
                 </span>
                 <StatusPill status={lead.status} />
               </Link>

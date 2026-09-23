@@ -89,7 +89,7 @@ export async function handleInboundWhatsAppMessage(params: {
   // duplicate.
   const { data: openLead } = await admin
     .from("leads")
-    .select("id, customer_name, photo_url, problem, confidence, diagnosis")
+    .select("id, customer_name, photo_url, problem, confidence, diagnosis, flag_type")
     .eq("tenant_id", tenant.id)
     .eq("phone", fromPhone)
     .gte("created_at", new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString())
@@ -236,6 +236,7 @@ export async function handleInboundWhatsAppMessage(params: {
         confidence: clarifyResult.confidence,
         isEmergency: clarifyResult.isEmergency,
         lineItems: clarifyLineItems,
+        pendingNegotiatedPrice: clarifyResult.hasNoPricedWork,
       },
     });
 
@@ -301,6 +302,7 @@ export async function handleInboundWhatsAppMessage(params: {
             lineItems: lineItemsForAnswer,
             question: body,
             history,
+            hasNoPricedWork: openLead.flag_type === "pending_negotiated_price",
           },
         });
 
@@ -469,6 +471,7 @@ export async function handleInboundWhatsAppMessage(params: {
       confidence: result.confidence,
       isEmergency: result.isEmergency,
       lineItems,
+      pendingNegotiatedPrice: result.hasNoPricedWork,
     },
   });
 

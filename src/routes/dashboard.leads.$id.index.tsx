@@ -112,6 +112,13 @@ function LeadDetail() {
   const total = lineItemsTotal(lineItems);
   const isEdited = aiSnapshot ? !lineItemsMatch(lineItems, aiSnapshot) : false;
   const diagnosisEdited = diagnosis !== originalDiagnosis;
+  // Authoritative, persisted signal — never inferred from lineItems.length
+  // or total being 0/empty. See public-lead-server.ts's
+  // CreateLeadInput.pendingNegotiatedPrice. Stays true until the owner
+  // explicitly moves the lead off "flagged" (e.g. after pricing it by
+  // phone and clicking "Mark reviewed"), even if they've already started
+  // editing line items in the meantime.
+  const isPendingPrice = lead?.flagType === "pending_negotiated_price";
 
   // The message draft is derived straight from the diagnosis + whatever the
   // line items currently total — so when the AI gets the job right, there's
@@ -125,6 +132,7 @@ function LeadDetail() {
         diagnosis,
         total,
         currency: tenant.currency,
+        pendingNegotiatedPrice: isPendingPrice,
       })
     : "";
   const message = manualMessage ?? suggestedReply;
@@ -254,6 +262,15 @@ function LeadDetail() {
   function shareDocument(kind: DocumentKind) {
     if (!lead) return;
     const docNumber = formatDocNumber(kind, lead.id);
+    // Found in P0B's required repo-wide search: this bypassed
+    // BusinessDocument.tsx's pending-price guard entirely (that only
+    // protects the separate document page, not this shortcut), inserting
+    // "$0 total" straight into the reply draft for a lead with no
+    // determined price. Same isPendingPrice signal, same treatment.
+    if (isPendingPrice) {
+      toast.error("This job's price is still pending — confirm it with the customer before sharing a document.");
+      return;
+    }
     const line = `📎 Sharing your ${DOCUMENT_LABEL[kind].toLowerCase()} (${docNumber}) — ${money(total, tenant.currency)} total.`;
     setManualMessage(message.trim() ? `${message}\n\n${line}` : line);
     toast.info("Added to the draft — will actually attach the document once a real channel is wired up.");
@@ -323,13 +340,14 @@ function LeadDetail() {
           </Panel>
 
           {lead.status === "flagged" ? (
-            <Panel title="Needs your review">
+            <Panel title={isPendingPrice ? "Pricing pending" : "Needs your review"}>
               <p className="text-sm text-foreground">
                 {lead.flagReason || "The AI couldn't safely quote this automatically."}
               </p>
               <p className="mt-2 text-xs text-muted-foreground">
-                No price was invented for this — reply to the customer yourself from the message thread below once
-                you've worked out a number.
+                {isPendingPrice
+                  ? "Call the customer to confirm the service-call/diagnostic fee, then add it as a line item below and mark this reviewed."
+                  : "No price was invented for this — reply to the customer yourself from the message thread below once you've worked out a number."}
               </p>
               <div className="mt-3 flex justify-end">
                 <Button size="sm" variant="outline" onClick={() => void changeStatus("new")}>
@@ -437,7 +455,11 @@ function LeadDetail() {
             </div>
             <div className="mt-3 flex items-center justify-between border-t border-border-strong pt-3">
               <span className="text-sm font-semibold text-foreground">Total</span>
-              <span className="num text-lg font-extrabold text-foreground">{money(total, tenant.currency)}</span>
+              {isPendingPrice ? (
+                <span className="text-sm font-semibold text-muted-foreground">Price pending</span>
+              ) : (
+                <span className="num text-lg font-extrabold text-foreground">{money(total, tenant.currency)}</span>
+              )}
             </div>
           </Panel>
         </div>

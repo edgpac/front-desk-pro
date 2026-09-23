@@ -202,6 +202,7 @@ export function QuoteFlow({
           question,
           history: thread,
           tenantSlug,
+          hasNoPricedWork: result.hasNoPricedWork,
         },
       });
       setThread((t) => [...t, { role: "desk", text: answer }]);
@@ -253,6 +254,7 @@ export function QuoteFlow({
           diagnosis: result.diagnosis,
           confidence: result.confidence,
           isEmergency: result.isEmergency,
+          pendingNegotiatedPrice: result.hasNoPricedWork,
           lineItems: result.lineItems.map((item) => ({
             description: item.detail ? `${item.description} — ${item.detail}` : item.description,
             qty: 1,

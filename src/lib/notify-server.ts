@@ -11,6 +11,10 @@ type NotifyLead = {
   diagnosis: string;
   confidence: string | null;
   isEmergency?: boolean;
+  // See public-lead-server.ts's CreateLeadInput.pendingNegotiatedPrice —
+  // same authoritative signal, threaded through so this email never
+  // renders a fabricated "$0" for a quote that was never actually priced.
+  pendingNegotiatedPrice?: boolean;
 };
 
 // Ported from Cabos Handyman's api/send-booking-email.js — a real, already-
@@ -64,13 +68,17 @@ function buildEmailHtml(params: { tenant: NotifyTenant; lead: NotifyLead; lineIt
 
       <div style="background: #dbeafe; padding: 15px; border-radius: 8px; margin: 20px 0;">
         <h3 style="margin-top: 0;">Estimate</h3>
-        <table style="width: 100%; border-collapse: collapse;">
+        ${
+          lead.pendingNegotiatedPrice
+            ? `<p style="margin: 0; font-weight: bold; color: #B4531F;">Price pending — call the customer to confirm the service-call/diagnostic fee.</p>`
+            : `<table style="width: 100%; border-collapse: collapse;">
           ${rows}
           <tr style="border-top: 2px solid #B4531F;">
             <td style="padding: 10px 5px;"><strong>Total</strong></td>
             <td style="padding: 10px 5px; text-align: right; font-size: 18px; color: #B4531F;"><strong>${money(total, tenant.currency)}</strong></td>
           </tr>
-        </table>
+        </table>`
+        }
       </div>
 
       <div style="margin-top: 20px; padding: 15px; background: #f9fafb; border-radius: 8px; text-align: center;">

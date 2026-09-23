@@ -41,6 +41,11 @@ export type Lead = {
   createdAt?: string;
   // Only set when status === "flagged" — see ROADMAP.md's flagged-leads slice.
   flagReason?: string | null;
+  // Only set when status === "flagged". "pending_negotiated_price" means
+  // no price was ever determined (service_call_fee_mode = "negotiated",
+  // nothing else matched) — never the same thing as a genuine $0 lead, and
+  // every consumer that displays this lead's total must check this first.
+  flagType?: "conflicting_information" | "needs_human_review" | "outside_service_scope" | "pending_negotiated_price" | null;
 };
 
 export const lineItemsTotal = (items: LineItem[]) =>

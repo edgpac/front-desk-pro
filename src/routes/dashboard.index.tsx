@@ -125,7 +125,9 @@ function DashboardHome() {
                     <p className="truncate text-xs text-muted-foreground">{lead.problem}</p>
                   </div>
                   <div className="flex shrink-0 items-center gap-3">
-                    <span className="num text-sm text-foreground">{money(lineItemsTotal(lead.lineItems))}</span>
+                    <span className="num text-sm text-foreground">
+                      {lead.flagType === "pending_negotiated_price" ? "Price pending" : money(lineItemsTotal(lead.lineItems))}
+                    </span>
                     <StatusPill status={lead.status} />
                   </div>
                 </Link>

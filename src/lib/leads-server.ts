@@ -19,6 +19,7 @@ type LeadRow = {
   diagnosis: string;
   confidence: Lead["confidence"] | null;
   flag_reason: string | null;
+  flag_type: "conflicting_information" | "needs_human_review" | "outside_service_scope" | "pending_negotiated_price" | null;
   ai_line_items_snapshot: LineItem[] | null;
   created_at: string;
 };
@@ -48,7 +49,7 @@ export const listMyLeads = createServerFn({ method: "GET" })
     const tenantId = await getTenantId(context.supabase, context.userId);
     const { data: leads, error } = await context.supabase
       .from("leads")
-      .select("id, customer_name, phone, address, channel, status, photo_url, problem, diagnosis, confidence, ai_line_items_snapshot, created_at, flag_reason")
+      .select("id, customer_name, phone, address, channel, status, photo_url, problem, diagnosis, confidence, ai_line_items_snapshot, created_at, flag_reason, flag_type")
       .eq("tenant_id", tenantId)
       .order("created_at", { ascending: false });
     if (error) throw new Error(`Could not load leads: ${error.message}`);
@@ -88,6 +89,7 @@ export const listMyLeads = createServerFn({ method: "GET" })
       followUps: [],
       createdAt: row.created_at,
       flagReason: row.flag_reason,
+      flagType: row.flag_type,
     }));
   });
 
@@ -99,7 +101,7 @@ export const getMyLead = createServerFn({ method: "GET" })
 
     const { data: row, error } = await context.supabase
       .from("leads")
-      .select("id, customer_name, phone, address, channel, status, photo_url, problem, diagnosis, confidence, ai_line_items_snapshot, created_at, flag_reason")
+      .select("id, customer_name, phone, address, channel, status, photo_url, problem, diagnosis, confidence, ai_line_items_snapshot, created_at, flag_reason, flag_type")
       .eq("tenant_id", tenantId)
       .eq("id", id)
       .single();
@@ -142,6 +144,7 @@ export const getMyLead = createServerFn({ method: "GET" })
       followUps: (messages as MessageRow[]).map((m) => ({ role: m.role, text: m.body })),
       aiLineItemsSnapshot: lead.ai_line_items_snapshot,
       flagReason: lead.flag_reason,
+      flagType: lead.flag_type,
     };
   });
 
@@ -221,6 +224,15 @@ export const exportMyLeadsCsv = createServerFn({ method: "GET" })
     return [header.join(","), ...rows].join("\n");
   });
 
+// Pre-existing bug fixed here, discovered while wiring up
+// "pending_negotiated_price": leads_flag_type_requires_flagged_status
+// (0008_flagged_leads.sql) requires flag_type to be null on any lead not
+// in 'flagged' status. Moving a flagged lead to any other status without
+// also clearing flag_type/flag_reason violates that constraint and fails
+// silently into the UI's catch block (the local "Marked X" toast fires
+// optimistically before the DB call, masking the failure) — meaning
+// "Mark reviewed" never actually worked for any flag type, not just the
+// new one. Generic fix, not specific to pending_negotiated_price.
 export const updateLeadStatus = createServerFn({ method: "POST" })
   .validator((input: { id: string; status: LeadStatus }) => input)
   .middleware([requireSupabaseAuth])
@@ -228,7 +240,11 @@ export const updateLeadStatus = createServerFn({ method: "POST" })
     const tenantId = await getTenantId(context.supabase, context.userId);
     const { error } = await context.supabase
       .from("leads")
-      .update({ status: data.status })
+      .update(
+        data.status === "flagged"
+          ? { status: data.status }
+          : { status: data.status, flag_type: null, flag_reason: null },
+      )
       .eq("tenant_id", tenantId)
       .eq("id", data.id);
     if (error) throw new Error(`Could not update lead: ${error.message}`);

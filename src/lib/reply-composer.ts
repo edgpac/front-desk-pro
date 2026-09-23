@@ -9,8 +9,18 @@ export function buildSuggestedReply(params: {
   diagnosis: string;
   total: number;
   currency?: string;
+  // See public-lead-server.ts's CreateLeadInput.pendingNegotiatedPrice.
+  // When true, `total` is meaningless (always 0, nothing was priced) —
+  // the reply must never say "Estimated price: $0" for this state.
+  pendingNegotiatedPrice?: boolean;
 }) {
   const language = detectLanguage(params.problem, params.diagnosis);
+  if (params.pendingNegotiatedPrice) {
+    if (language === "es") {
+      return `Según las fotos: ${params.diagnosis} El precio exacto para la visita de servicio/diagnóstico se confirmará cuando nos comuniquemos con usted. Este estimado se basa en las fotos e información proporcionada de forma remota. ¿Le gustaría que agendemos la visita?`;
+    }
+    return `${params.diagnosis} The exact service-call/diagnostic fee will be confirmed when we contact you. This estimate is based on the photos and information provided remotely. Want me to get this scheduled?`;
+  }
   const amount = money(params.total, params.currency ?? "USD");
   if (language === "es") {
     return `Según las fotos: ${params.diagnosis} Precio estimado: ${amount}. Este estimado se basa en las fotos e información proporcionada de forma remota. Si el problema real o el alcance del trabajo es diferente a lo presentado, el precio final podría cambiar después de una inspección en sitio. ¿Le gustaría que agendemos la visita?`;

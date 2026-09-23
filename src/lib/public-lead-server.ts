@@ -114,6 +114,12 @@ export const getTenantForQuote = createServerFn({ method: "GET" })
     };
   });
 
+// Generic across any tenant/service — never mentions a specific business,
+// service, or wording. See estimate-server.ts's hasNoPricedWork: true only
+// when service_call_fee_mode is "negotiated" and nothing else was matched.
+const PENDING_NEGOTIATED_PRICE_REASON =
+  "Pricing is deferred for this service — the exact service-call/diagnostic fee needs to be confirmed directly with the customer.";
+
 type CreateLeadInput = {
   tenantSlug: string;
   customerName: string;
@@ -126,6 +132,12 @@ type CreateLeadInput = {
   confidence: "High" | "Medium" | "Low";
   isEmergency?: boolean;
   lineItems: Array<{ description: string; qty: number; unit: string; rate: number }>;
+  // True only for estimate-server.ts's hasNoPricedWork — nothing was
+  // actually priced (negotiated service-call mode, no other match). Must
+  // never be inferred downstream from lineItems.length === 0 or total ===
+  // 0 — this is the one authoritative signal for that state, persisted
+  // explicitly rather than reconstructed.
+  pendingNegotiatedPrice?: boolean;
 };
 
 // The one real trigger point this whole app was missing: a real customer
@@ -163,6 +175,9 @@ export const createLead = createServerFn({ method: "POST" })
         diagnosis: data.diagnosis,
         confidence: data.confidence,
         ai_line_items_snapshot: data.lineItems,
+        ...(data.pendingNegotiatedPrice
+          ? { status: "flagged", flag_type: "pending_negotiated_price", flag_reason: PENDING_NEGOTIATED_PRICE_REASON }
+          : {}),
       })
       .select("id")
       .single();
@@ -201,6 +216,7 @@ export const createLead = createServerFn({ method: "POST" })
         diagnosis: data.diagnosis,
         confidence: data.confidence,
         ...(data.isEmergency !== undefined ? { isEmergency: data.isEmergency } : {}),
+        ...(data.pendingNegotiatedPrice !== undefined ? { pendingNegotiatedPrice: data.pendingNegotiatedPrice } : {}),
       },
       lineItems: data.lineItems.map((item, index) => ({ id: String(index), ...item })),
       total,
@@ -323,6 +339,8 @@ type FinalizeLeadInput = {
   confidence: "High" | "Medium" | "Low";
   isEmergency?: boolean;
   lineItems: Array<{ description: string; qty: number; unit: string; rate: number }>;
+  // Same meaning/authority as CreateLeadInput.pendingNegotiatedPrice above.
+  pendingNegotiatedPrice?: boolean;
 };
 
 // Completes a lead that createClarifyingLead started earlier in the same
@@ -340,6 +358,9 @@ export const finalizeLeadWithQuote = createServerFn({ method: "POST" })
         diagnosis: data.diagnosis,
         confidence: data.confidence,
         ai_line_items_snapshot: data.lineItems,
+        ...(data.pendingNegotiatedPrice
+          ? { status: "flagged", flag_type: "pending_negotiated_price", flag_reason: PENDING_NEGOTIATED_PRICE_REASON }
+          : {}),
       })
       .eq("id", data.leadId);
     if (updateError) {
@@ -375,6 +396,7 @@ export const finalizeLeadWithQuote = createServerFn({ method: "POST" })
         diagnosis: data.diagnosis,
         confidence: data.confidence,
         ...(data.isEmergency !== undefined ? { isEmergency: data.isEmergency } : {}),
+        ...(data.pendingNegotiatedPrice !== undefined ? { pendingNegotiatedPrice: data.pendingNegotiatedPrice } : {}),
       },
       lineItems: data.lineItems.map((item, index) => ({ id: String(index), ...item })),
       total,

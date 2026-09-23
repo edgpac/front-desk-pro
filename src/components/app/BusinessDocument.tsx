@@ -84,6 +84,36 @@ export function BusinessDocument({
     }
   }
 
+  // See public-lead-server.ts's CreateLeadInput.pendingNegotiatedPrice —
+  // no price was ever determined for this lead (negotiated service-call
+  // mode, nothing else matched). Generating a financial document with a
+  // $0 subtotal/total would present that as a real, completed number —
+  // never fabricate one; block document generation entirely until the
+  // owner has priced the job (adds line items, then marks it reviewed).
+  if (lead.flagType === "pending_negotiated_price") {
+    return (
+      <div className="bg-paper p-6 lg:p-10 print:bg-white print:p-0">
+        <div className="mx-auto max-w-3xl">
+          <Link
+            to="/dashboard/leads/$id"
+            params={{ id: lead.id }}
+            className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
+          >
+            <ArrowLeft className="h-3.5 w-3.5" /> Back to lead
+          </Link>
+          <div className="mt-6 border border-border-strong bg-card p-8 text-center">
+            <p className="font-semibold text-foreground">Price pending</p>
+            <p className="mt-2 text-sm text-muted-foreground">
+              This job's price hasn't been determined yet — the service-call/diagnostic fee still needs to be
+              confirmed with the customer. Add the agreed price as a line item on the lead, then generate this
+              document.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="bg-paper p-6 lg:p-10 print:bg-white print:p-0">
       <div className="mx-auto max-w-3xl">
