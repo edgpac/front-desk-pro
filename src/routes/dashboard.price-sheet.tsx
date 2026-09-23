@@ -63,6 +63,7 @@ function newRow(): PriceSheetRow {
     hours: 0,
     bundleable: false,
     materialsPolicy: "included",
+    diagnosisFee: null,
   };
 }
 
@@ -153,6 +154,7 @@ function PriceSheetPage() {
             hours: row.hours,
             bundleable: row.bundleable,
             materialsPolicy: row.materialsPolicy,
+            diagnosisFee: row.diagnosisFee,
           })),
         },
       });
@@ -380,6 +382,55 @@ function PriceSheetPage() {
                     ))}
                   </select>
                 </label>
+              </div>
+              <div className="flex flex-wrap items-center gap-3">
+                <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={row.diagnosisFee != null}
+                    onChange={(e) =>
+                      updateRow(row.id, {
+                        diagnosisFee: e.target.checked ? { pricingType: "flat", amount: 0 } : null,
+                      })
+                    }
+                    className="h-3.5 w-3.5"
+                  />
+                  Charge a separate diagnosis fee for this service (instead of the general service call fee)
+                </label>
+                {row.diagnosisFee && (
+                  <>
+                    <select
+                      value={row.diagnosisFee.pricingType}
+                      onChange={(e) =>
+                        updateRow(row.id, {
+                          diagnosisFee: { ...row.diagnosisFee!, pricingType: e.target.value as "flat" | "hourly" },
+                        })
+                      }
+                      className="h-8 rounded-sm border border-border-strong bg-background px-2 text-xs"
+                      aria-label={`Diagnosis fee pricing type for ${row.task}`}
+                    >
+                      <option value="flat">Flat</option>
+                      <option value="hourly">Hourly</option>
+                    </select>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs text-muted-foreground">$</span>
+                      <Input
+                        type="number"
+                        value={row.diagnosisFee.amount}
+                        onChange={(e) =>
+                          updateRow(row.id, {
+                            diagnosisFee: { ...row.diagnosisFee!, amount: e.target.valueAsNumber || 0 },
+                          })
+                        }
+                        className="h-8 w-20 text-right text-xs"
+                        aria-label={`Diagnosis fee amount for ${row.task}`}
+                      />
+                      {row.diagnosisFee.pricingType === "hourly" && (
+                        <span className="text-xs text-muted-foreground">/hr</span>
+                      )}
+                    </div>
+                  </>
+                )}
               </div>
             </li>
           ))}

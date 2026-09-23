@@ -29,12 +29,33 @@ export type PriceSheetItem = {
   // only job is to read this off the matched row and communicate it. See
   // buildPrompt's MATERIALS POLICY rules and validateQuoteAgainstPriceSheet.
   materialsPolicy: MaterialsPolicy;
+  // Optional, per row, business-configured — an in-person diagnosis/
+  // assessment fee specific to THIS service, independent of the tenant-wide
+  // serviceCallFee scalar. null means this row has none configured, in
+  // which case the tenant-wide fee is the fallback exactly as before this
+  // field existed. Never AI-inferred or AI-chosen, same discipline as
+  // materialsPolicy — see buildDiagnosisSentinelId below.
+  diagnosisFee: { pricingType: "flat" | "hourly"; amount: number } | null;
 };
 
 // Sentinel id for the tenant-level serviceCallFee scalar, which isn't a
 // price_sheet_items row at all but is still a valid, verifiable source for
 // a line item's price (see validateAndRepairQuote below).
 export const SERVICE_CALL_SENTINEL_ID = "service_call" as const;
+
+// A specific row's own diagnosis fee (see PriceSheetItem.diagnosisFee) is
+// referenced as a distinct, separately-priced id from that row's own id —
+// "<id>:diagnosis" — so matchedServices/lineItems can express "this is the
+// diagnosis-tier charge for this service," not its full price, while still
+// tracing back to a real, verifiable row. Never a bare price-sheet id and
+// never SERVICE_CALL_SENTINEL_ID.
+const DIAGNOSIS_ID_SUFFIX = ":diagnosis";
+function buildDiagnosisSentinelId(itemId: string): string {
+  return `${itemId}${DIAGNOSIS_ID_SUFFIX}`;
+}
+function parseDiagnosisSentinelId(id: string): string | null {
+  return id.endsWith(DIAGNOSIS_ID_SUFFIX) ? id.slice(0, -DIAGNOSIS_ID_SUFFIX.length) : null;
+}
 
 export type Answer = { question: string; answer: string };
 
@@ -118,6 +139,7 @@ export const SAMPLE_PRICE_SHEET: PriceSheetItem[] = [
     pricingType: "range",
     bundleable: false,
     materialsPolicy: "included",
+    diagnosisFee: null,
   },
   {
     id: "sample-2",
@@ -130,6 +152,7 @@ export const SAMPLE_PRICE_SHEET: PriceSheetItem[] = [
     pricingType: "range",
     bundleable: false,
     materialsPolicy: "included",
+    diagnosisFee: null,
   },
   {
     id: "sample-3",
@@ -142,6 +165,7 @@ export const SAMPLE_PRICE_SHEET: PriceSheetItem[] = [
     pricingType: "range",
     bundleable: false,
     materialsPolicy: "included",
+    diagnosisFee: null,
   },
   {
     id: "sample-4",
@@ -154,6 +178,7 @@ export const SAMPLE_PRICE_SHEET: PriceSheetItem[] = [
     pricingType: "range",
     bundleable: false,
     materialsPolicy: "included",
+    diagnosisFee: null,
   },
   {
     id: "sample-5",
@@ -166,6 +191,7 @@ export const SAMPLE_PRICE_SHEET: PriceSheetItem[] = [
     pricingType: "range",
     bundleable: false,
     materialsPolicy: "included",
+    diagnosisFee: null,
   },
   {
     id: "sample-6",
@@ -178,6 +204,7 @@ export const SAMPLE_PRICE_SHEET: PriceSheetItem[] = [
     pricingType: "range",
     bundleable: false,
     materialsPolicy: "included",
+    diagnosisFee: null,
   },
   {
     id: "sample-7",
@@ -190,6 +217,7 @@ export const SAMPLE_PRICE_SHEET: PriceSheetItem[] = [
     pricingType: "range",
     bundleable: true,
     materialsPolicy: "included",
+    diagnosisFee: null,
   },
   {
     id: "sample-8",
@@ -205,6 +233,7 @@ export const SAMPLE_PRICE_SHEET: PriceSheetItem[] = [
     // labor only, materials/parts confirmed once the actual faucet and
     // scope are known.
     materialsPolicy: "confirmed_after_inspection",
+    diagnosisFee: null,
   },
 ];
 
@@ -334,7 +363,10 @@ function buildPrompt(input: QuoteInput): string {
             ? `$${item.priceMin}`
             : `$${item.priceMin}-$${item.priceMax}`;
       const materialsTag = item.materialsPolicy !== "included" ? ` [MATERIALS: ${item.materialsPolicy}]` : "";
-      return `- [id: ${item.id}] [${item.category}] ${item.task} (matches: ${item.keywords.join(", ")}) — about ${item.hours}hr, ${price}${item.bundleable ? " [BUNDLEABLE]" : ""}${materialsTag}`;
+      const diagnosisTag = item.diagnosisFee
+        ? ` [DIAGNOSIS FEE: ${item.diagnosisFee.pricingType === "hourly" ? `$${item.diagnosisFee.amount}/hr` : `$${item.diagnosisFee.amount}`}, id: ${buildDiagnosisSentinelId(item.id)}]`
+        : "";
+      return `- [id: ${item.id}] [${item.category}] ${item.task} (matches: ${item.keywords.join(", ")}) — about ${item.hours}hr, ${price}${item.bundleable ? " [BUNDLEABLE]" : ""}${materialsTag}${diagnosisTag}`;
     })
     .join("\n");
 
@@ -373,7 +405,7 @@ Service call fee: $${input.serviceCallFee} (covers the initial assessment; hours
 
 PRICE-SHEET MATCHING RULES — follow these exactly, in order, for every distinct task in the request:
 
-1. FIRST, ENUMERATE — DO NOT SKIP TO THE ANSWER. Before deciding anything else, list every distinct issue/task the customer described as a "matchedServices" entry: {"customerIssue": "<the issue, in your own words>", "priceSheetItemId": "<the exact id shown in brackets next to the matching price-sheet item, "${SERVICE_CALL_SENTINEL_ID}" for the service call fee, or null if nothing reasonably covers it>"}. Always use the literal id string shown in the price sheet above — never the task name, never an invented id. This goes in your response BEFORE lineItems, in the order the issues were described. Do this enumeration explicitly — never jump straight to a summarized lineItems array without it.
+1. FIRST, ENUMERATE — DO NOT SKIP TO THE ANSWER. Before deciding anything else, list every distinct issue/task the customer described as a "matchedServices" entry: {"customerIssue": "<the issue, in your own words>", "priceSheetItemId": "<the exact id shown in brackets next to the matching price-sheet item, that item's own "<id>:diagnosis" id if you're charging its per-service diagnosis fee instead (see PER-SERVICE DIAGNOSIS FEE below), "${SERVICE_CALL_SENTINEL_ID}" for the generic service call fee, or null if nothing reasonably covers it>"}. Always use the literal id string shown in the price sheet above — never the task name, never an invented id. This goes in your response BEFORE lineItems, in the order the issues were described. Do this enumeration explicitly — never jump straight to a summarized lineItems array without it.
 
 2. KEYWORDS ARE THE PRIMARY MATCH SIGNAL. If the customer's task contains or clearly corresponds to a keyword listed on a price-sheet item, that item is the correct match — even if a different item's task NAME sounds more specific or more semantically related. Real keyword evidence always outweighs a name that merely sounds similar.
 
@@ -385,11 +417,18 @@ PRICE-SHEET MATCHING RULES — follow these exactly, in order, for every distinc
 
 6. NAME EACH LINE ITEM AFTER THE MATCHED PRICE-SHEET TASK, and always include that item's priceSheetItemId on the line item. Don't invent a differently-worded label that merely happens to land on a similar number — the line item should make it obvious which price-sheet item it came from, and the id makes it verifiable.
 
-7. Every dollar figure in your response must come from a price-sheet item's own configured price, the labor rate, or the service call fee — never an invented number, even one that resembles a real one. For an "hourly"-priced item, also include that line item's "hours" field with the number of hours you reasoned the job will take — your "amount" must equal that item's rate × those hours.
+7. Every dollar figure in your response must come from a price-sheet item's own configured price, that item's own diagnosis fee, the labor rate, or the service call fee — never an invented number, even one that resembles a real one. For an "hourly"-priced item (or an hourly diagnosis fee), also include that line item's "hours" field with the number of hours you reasoned the job (or the diagnosis visit) will take — your "amount" must equal that rate × those hours.
 
 Worked examples, using a price sheet that has "[id: ps-1] Quick fix / minor repair — $60 [BUNDLEABLE]" (keywords include doorknob, towel bar) and a separate "[id: ps-2] Toilet / sink / tub unclogging — $60":
 - "I need a doorknob fixed and a towel bar reattached" → matchedServices: [{"customerIssue": "doorknob fixed", "priceSheetItemId": "ps-1"}, {"customerIssue": "towel bar reattached", "priceSheetItemId": "ps-1"}] → both point at the same bundleable item, so ONE line item: "Quick fix / minor repair — $60," priceSheetItemId "ps-1." Not $120, not $0, not split across two differently-named lines.
 - "I need a doorknob replaced and my kitchen sink drain unclogged" → matchedServices: [{"customerIssue": "doorknob replaced", "priceSheetItemId": "ps-1"}, {"customerIssue": "kitchen sink drain unclogged", "priceSheetItemId": "ps-2"}] → two different items, so TWO line items: "Quick fix / minor repair — $60" (priceSheetItemId "ps-1") AND "Toilet / sink / tub unclogging — $60" (priceSheetItemId "ps-2") — both fully priced, both present, neither omitted or folded into the service call.
+
+PER-SERVICE DIAGNOSIS FEE — some price-sheet items above carry their own [DIAGNOSIS FEE: ...] tag with its own id ("<item id>:diagnosis"). This is a business-configured alternative to the generic service call fee, specific to that one service, and it works like this:
+
+- If the customer's request likely matches a specific price-sheet item, but you genuinely cannot confidently price the FULL job without an in-person look (not just "I'd like more detail," but the price meaningfully depends on something only visible in person), AND that item has its own [DIAGNOSIS FEE: ...] tag: use that item's own "<item id>:diagnosis" id as the priceSheetItemId for a line item priced at that item's own diagnosis fee — flat exact amount, or rate × your reasoned "hours" if it's hourly — instead of asking a clarifying question purely to firm up a price an inspection will resolve anyway, and instead of the generic service call fee.
+- If the matching item has NO [DIAGNOSIS FEE: ...] tag, this doesn't apply — use the existing generic service call fee / clarifying-question behavior exactly as before.
+- Never charge both a "<item id>:diagnosis" line item AND that same item's own full-price line item in the same response — they represent the same visit at two different confidence levels, never two separate charges. If you have enough information to price the full job, use the item's own id at its full price; if you don't, use "<item id>:diagnosis" instead. Not both.
+- The diagnosis-fee amount is a credit toward that item's full price if the customer approves the complete job after an in-person inspection — wording only (see the service-call-credit language above; the same "goes toward the approved work" framing applies here), never something you compute or subtract yourself.
 
 MATERIALS POLICY — each price-sheet item above carries a materials policy, shown as [MATERIALS: ...] when it isn't the default. This is a business configuration decision, never yours to make: read the matched item's own policy and communicate it, never infer, change, or choose a different one based on the job, the photo, or anything the customer says.
 
@@ -429,7 +468,7 @@ or
 
 {"needsClarification": false, "outOfScope": false, "isEmergency": false, "issueType": "...", "severity": "Low|Medium|High", "confidence": "High|Medium|Low", "diagnosis": "...", "matchedServices": [{"customerIssue": "...", "priceSheetItemId": "..."}], "lineItems": [{"description": "...", "detail": "...", "amount": 120, "priceSheetItemId": "...", "hours": 1}]}
 
-("hours" on a lineItem is only meaningful/required for an "hourly"-priced match — omit it for flat/range matches. Do not include a "totalLow"/"totalHigh" field — the total is always the sum of your lineItems' amounts, computed for you, not something you report.)`;
+("hours" on a lineItem is only meaningful/required for an "hourly"-priced match or an hourly diagnosis fee — omit it for flat/range matches and flat diagnosis fees. Do not include a "totalLow"/"totalHigh" field — the total is always computed for you from your lineItems, not something you report.)`;
 }
 
 const AMOUNT_TOLERANCE = 0.01;
@@ -449,6 +488,7 @@ const SERVICE_CALL_SYNONYMS = ["service call", "diagnostic", "trip fee", "assess
 // service-call/diagnostic charge, or genuine matched repair work?"
 function isServiceCallLineItem(li: LineItem, priceSheet: PriceSheetItem[]): boolean {
   if (li.priceSheetItemId === SERVICE_CALL_SENTINEL_ID) return true;
+  if (li.priceSheetItemId && parseDiagnosisSentinelId(li.priceSheetItemId) != null) return true;
   const item = li.priceSheetItemId ? priceSheet.find((p) => p.id === li.priceSheetItemId) : undefined;
   if (!item) return false;
   const haystack = `${item.task} ${item.keywords.join(" ")}`.toLowerCase();
@@ -482,6 +522,15 @@ function validateQuoteAgainstPriceSheet(
   const failures: string[] = [];
   const byId = new Map(priceSheet.map((item) => [item.id, item]));
 
+  // A "<item id>:diagnosis" reference is only valid if that item actually
+  // has a diagnosisFee configured — a row without one offers no diagnosis
+  // tier to charge, so referencing it is exactly as invalid as a made-up id.
+  const isValidReferenceId = (id: string): boolean => {
+    if (id === SERVICE_CALL_SENTINEL_ID || byId.has(id)) return true;
+    const baseId = parseDiagnosisSentinelId(id);
+    return baseId != null && Boolean(byId.get(baseId)?.diagnosisFee);
+  };
+
   const matchedServices: MatchedService[] = Array.isArray(parsed.matchedServices)
     ? parsed.matchedServices
     : [];
@@ -491,9 +540,9 @@ function validateQuoteAgainstPriceSheet(
   for (const m of matchedServices) {
     const id = m?.priceSheetItemId;
     if (id == null) continue;
-    if (id !== SERVICE_CALL_SENTINEL_ID && !byId.has(id)) {
+    if (!isValidReferenceId(id)) {
       failures.push(
-        `matchedServices references unknown priceSheetItemId "${id}" — it must be an id literally shown in the price sheet, or "${SERVICE_CALL_SENTINEL_ID}", or null.`,
+        `matchedServices references unknown priceSheetItemId "${id}" — it must be an id literally shown in the price sheet, that item's own "<id>:diagnosis" id (only valid if it has a configured diagnosis fee), "${SERVICE_CALL_SENTINEL_ID}", or null.`,
       );
       continue;
     }
@@ -510,7 +559,7 @@ function validateQuoteAgainstPriceSheet(
       );
       continue;
     }
-    if (id !== SERVICE_CALL_SENTINEL_ID && !byId.has(id)) {
+    if (!isValidReferenceId(id)) {
       failures.push(`lineItem "${li?.description}" references unknown priceSheetItemId "${id}".`);
       continue;
     }
@@ -543,6 +592,18 @@ function validateQuoteAgainstPriceSheet(
     }
   }
 
+  // Never both a service's own diagnosis-fee line item AND its full-price
+  // line item in the same response — same visit, two confidence levels,
+  // never two charges (see PER-SERVICE DIAGNOSIS FEE in the prompt).
+  for (const id of actualIds) {
+    const baseId = parseDiagnosisSentinelId(id);
+    if (baseId != null && actualIds.has(baseId)) {
+      failures.push(
+        `Both "${baseId}" (full price) and "${id}" (diagnosis fee) appear as separate lineItems — these represent the same service at two different confidence levels, never two charges. Use only one.`,
+      );
+    }
+  }
+
   for (const li of lineItems) {
     const id = li?.priceSheetItemId;
     const amount = Number(li?.amount);
@@ -558,6 +619,35 @@ function validateQuoteAgainstPriceSheet(
       }
       continue;
     }
+    const diagnosisBaseId = id ? parseDiagnosisSentinelId(id) : null;
+    if (diagnosisBaseId != null) {
+      const item = byId.get(diagnosisBaseId);
+      const fee = item?.diagnosisFee;
+      if (!fee) continue; // already flagged above as an unknown/missing id
+      if (fee.pricingType === "flat") {
+        if (Math.abs(amount - fee.amount) > AMOUNT_TOLERANCE) {
+          failures.push(
+            `lineItem "${li.description}" (${item!.task} diagnosis fee, flat $${fee.amount}) has amount $${amount}, which doesn't match the configured diagnosis fee.`,
+          );
+        }
+      } else {
+        const hours = Number(li?.hours);
+        if (!Number.isFinite(hours) || hours <= 0) {
+          failures.push(
+            `lineItem "${li.description}" (${item!.task} diagnosis fee, hourly $${fee.amount}/hr) is missing a valid "hours" field needed to verify the amount.`,
+          );
+        } else {
+          const expected = fee.amount * hours;
+          if (Math.abs(amount - expected) > Math.max(AMOUNT_TOLERANCE, expected * 0.02)) {
+            failures.push(
+              `lineItem "${li.description}" (${item!.task} diagnosis fee, hourly $${fee.amount}/hr × ${hours}hr = $${expected.toFixed(2)} expected) has amount $${amount}, which doesn't match rate × hours.`,
+            );
+          }
+        }
+      }
+      continue;
+    }
+
     const item = id ? byId.get(id) : undefined;
     if (!item) continue; // already flagged above as an unknown/missing id
 

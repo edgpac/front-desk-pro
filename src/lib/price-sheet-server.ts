@@ -14,6 +14,8 @@ type PriceSheetItemRow = {
   hours: number;
   bundleable: boolean;
   materials_policy: MaterialsPolicy;
+  diagnosis_pricing_type: "flat" | "hourly" | null;
+  diagnosis_fee: number | null;
 };
 
 function toRow(item: PriceSheetItemRow): PriceSheetRow {
@@ -28,6 +30,9 @@ function toRow(item: PriceSheetItemRow): PriceSheetRow {
     hours: item.hours,
     bundleable: item.bundleable,
     materialsPolicy: item.materials_policy,
+    diagnosisFee: item.diagnosis_pricing_type
+      ? { pricingType: item.diagnosis_pricing_type, amount: item.diagnosis_fee ?? 0 }
+      : null,
   };
 }
 
@@ -43,7 +48,9 @@ export const listMyPriceSheet = createServerFn({ method: "GET" })
 
     const { data, error } = await context.supabase
       .from("price_sheet_items")
-      .select("id, task, category, keywords, pricing_type, price_min, price_max, hours, bundleable, materials_policy")
+      .select(
+        "id, task, category, keywords, pricing_type, price_min, price_max, hours, bundleable, materials_policy, diagnosis_pricing_type, diagnosis_fee",
+      )
       .eq("tenant_id", tenant.id)
       .order("sort_order", { ascending: true });
     if (error) throw new Error(`Could not load price sheet: ${error.message}`);
@@ -66,6 +73,7 @@ export const saveMyPriceSheet = createServerFn({ method: "POST" })
         hours: number;
         bundleable: boolean;
         materialsPolicy: MaterialsPolicy;
+        diagnosisFee: { pricingType: "flat" | "hourly"; amount: number } | null;
       }>;
     }) => input,
   )
@@ -97,6 +105,8 @@ export const saveMyPriceSheet = createServerFn({ method: "POST" })
         hours: item.hours,
         bundleable: item.bundleable,
         materials_policy: item.materialsPolicy,
+        diagnosis_pricing_type: item.diagnosisFee?.pricingType ?? null,
+        diagnosis_fee: item.diagnosisFee?.amount ?? null,
         sort_order: index,
       })),
     );
@@ -117,8 +127,11 @@ export type ExtractedPriceSheetItem = {
   bundleable: boolean;
   // Same reasoning as bundleable — a printed price list never states this;
   // always defaults to "included" on extraction, the owner changes it by
-  // hand afterward once the dashboard control exists.
+  // hand afterward on the dashboard.
   materialsPolicy: MaterialsPolicy;
+  // Same reasoning again — a printed price list never states a diagnosis
+  // fee; always null on extraction, the owner configures it by hand.
+  diagnosisFee: { pricingType: "flat" | "hourly"; amount: number } | null;
 };
 
 const VALID_PRICING_TYPES: PricingType[] = ["flat", "hourly", "range"];
@@ -197,6 +210,7 @@ function parseExtractedItems(raw: string): ExtractedPriceSheetItem[] {
       hours: Number(item["hours"]) || 1,
       bundleable: false,
       materialsPolicy: "included",
+      diagnosisFee: null,
     };
   });
 }
