@@ -343,7 +343,7 @@ CUSTOMER'S DESCRIPTION: "${input.description}"${answersBlock}
 THE BUSINESS'S OWN PRICE SHEET — this is the sole source of truth for what this business charges. Do not invent a price for anything that isn't reasonably covered by it:
 ${sheetLines || "(no price sheet provided)"}
 
-Service call fee: $${input.serviceCallFee} (covers the initial assessment; hours of genuinely unmatched work beyond the first hour are billed at $${input.laborRate}/hr). Its id, if you need to reference it as a line item's source, is "${SERVICE_CALL_SENTINEL_ID}" — never a price-sheet item's id. See PRICE-SHEET MATCHING RULES below for exactly how this relates to specifically-priced items — short version: it never replaces one. If a price-sheet item's own task name or keywords describe the same real-world concept as this service call fee (service call, diagnostic, trip fee, assessment, visit), that item supersedes the fee for this response — price it using that item's own id and configured price, and do not separately add the service-call-fee narrative on top; they are the same charge, not two. If your response includes a service-call/diagnostic-style line item alongside real matched repair work, make the diagnosis text clear that this fee goes toward the approved repair rather than reading as a separate, additional cost on top of it — wording only, this never changes lineItems amounts, totalLow, or totalHigh.
+Service call fee: $${input.serviceCallFee} (covers the initial assessment; hours of genuinely unmatched work beyond the first hour are billed at $${input.laborRate}/hr). Its id, if you need to reference it as a line item's source, is "${SERVICE_CALL_SENTINEL_ID}" — never a price-sheet item's id. See PRICE-SHEET MATCHING RULES below for exactly how this relates to specifically-priced items — short version: it never replaces one. If a price-sheet item's own task name or keywords describe the same real-world concept as this service call fee (service call, diagnostic, trip fee, assessment, visit), that item supersedes the fee for this response — price it using that item's own id and configured price, and do not separately add the service-call-fee narrative on top; they are the same charge, not two. If your response includes a service-call/diagnostic-style line item alongside real matched repair work, make the diagnosis text clear that this fee goes toward the approved repair rather than reading as a separate, additional cost on top of it — wording only, this never changes any lineItem's amount.
 
 PRICE-SHEET MATCHING RULES — follow these exactly, in order, for every distinct task in the request:
 
@@ -389,9 +389,9 @@ or
 
 or
 
-{"needsClarification": false, "outOfScope": false, "isEmergency": false, "issueType": "...", "severity": "Low|Medium|High", "confidence": "High|Medium|Low", "diagnosis": "...", "matchedServices": [{"customerIssue": "...", "priceSheetItemId": "..."}], "lineItems": [{"description": "...", "detail": "...", "amount": 120, "priceSheetItemId": "...", "hours": 1}], "totalLow": 100, "totalHigh": 140}
+{"needsClarification": false, "outOfScope": false, "isEmergency": false, "issueType": "...", "severity": "Low|Medium|High", "confidence": "High|Medium|Low", "diagnosis": "...", "matchedServices": [{"customerIssue": "...", "priceSheetItemId": "..."}], "lineItems": [{"description": "...", "detail": "...", "amount": 120, "priceSheetItemId": "...", "hours": 1}]}
 
-("hours" on a lineItem is only meaningful/required for an "hourly"-priced match — omit it for flat/range matches.)`;
+("hours" on a lineItem is only meaningful/required for an "hourly"-priced match — omit it for flat/range matches. Do not include a "totalLow"/"totalHigh" field — the total is always the sum of your lineItems' amounts, computed for you, not something you report.)`;
 }
 
 const AMOUNT_TOLERANCE = 0.01;
@@ -564,6 +564,14 @@ function validateQuoteAgainstPriceSheet(
 
 function buildQuoteResult(parsed: any): QuoteResult {
   const lineItems: LineItem[] = Array.isArray(parsed.lineItems) ? parsed.lineItems : [];
+  // Always the mechanical sum of the (already-validated) line items —
+  // never whatever Claude separately reported. Every line item already
+  // resolves to one specific, verified amount, so there is no remaining
+  // uncertainty for a "totalLow"/"totalHigh" spread to express; trusting a
+  // model-reported total independently of the itemized lines is exactly
+  // the class of bug this whole validation layer exists to close (a
+  // customer seeing a $209 headline over $120 of visible line items, with
+  // no way to tell where the other $89 came from).
   const total = lineItems.reduce((sum, i) => sum + (Number(i.amount) || 0), 0);
   return {
     needsClarification: false,
@@ -574,8 +582,8 @@ function buildQuoteResult(parsed: any): QuoteResult {
     confidence: parsed.confidence || "Medium",
     diagnosis: parsed.diagnosis || "",
     lineItems,
-    totalLow: parsed.totalLow ?? total,
-    totalHigh: parsed.totalHigh ?? total,
+    totalLow: total,
+    totalHigh: total,
   };
 }
 
