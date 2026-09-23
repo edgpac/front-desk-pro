@@ -69,6 +69,8 @@ function QuotePage() {
               businessName={tenant.name}
               laborRate={tenant.laborRate}
               serviceCallFee={tenant.serviceCallFee}
+              serviceCallFeeMode={tenant.serviceCallFeeMode}
+              currency={tenant.currency}
               bookingLink={tenant.calendarLink}
               priceSheet={tenant.priceSheet}
               tenantSlug={tenant.slug}

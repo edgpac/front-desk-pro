@@ -351,7 +351,7 @@ export async function resolveActiveMetaConnection(
   const { data, error } = await admin
     .from("whatsapp_connections")
     .select(
-      "id, meta_system_user_token, tenants!inner(id, slug, name, email, currency, labor_rate, service_call_fee)",
+      "id, meta_system_user_token, tenants!inner(id, slug, name, email, currency, labor_rate, service_call_fee, service_call_fee_mode)",
     )
     .eq("meta_phone_number_id", phoneNumberId)
     .eq("status", "online")
@@ -368,6 +368,7 @@ export async function resolveActiveMetaConnection(
     currency: string;
     labor_rate: number;
     service_call_fee: number;
+    service_call_fee_mode: "fixed" | "negotiated";
   };
   if (!accessToken || !tenantRow) return null;
 
@@ -382,6 +383,7 @@ export async function resolveActiveMetaConnection(
       currency: tenantRow.currency,
       laborRate: tenantRow.labor_rate,
       serviceCallFee: tenantRow.service_call_fee,
+      serviceCallFeeMode: tenantRow.service_call_fee_mode,
     },
   };
 }

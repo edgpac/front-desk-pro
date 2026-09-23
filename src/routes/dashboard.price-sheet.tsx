@@ -7,6 +7,7 @@ import { PageHeader, Panel } from "@/components/app/DashboardShell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useAuth } from "@/lib/use-auth";
+import { getMyTenant } from "@/lib/tenant-server";
 import {
   listMyPriceSheet,
   saveMyPriceSheet,
@@ -70,6 +71,7 @@ function newRow(): PriceSheetRow {
 function PriceSheetPage() {
   const { user, loading: authLoading } = useAuth();
   const [rows, setRows] = useState<PriceSheetRow[]>(PRICE_SHEET);
+  const [currency, setCurrency] = useState("USD");
   const [loading, setLoading] = useState(true);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -113,6 +115,15 @@ function PriceSheetPage() {
       })
       .finally(() => {
         if (active) setLoading(false);
+      });
+    getMyTenant()
+      .then((tenant) => {
+        if (active) setCurrency(tenant.currency);
+      })
+      .catch(() => {
+        // Non-fatal — the page still works with the USD default if this
+        // fails for some reason; the price sheet load above is what gates
+        // the loading state.
       });
     return () => {
       active = false;
@@ -332,7 +343,7 @@ function PriceSheetPage() {
                   />
                   <span className="text-sm text-muted-foreground">hrs</span>
                 </div>
-                <span className="ml-auto num text-sm font-semibold text-foreground">{formatPrice(row)}</span>
+                <span className="ml-auto num text-sm font-semibold text-foreground">{formatPrice(row, currency)}</span>
                 <button
                   onClick={() => removeRow(row.id)}
                   className="rounded-sm p-2.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"

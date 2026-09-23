@@ -97,6 +97,7 @@ function BusinessSettings() {
           warrantyTerms: form.warrantyTerms,
           laborRate: form.laborRate,
           serviceCallFee: form.serviceCallFee,
+          serviceCallFeeMode: form.serviceCallFeeMode,
           whatsappNumber: form.whatsappNumber,
         },
       });
@@ -234,17 +235,35 @@ function BusinessSettings() {
               What the AI quotes labor at when it prices a job.
             </span>
           </Field>
-          <Field label="Service call fee ($)">
-            <Input
-              type="number"
-              min={0}
-              step="0.01"
-              value={Number.isNaN(form.serviceCallFee) ? "" : form.serviceCallFee}
-              onChange={(e) => set("serviceCallFee", e.target.valueAsNumber)}
-            />
-            <span className="mt-1.5 block text-xs text-muted-foreground">
-              Added to every quote as the base call-out charge.
-            </span>
+          <Field label="Service call / diagnostic fee">
+            <select
+              value={form.serviceCallFeeMode}
+              onChange={(e) => set("serviceCallFeeMode", e.target.value as Tenant["serviceCallFeeMode"])}
+              className="h-10 w-full rounded-sm border border-border-strong bg-background px-2 text-sm"
+            >
+              <option value="fixed">Fixed price</option>
+              <option value="negotiated">Confirmed during the call</option>
+            </select>
+            {form.serviceCallFeeMode === "fixed" ? (
+              <>
+                <Input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  className="mt-2"
+                  value={Number.isNaN(form.serviceCallFee) ? "" : form.serviceCallFee}
+                  onChange={(e) => set("serviceCallFee", e.target.valueAsNumber)}
+                />
+                <span className="mt-1.5 block text-xs text-muted-foreground">
+                  Used when the AI charges a general assessment/diagnostic visit.
+                </span>
+              </>
+            ) : (
+              <span className="mt-1.5 block text-xs text-muted-foreground">
+                The service-call/diagnostic fee is confirmed with the customer when scheduling. No fixed amount
+                will be shown in estimates.
+              </span>
+            )}
           </Field>
 
           <Field label="WhatsApp number" className="sm:col-span-2">

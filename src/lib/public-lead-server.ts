@@ -33,6 +33,7 @@ export type QuoteTenant = {
   currency: string;
   laborRate: number;
   serviceCallFee: number;
+  serviceCallFeeMode: "fixed" | "negotiated";
   calendarLink: string;
   priceSheet: PriceSheetItem[];
 };
@@ -51,7 +52,9 @@ export const getTenantForQuote = createServerFn({ method: "GET" })
 
     const { data: tenant, error: tenantError } = await admin
       .from("tenants")
-      .select("id, user_id, name, slug, currency, labor_rate, service_call_fee, calendar_link")
+      .select(
+        "id, user_id, name, slug, currency, labor_rate, service_call_fee, service_call_fee_mode, calendar_link",
+      )
       .eq("slug", slug)
       .single();
     if (tenantError || !tenant) {
@@ -88,6 +91,7 @@ export const getTenantForQuote = createServerFn({ method: "GET" })
       currency: tenant.currency as string,
       laborRate: tenant.labor_rate as number,
       serviceCallFee: tenant.service_call_fee as number,
+      serviceCallFeeMode: tenant.service_call_fee_mode as "fixed" | "negotiated",
       calendarLink: tenant.calendar_link as string,
       priceSheet: (items ?? []).map((item) => ({
         id: item["id"] as string,

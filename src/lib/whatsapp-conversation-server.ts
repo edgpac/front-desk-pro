@@ -56,6 +56,7 @@ export type InboundWhatsAppTenant = {
   currency: string;
   laborRate: number;
   serviceCallFee: number;
+  serviceCallFeeMode: "fixed" | "negotiated";
 };
 
 export async function handleInboundWhatsAppMessage(params: {
@@ -160,6 +161,7 @@ export async function handleInboundWhatsAppMessage(params: {
           businessName: tenant.name,
           laborRate: tenant.laborRate,
           serviceCallFee: tenant.serviceCallFee,
+          serviceCallFeeMode: tenant.serviceCallFeeMode,
           priceSheet: clarifyPriceSheet,
           description: openLead.problem,
           imageBase64: clarifyImageBase64,
@@ -368,6 +370,7 @@ export async function handleInboundWhatsAppMessage(params: {
         businessName: tenant.name,
         laborRate: tenant.laborRate,
         serviceCallFee: tenant.serviceCallFee,
+        serviceCallFeeMode: tenant.serviceCallFeeMode,
         priceSheet,
         description: body || NO_DESCRIPTION_PLACEHOLDER,
         imageBase64,

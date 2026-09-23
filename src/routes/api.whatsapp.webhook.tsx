@@ -67,7 +67,7 @@ export const Route = createFileRoute("/api/whatsapp/webhook")({
         // below instead of ever being mistaken for the intended recipient.
         const { data: tenant, error: tenantError } = await admin
           .from("tenants")
-          .select("id, slug, name, email, currency, labor_rate, service_call_fee")
+          .select("id, slug, name, email, currency, labor_rate, service_call_fee, service_call_fee_mode")
           .eq("whatsapp_number", toPhone)
           .single();
         if (tenantError || !tenant) {
@@ -85,6 +85,7 @@ export const Route = createFileRoute("/api/whatsapp/webhook")({
               currency: tenant.currency,
               laborRate: tenant.labor_rate,
               serviceCallFee: tenant.service_call_fee,
+              serviceCallFeeMode: tenant.service_call_fee_mode,
             },
             fromPhone,
             body,

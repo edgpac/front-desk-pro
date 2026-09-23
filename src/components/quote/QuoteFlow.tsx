@@ -66,6 +66,8 @@ export function QuoteFlow({
   compact = false,
   laborRate = 125,
   serviceCallFee = 60,
+  serviceCallFeeMode = "fixed",
+  currency = "USD",
   priceSheet = SAMPLE_PRICE_SHEET,
   tenantSlug,
   channel = "Quote link",
@@ -76,6 +78,8 @@ export function QuoteFlow({
   compact?: boolean;
   laborRate?: number;
   serviceCallFee?: number;
+  serviceCallFeeMode?: "fixed" | "negotiated";
+  currency?: string;
   priceSheet?: PriceSheetItem[];
   tenantSlug?: string;
   // Which intake surface this instance is running on — threaded straight
@@ -142,6 +146,7 @@ export function QuoteFlow({
           businessName,
           laborRate,
           serviceCallFee,
+          serviceCallFeeMode,
           priceSheet,
           description,
           imageBase64: base64,
@@ -534,7 +539,7 @@ export function QuoteFlow({
           )}
           <p className="label-caps text-primary">{result.isDiagnosisOnly ? "Diagnosis visit fee" : "Your estimate"}</p>
           <p className="num mt-2 font-display text-4xl font-extrabold text-foreground">
-            {money(result.totalLow)} – {money(result.totalHigh)}
+            {money(result.totalLow, currency)} – {money(result.totalHigh, currency)}
           </p>
           {result.isDiagnosisOnly ? (
             <p className="mt-1.5 text-sm text-muted-foreground">
@@ -561,7 +566,7 @@ export function QuoteFlow({
                   <span className="block text-sm font-medium text-foreground">{i.description}</span>
                   <span className="block text-xs text-muted-foreground">{i.detail}</span>
                 </span>
-                <span className="num text-sm font-semibold text-foreground">{money(i.amount)}</span>
+                <span className="num text-sm font-semibold text-foreground">{money(i.amount, currency)}</span>
               </li>
             ))}
           </ul>

@@ -93,6 +93,7 @@ function GetStarted() {
           warrantyTerms: tenant.warrantyTerms,
           laborRate,
           serviceCallFee,
+          serviceCallFeeMode: tenant.serviceCallFeeMode,
           whatsappNumber,
         },
       });

@@ -63,6 +63,12 @@ export type QuoteInput = {
   businessName: string;
   laborRate: number;
   serviceCallFee: number;
+  // Business-configured, tenant-level — never AI-chosen. "fixed" is today's
+  // behavior unchanged (serviceCallFee is a real, quotable number). See
+  // buildPrompt/validateQuoteAgainstPriceSheet for exactly what "negotiated"
+  // changes: the AI must never state or charge a dollar amount for the
+  // generic service-call/diagnostic fee at all.
+  serviceCallFeeMode: "fixed" | "negotiated";
   priceSheet: PriceSheetItem[];
   description: string;
   imageBase64?: string | undefined;
@@ -384,6 +390,26 @@ function buildPrompt(input: QuoteInput): string {
   const hasPhoto = Boolean(input.imageBase64);
   const hasDescription = input.description.trim() !== NO_DESCRIPTION_PLACEHOLDER;
   const isFirstRound = !input.answers?.length;
+
+  // Business-configured, tenant-level, never AI-chosen — see
+  // QuoteInput.serviceCallFeeMode. "fixed" is the original, unchanged
+  // behavior (a real quotable number). "negotiated" is for businesses whose
+  // diagnostic/service-call charge depends on the conversation with the
+  // customer rather than being one flat number — the AI must never invent,
+  // state, or charge a dollar amount for it in that mode.
+  const serviceCallSection =
+    input.serviceCallFeeMode === "negotiated"
+      ? `This business's generic service call/diagnostic fee is NOT a fixed amount — it depends on the conversation with the customer, so it is deliberately unknown to you. The sentinel id "${SERVICE_CALL_SENTINEL_ID}" is INVALID in this mode: never use it as a priceSheetItemId in matchedServices or lineItems, never state or invent a dollar figure for it (not $89, not any other number, not a guess, not a range), and never create a priced line item for it. If a price-sheet item's own task name or keywords describe the same real-world concept as this generic fee (service call, diagnostic, trip fee, assessment, visit), that item still supersedes it and IS priced normally using that item's own id and configured price — this only concerns the generic, unmatched case.
+
+A described problem you can't confidently diagnose without seeing it in person, but that's still plausibly something this business would handle, is NOT a null match and is NOT something to silently drop — enumerate it in matchedServices with priceSheetItemId: null, which in this mode specifically means "acknowledged, pricing deferred" (never "nothing on the price sheet covers this"). In the diagnosis text, in natural language appropriate to the customer (and their language, if not English), say plainly that a service-call/diagnostic fee applies and the exact amount will be confirmed when the business contacts them to schedule — no dollar amount, ever, anywhere in your response for this. Never say it is credited toward, applied toward, or deducted from any other line item's price, and never imply a "remaining balance" — there is nothing to do that arithmetic with, since no amount was ever stated. Any other, separately matched and fully-priced work in the same response stays exactly as priced, completely unaffected by this — not discounted, not credited, not combined with it in any way. A true null match (mentioned in the diagnosis, no line item, no fee language at all) is still reserved for something this business's price sheet gives no real indication it would ever handle at all — a categorically different kind of work.`
+      : `Service call fee: $${input.serviceCallFee} (covers the initial assessment; hours of genuinely unmatched work beyond the first hour are billed at $${input.laborRate}/hr). Its id, if you need to reference it as a line item's source, is "${SERVICE_CALL_SENTINEL_ID}" — never a price-sheet item's id. See PRICE-SHEET MATCHING RULES below for exactly how this relates to specifically-priced items — short version: it never replaces one. If a price-sheet item's own task name or keywords describe the same real-world concept as this service call fee (service call, diagnostic, trip fee, assessment, visit), that item supersedes the fee for this response — price it using that item's own id and configured price, and do not separately add the service-call-fee narrative on top; they are the same charge, not two. If your response includes a service-call/diagnostic-style line item alongside real matched repair work, make the diagnosis text clear that this fee goes toward the approved repair rather than reading as a separate, additional cost on top of it — wording only, this never changes any lineItem's amount.
+
+A described problem you can't confidently diagnose without seeing it in person, but that's still plausibly something this business would handle (an appliance acting up, a system not working right, anything within the general kind of work this price sheet implies) is NOT a null match — match it to the service call fee ("${SERVICE_CALL_SENTINEL_ID}", or a specific item's own "<id>:diagnosis" id if one clearly applies) as a REAL matchedServices/lineItems entry, priced in full, exactly like any other matched charge. Never describe an assessment, diagnostic visit, or "we'll need to take a look" in the diagnosis text without an actual corresponding line item backing it — if you're not confident enough to charge for it, you're not confident enough to narrate it as something the customer will be charged for either. A true null match (mentioned in the diagnosis, no charge, no line item) is reserved for something this business's price sheet gives no real indication it would ever handle at all — a categorically different kind of work, not merely an unclear description of an in-scope one.`;
+
+  const serviceCallIdRuleText =
+    input.serviceCallFeeMode === "negotiated"
+      ? `that item's own "<id>:diagnosis" id if you're charging its per-service diagnosis fee instead (see PER-SERVICE DIAGNOSIS FEE below), or null if nothing reasonably covers it (in this tenant's negotiated service-call mode, null also correctly covers "acknowledged, pricing deferred" — see the service-call section above; "${SERVICE_CALL_SENTINEL_ID}" is NOT a valid id in this mode)`
+      : `that item's own "<id>:diagnosis" id if you're charging its per-service diagnosis fee instead (see PER-SERVICE DIAGNOSIS FEE below), "${SERVICE_CALL_SENTINEL_ID}" for the generic service call fee, or null if nothing reasonably covers it`;
   const photoStatus =
     hasPhoto && hasDescription
       ? "A customer sent a photo and a description of a problem."
@@ -400,15 +426,13 @@ CUSTOMER'S DESCRIPTION: "${input.description}"${answersBlock}
 THE BUSINESS'S OWN PRICE SHEET — this is the sole source of truth for what this business charges. Do not invent a price for anything that isn't reasonably covered by it:
 ${sheetLines || "(no price sheet provided)"}
 
-Service call fee: $${input.serviceCallFee} (covers the initial assessment; hours of genuinely unmatched work beyond the first hour are billed at $${input.laborRate}/hr). Its id, if you need to reference it as a line item's source, is "${SERVICE_CALL_SENTINEL_ID}" — never a price-sheet item's id. See PRICE-SHEET MATCHING RULES below for exactly how this relates to specifically-priced items — short version: it never replaces one. If a price-sheet item's own task name or keywords describe the same real-world concept as this service call fee (service call, diagnostic, trip fee, assessment, visit), that item supersedes the fee for this response — price it using that item's own id and configured price, and do not separately add the service-call-fee narrative on top; they are the same charge, not two. If your response includes a service-call/diagnostic-style line item alongside real matched repair work, make the diagnosis text clear that this fee goes toward the approved repair rather than reading as a separate, additional cost on top of it — wording only, this never changes any lineItem's amount.
-
-A described problem you can't confidently diagnose without seeing it in person, but that's still plausibly something this business would handle (an appliance acting up, a system not working right, anything within the general kind of work this price sheet implies) is NOT a null match — match it to the service call fee ("${SERVICE_CALL_SENTINEL_ID}", or a specific item's own "<id>:diagnosis" id if one clearly applies) as a REAL matchedServices/lineItems entry, priced in full, exactly like any other matched charge. Never describe an assessment, diagnostic visit, or "we'll need to take a look" in the diagnosis text without an actual corresponding line item backing it — if you're not confident enough to charge for it, you're not confident enough to narrate it as something the customer will be charged for either. A true null match (mentioned in the diagnosis, no charge, no line item) is reserved for something this business's price sheet gives no real indication it would ever handle at all — a categorically different kind of work, not merely an unclear description of an in-scope one.
+${serviceCallSection}
 
 PRICE-SHEET MATCHING RULES — follow these exactly, in order, for every distinct task in the request:
 
-1. FIRST, ENUMERATE — DO NOT SKIP TO THE ANSWER. Before deciding anything else, list every distinct issue/task the customer described as a "matchedServices" entry: {"customerIssue": "<the issue, in your own words>", "priceSheetItemId": "<the exact id shown in brackets next to the matching price-sheet item, that item's own "<id>:diagnosis" id if you're charging its per-service diagnosis fee instead (see PER-SERVICE DIAGNOSIS FEE below), "${SERVICE_CALL_SENTINEL_ID}" for the generic service call fee, or null if nothing reasonably covers it>"}. Always use the literal id string shown in the price sheet above — never the task name, never an invented id. This goes in your response BEFORE lineItems, in the order the issues were described. Do this enumeration explicitly — never jump straight to a summarized lineItems array without it.
+1. FIRST, ENUMERATE — DO NOT SKIP TO THE ANSWER. Before deciding anything else, list every distinct issue/task the customer described as a "matchedServices" entry: {"customerIssue": "<the issue, in your own words>", "priceSheetItemId": "<the exact id shown in brackets next to the matching price-sheet item, ${serviceCallIdRuleText}>"}. Always use the literal id string shown in the price sheet above — never the task name, never an invented id. This goes in your response BEFORE lineItems, in the order the issues were described. Do this enumeration explicitly — never jump straight to a summarized lineItems array without it.
 
-2. KEYWORDS ARE THE PRIMARY MATCH SIGNAL, BUT THE ROW MUST STILL BE THE SAME KIND OF WORK. If the customer's task contains or clearly corresponds to a keyword listed on a price-sheet item, that item is the correct match — even if a different item's task NAME sounds more specific or more semantically related. Real keyword evidence always outweighs a name that merely sounds similar. This does NOT mean any keyword overlap is automatically a valid match, though: a shared object/appliance name (e.g. "garbage disposal," "dishwasher," "water heater") is not enough on its own if the row describes a fundamentally different kind of work than what's being asked — a row for installing a brand-new unit does not become the correct match just because the customer's existing unit shares that name and is malfunctioning. If nothing on the sheet actually covers the kind of work requested (diagnosing/repairing an existing unit vs. installing a new one, for example), treat it per the "described problem you can't confidently diagnose" guidance above — a real service-call-fee line item, not a forced match to a differently-scoped row and not an invented price.
+2. KEYWORDS ARE THE PRIMARY MATCH SIGNAL, BUT THE ROW MUST STILL BE THE SAME KIND OF WORK. If the customer's task contains or clearly corresponds to a keyword listed on a price-sheet item, that item is the correct match — even if a different item's task NAME sounds more specific or more semantically related. Real keyword evidence always outweighs a name that merely sounds similar. This does NOT mean any keyword overlap is automatically a valid match, though: a shared object/appliance name (e.g. "garbage disposal," "dishwasher," "water heater") is not enough on its own if the row describes a fundamentally different kind of work than what's being asked — a row for installing a brand-new unit does not become the correct match just because the customer's existing unit shares that name and is malfunctioning. If nothing on the sheet actually covers the kind of work requested (diagnosing/repairing an existing unit vs. installing a new one, for example), treat it per the "described problem you can't confidently diagnose" guidance in the service-call section above — never a forced match to a differently-scoped row and never an invented price.
 
 3. LINEITEMS IS DERIVED STRICTLY FROM MATCHEDSERVICES. One line item per unique non-null priceSheetItemId in matchedServices, and every lineItem must carry that same priceSheetItemId. The only merge allowed: multiple matchedServices entries pointing at the SAME [BUNDLEABLE] item's id collapse into that one item's one line item, charged its full configured price — never $0, never once per issue. Every other non-null priceSheetItemId gets its own line item, full stop. A matchedServices entry with a non-null priceSheetItemId that has no corresponding lineItems entry is a bug — never fewer line items than this because a task got mentioned only in the diagnosis, only inside another line's description text, or absorbed into the service call.
 
@@ -424,7 +448,7 @@ Worked examples, using a price sheet that has "[id: ps-1] Quick fix / minor repa
 - "I need a doorknob fixed and a towel bar reattached" → matchedServices: [{"customerIssue": "doorknob fixed", "priceSheetItemId": "ps-1"}, {"customerIssue": "towel bar reattached", "priceSheetItemId": "ps-1"}] → both point at the same bundleable item, so ONE line item: "Quick fix / minor repair — $60," priceSheetItemId "ps-1." Not $120, not $0, not split across two differently-named lines.
 - "I need a doorknob replaced and my kitchen sink drain unclogged" → matchedServices: [{"customerIssue": "doorknob replaced", "priceSheetItemId": "ps-1"}, {"customerIssue": "kitchen sink drain unclogged", "priceSheetItemId": "ps-2"}] → two different items, so TWO line items: "Quick fix / minor repair — $60" (priceSheetItemId "ps-1") AND "Toilet / sink / tub unclogging — $60" (priceSheetItemId "ps-2") — both fully priced, both present, neither omitted or folded into the service call.
 
-PER-SERVICE DIAGNOSIS FEE — some price-sheet items above carry their own [DIAGNOSIS FEE: ...] tag with its own id ("<item id>:diagnosis"). This is a business-configured alternative to the generic service call fee, specific to that one service, and it works like this:
+PER-SERVICE DIAGNOSIS FEE — some price-sheet items above carry their own [DIAGNOSIS FEE: ...] tag with its own id ("<item id>:diagnosis"). This is a business-configured alternative to the generic service call fee, specific to that one service, and it works exactly the same way (a real, priced, quotable amount) regardless of whether the tenant's generic service-call fee itself is fixed or negotiated — the two are independent, and a row's own configured diagnosis fee is never affected by the generic mode:
 
 - If the customer's request likely matches a specific price-sheet item, but you genuinely cannot confidently price the FULL job without an in-person look (not just "I'd like more detail," but the price meaningfully depends on something only visible in person), AND that item has its own [DIAGNOSIS FEE: ...] tag: use that item's own "<item id>:diagnosis" id as the priceSheetItemId for a line item priced at that item's own diagnosis fee — flat exact amount, or rate × your reasoned "hours" if it's hourly — instead of asking a clarifying question purely to firm up a price an inspection will resolve anyway, and instead of the generic service call fee.
 - If the matching item has NO [DIAGNOSIS FEE: ...] tag, this doesn't apply — use the existing generic service call fee / clarifying-question behavior exactly as before.
@@ -507,6 +531,49 @@ const CREDIT_WORDING_INDICATORS = [
   "deducted from",
 ];
 
+// Indicators that a tenant's "negotiated" service-call/diagnostic fee was
+// correctly described as amount-deferred rather than a fixed number. Kept
+// intentionally distinct from CREDIT_WORDING_INDICATORS — "confirmed when
+// we contact you" is the correct negotiated framing; "applies toward" is
+// fixed-mode credit framing and should never appear for a fee with no
+// actual amount to credit.
+//
+// Covers all three languages buildPrompt can actually instruct the model to
+// respond in (see detectLanguage/LANGUAGE_NAME below) — an English-only list
+// would fail this check on essentially every Spanish-language response,
+// which matters directly here since negotiated mode's first real tenant
+// (a Mexico-based business) will get mostly Spanish customer messages. The
+// older CREDIT_WORDING_INDICATORS/RECEIPT_POLICY_INDICATORS/
+// INSPECTION_POLICY_INDICATORS checks have this same English-only gap —
+// out of scope to fix here, flagged separately, not silently left broken.
+const NEGOTIATED_WORDING_INDICATORS = [
+  // English
+  "confirmed",
+  "confirm",
+  "when we contact",
+  "when we call",
+  "when scheduling",
+  "at scheduling",
+  "to be confirmed",
+  // Spanish
+  "confirmado",
+  "confirmaremos",
+  "confirmará",
+  "se confirmará",
+  "por confirmar",
+  "al programar",
+  "al agendar",
+  "cuando nos comuniquemos",
+  "cuando te contactemos",
+  "cuando lo contactemos",
+  // Hebrew
+  "יאושר",
+  "נאשר",
+  "בעת התיאום",
+  "כשניצור קשר",
+  "כשנתאם",
+];
+
 // Wording indicators for the two non-"included" materials policies — same
 // soft-check shape as CREDIT_WORDING_INDICATORS above: nothing here checks
 // a dollar amount (that's already covered by the per-item price validation
@@ -519,6 +586,7 @@ function validateQuoteAgainstPriceSheet(
   parsed: { matchedServices?: unknown; lineItems?: unknown; diagnosis?: unknown },
   priceSheet: PriceSheetItem[],
   serviceCallFee: number,
+  serviceCallFeeMode: "fixed" | "negotiated",
 ): string[] {
   const failures: string[] = [];
   const byId = new Map(priceSheet.map((item) => [item.id, item]));
@@ -526,8 +594,15 @@ function validateQuoteAgainstPriceSheet(
   // A "<item id>:diagnosis" reference is only valid if that item actually
   // has a diagnosisFee configured — a row without one offers no diagnosis
   // tier to charge, so referencing it is exactly as invalid as a made-up id.
+  // The generic SERVICE_CALL_SENTINEL_ID is only a valid reference at all
+  // when this tenant's fee is "fixed" — in "negotiated" mode there is no
+  // number to charge, so the sentinel is structurally invalid, exactly like
+  // an unknown/invented id. This is the hard enforcement point: it's
+  // impossible for a priced service-call line item to survive validation in
+  // negotiated mode, regardless of what the prompt says.
   const isValidReferenceId = (id: string): boolean => {
-    if (id === SERVICE_CALL_SENTINEL_ID || byId.has(id)) return true;
+    if (id === SERVICE_CALL_SENTINEL_ID) return serviceCallFeeMode === "fixed";
+    if (byId.has(id)) return true;
     const baseId = parseDiagnosisSentinelId(id);
     return baseId != null && Boolean(byId.get(baseId)?.diagnosisFee);
   };
@@ -543,7 +618,9 @@ function validateQuoteAgainstPriceSheet(
     if (id == null) continue;
     if (!isValidReferenceId(id)) {
       failures.push(
-        `matchedServices references unknown priceSheetItemId "${id}" — it must be an id literally shown in the price sheet, that item's own "<id>:diagnosis" id (only valid if it has a configured diagnosis fee), "${SERVICE_CALL_SENTINEL_ID}", or null.`,
+        id === SERVICE_CALL_SENTINEL_ID
+          ? `matchedServices references "${SERVICE_CALL_SENTINEL_ID}" but this tenant's service_call_fee_mode is "negotiated" — the generic service-call fee has no fixed amount and must never be used as a priced reference. Use priceSheetItemId: null instead (acknowledged, pricing deferred) and describe it in the diagnosis with no dollar amount.`
+          : `matchedServices references unknown priceSheetItemId "${id}" — it must be an id literally shown in the price sheet, that item's own "<id>:diagnosis" id (only valid if it has a configured diagnosis fee), "${SERVICE_CALL_SENTINEL_ID}" (only valid when service_call_fee_mode is "fixed"), or null.`,
       );
       continue;
     }
@@ -561,7 +638,11 @@ function validateQuoteAgainstPriceSheet(
       continue;
     }
     if (!isValidReferenceId(id)) {
-      failures.push(`lineItem "${li?.description}" references unknown priceSheetItemId "${id}".`);
+      failures.push(
+        id === SERVICE_CALL_SENTINEL_ID
+          ? `lineItem "${li?.description}" uses "${SERVICE_CALL_SENTINEL_ID}" as a priced charge, but this tenant's service_call_fee_mode is "negotiated" — this must never appear as a priced lineItem. Remove it and instead describe the service-call/diagnostic fee in the diagnosis text as confirmed later, with no dollar amount.`
+          : `lineItem "${li?.description}" references unknown priceSheetItemId "${id}".`,
+      );
       continue;
     }
     actualIds.add(id);
@@ -613,7 +694,11 @@ function validateQuoteAgainstPriceSheet(
       continue;
     }
     if (id === SERVICE_CALL_SENTINEL_ID) {
-      if (Math.abs(amount - serviceCallFee) > AMOUNT_TOLERANCE) {
+      // In "negotiated" mode this id is already flagged as invalid above
+      // (isValidReferenceId) and never reaches actualIds — checking its
+      // amount here too would just be a redundant, confusing second failure
+      // for the same root cause, so skip it entirely in that mode.
+      if (serviceCallFeeMode === "fixed" && Math.abs(amount - serviceCallFee) > AMOUNT_TOLERANCE) {
         failures.push(
           `lineItem "${li.description}" uses the service call fee but amount $${amount} doesn't match the configured service call fee $${serviceCallFee}.`,
         );
@@ -695,6 +780,8 @@ function validateQuoteAgainstPriceSheet(
   const mentionsCredit = CREDIT_WORDING_INDICATORS.some((phrase) => diagnosisText.includes(phrase));
   const mentionsServiceCallLanguage = SERVICE_CALL_SYNONYMS.some((syn) => diagnosisText.includes(syn));
   if (hasServiceCallLine && hasOtherWork) {
+    // Only reachable in "fixed" mode — hasServiceCallLine can never be true
+    // in "negotiated" mode (the sentinel is structurally invalid there).
     if (!mentionsCredit) {
       failures.push(
         "The diagnosis includes a service-call/diagnostic charge alongside real repair work but doesn't state that the fee applies toward the approved repair — add that language to the diagnosis text (wording only, don't change any amounts).",
@@ -707,9 +794,24 @@ function validateQuoteAgainstPriceSheet(
     // real dollar total (computed from lineItems alone) is unaffected. Just
     // as much a correctness problem as an under- or over-charge, since the
     // customer reads this text as describing what they're actually paying.
+    // Also the correct catch for "negotiated" mode if the model ever slips
+    // into fixed-mode-style credit phrasing there — there's nothing valid
+    // to credit when no amount was ever stated.
     failures.push(
       "The diagnosis describes a service-call/diagnostic fee being charged or credited toward the work, but no such lineItem exists in your response — either add the corresponding lineItem if a service-call charge is genuinely intended, or remove that language from the diagnosis entirely.",
     );
+  } else if (serviceCallFeeMode === "negotiated" && !hasServiceCallLine && mentionsServiceCallLanguage) {
+    // Service-call/diagnostic language is present (the situation genuinely
+    // called for it) and it's correctly NOT phrased as a credit/charge (the
+    // branch above would have caught that) — but it must still say the
+    // amount is deferred/confirmed later, not just mention "diagnostic"
+    // with no explanation of what happens about pricing.
+    const mentionsNegotiated = NEGOTIATED_WORDING_INDICATORS.some((phrase) => diagnosisText.includes(phrase));
+    if (!mentionsNegotiated) {
+      failures.push(
+        `The diagnosis describes a service-call/diagnostic situation, and this tenant's service_call_fee_mode is "negotiated", but the text doesn't say the fee will be confirmed when the business contacts the customer to schedule — add that language (in the customer's own language), still with no dollar amount.`,
+      );
+    }
   }
 
   // Materials-policy wording check — same soft-check shape as the
@@ -853,7 +955,7 @@ export const getQuoteEstimate = createServerFn({ method: "POST" })
       return { needsClarification: false, outOfScope: true };
     }
 
-    const failures1 = validateQuoteAgainstPriceSheet(parsed1, data.priceSheet, data.serviceCallFee);
+    const failures1 = validateQuoteAgainstPriceSheet(parsed1, data.priceSheet, data.serviceCallFee, data.serviceCallFeeMode);
     if (failures1.length === 0) {
       return buildQuoteResult(parsed1, data.priceSheet);
     }
@@ -879,7 +981,7 @@ export const getQuoteEstimate = createServerFn({ method: "POST" })
       return { needsClarification: false, outOfScope: true };
     }
 
-    const failures2 = validateQuoteAgainstPriceSheet(parsed2, data.priceSheet, data.serviceCallFee);
+    const failures2 = validateQuoteAgainstPriceSheet(parsed2, data.priceSheet, data.serviceCallFee, data.serviceCallFeeMode);
     if (failures2.length > 0) {
       console.error("Quote failed validation twice, refusing to return it:", failures2);
       throw new Error("Couldn't put together a reliable estimate for that — try rephrasing, or the business will follow up manually.");

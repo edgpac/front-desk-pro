@@ -18,6 +18,7 @@ type TenantRow = {
   warranty_terms: string;
   labor_rate: number;
   service_call_fee: number;
+  service_call_fee_mode: "fixed" | "negotiated";
   whatsapp_number: string | null;
 };
 
@@ -38,6 +39,7 @@ function toTenant(row: TenantRow): Tenant {
     taxRate: row.tax_rate,
     laborRate: row.labor_rate,
     serviceCallFee: row.service_call_fee,
+    serviceCallFeeMode: row.service_call_fee_mode,
     whatsappNumber: row.whatsapp_number ?? "",
     brandColor: "#B4531F",
   };
@@ -75,7 +77,7 @@ export const getMyTenant = createServerFn({ method: "GET" })
     const { data, error } = await context.supabase
       .from("tenants")
       .select(
-        "name, slug, trade, phone, email, address, area, hours, currency, tax_rate, calendar_link, payment_terms, warranty_terms, labor_rate, service_call_fee, whatsapp_number",
+        "name, slug, trade, phone, email, address, area, hours, currency, tax_rate, calendar_link, payment_terms, warranty_terms, labor_rate, service_call_fee, service_call_fee_mode, whatsapp_number",
       )
       .eq("user_id", context.userId)
       .single();
@@ -101,6 +103,7 @@ export const updateMyTenant = createServerFn({ method: "POST" })
       warrantyTerms: string;
       laborRate: number;
       serviceCallFee: number;
+      serviceCallFeeMode: "fixed" | "negotiated";
       whatsappNumber: string;
     }) => input,
   )
@@ -134,6 +137,7 @@ export const updateMyTenant = createServerFn({ method: "POST" })
         warranty_terms: data.warrantyTerms,
         labor_rate: data.laborRate,
         service_call_fee: data.serviceCallFee,
+        service_call_fee_mode: data.serviceCallFeeMode,
         whatsapp_number: normalizedWhatsapp || null,
       })
       .eq("user_id", context.userId);

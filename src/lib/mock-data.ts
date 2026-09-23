@@ -266,6 +266,10 @@ export type Tenant = {
   taxRate: number;
   laborRate: number;
   serviceCallFee: number;
+  // Business-configured, tenant-level — never AI-inferred or AI-chosen. See
+  // estimate-server.ts's buildPrompt for how "fixed" vs "negotiated" changes
+  // the AI's service-call/diagnostic-fee behavior.
+  serviceCallFeeMode: "fixed" | "negotiated";
   whatsappNumber: string;
 };
 
@@ -286,6 +290,7 @@ export const TENANT: Tenant = {
   taxRate: 8.25,
   laborRate: 125,
   serviceCallFee: 89,
+  serviceCallFeeMode: "fixed",
   whatsappNumber: "",
 };
 
