@@ -272,7 +272,7 @@ CUSTOMER'S DESCRIPTION: "${input.description}"${answersBlock}
 THE BUSINESS'S OWN PRICE SHEET — this is the sole source of truth for what this business charges. Do not invent a price for anything that isn't reasonably covered by it:
 ${sheetLines || "(no price sheet provided)"}
 
-Service call fee: $${input.serviceCallFee} (covers the initial assessment; hours of genuinely unmatched work beyond the first hour are billed at $${input.laborRate}/hr). See PRICE-SHEET MATCHING RULES below for exactly how this relates to specifically-priced items — short version: it never replaces one.
+Service call fee: $${input.serviceCallFee} (covers the initial assessment; hours of genuinely unmatched work beyond the first hour are billed at $${input.laborRate}/hr). See PRICE-SHEET MATCHING RULES below for exactly how this relates to specifically-priced items — short version: it never replaces one. If your response includes a service-call/diagnostic-style line item alongside real matched repair work, make the diagnosis text clear that this fee goes toward the approved repair rather than reading as a separate, additional cost on top of it — wording only, this never changes lineItems amounts, totalLow, or totalHigh.
 
 PRICE-SHEET MATCHING RULES — follow these exactly, in order, for every distinct task in the request:
 
