@@ -186,6 +186,39 @@ export const SAMPLE_PRICE_SHEET: PriceSheetItem[] = [
 
 const MAX_DESCRIPTION_LENGTH = 2000;
 
+// Same wording as image-client.ts's client-side check (duplicated
+// intentionally — see that file's comment). This is the actual enforced
+// invariant: getQuoteEstimate is a public server function reachable
+// directly by /quote, /widget, and WhatsApp (via handleInboundWhatsAppMessage),
+// so the client-side check alone isn't sufficient — every channel funnels
+// through here regardless of how the image arrived.
+export const UNSUPPORTED_IMAGE_MESSAGE = "Please upload a JPG or PNG photo. HEIC photos aren't supported.";
+
+// Signature (magic-byte) based, never the filename or a caller-supplied
+// mediaType string — a HEIC file mislabeled as image/jpeg still fails
+// this. JPEG: FF D8 FF. PNG: 89 50 4E 47 0D 0A 1A 0A. Decodes only the
+// first few base64 characters, not the whole image, since only the first
+// several bytes are ever needed for a signature check.
+function isSupportedImageBase64(base64: string): boolean {
+  let bytes: Buffer;
+  try {
+    bytes = Buffer.from(base64.slice(0, 24), "base64");
+  } catch {
+    return false;
+  }
+  const isJpeg = bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  const isPng =
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47 &&
+    bytes[4] === 0x0d &&
+    bytes[5] === 0x0a &&
+    bytes[6] === 0x1a &&
+    bytes[7] === 0x0a;
+  return isJpeg || isPng;
+}
+
 // Shared placeholder for "a photo arrived with no caption text" — a single
 // exported constant instead of each caller inventing its own wording, so
 // buildPrompt can reliably detect this exact case (getQuoteEstimate's own
@@ -560,6 +593,9 @@ export const getQuoteEstimate = createServerFn({ method: "POST" })
     }
     if (data.tenantSlug) {
       await requireActiveSubscriptionForSlug(getAdminClient(), data.tenantSlug);
+    }
+    if (data.imageBase64 && !isSupportedImageBase64(data.imageBase64)) {
+      throw new Error(UNSUPPORTED_IMAGE_MESSAGE);
     }
 
     const content: Array<Record<string, unknown>> = [{ type: "text", text: buildPrompt(data) }];

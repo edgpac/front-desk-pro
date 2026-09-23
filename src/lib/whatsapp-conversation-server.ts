@@ -3,6 +3,7 @@ import {
   getFollowUpAnswer,
   classifyFollowUpIntent,
   NO_DESCRIPTION_PLACEHOLDER,
+  UNSUPPORTED_IMAGE_MESSAGE,
   type Answer,
   type PriceSheetItem,
 } from "@/lib/estimate-server";
@@ -131,18 +132,27 @@ export async function handleInboundWhatsAppMessage(params: {
       return;
     }
 
-    const clarifyResult = await getQuoteEstimate({
-      data: {
-        businessName: tenant.name,
-        laborRate: tenant.laborRate,
-        serviceCallFee: tenant.serviceCallFee,
-        priceSheet: clarifyPriceSheet,
-        description: openLead.problem,
-        imageBase64: clarifyImageBase64,
-        imageMediaType: clarifyImageMediaType,
-        answers,
-      },
-    });
+    let clarifyResult;
+    try {
+      clarifyResult = await getQuoteEstimate({
+        data: {
+          businessName: tenant.name,
+          laborRate: tenant.laborRate,
+          serviceCallFee: tenant.serviceCallFee,
+          priceSheet: clarifyPriceSheet,
+          description: openLead.problem,
+          imageBase64: clarifyImageBase64,
+          imageMediaType: clarifyImageMediaType,
+          answers,
+        },
+      });
+    } catch (err) {
+      if (err instanceof Error && err.message === UNSUPPORTED_IMAGE_MESSAGE) {
+        await adapter.sendMessage(fromPhone, UNSUPPORTED_IMAGE_MESSAGE);
+        return;
+      }
+      throw err;
+    }
 
     if (clarifyResult.needsClarification) {
       const question = clarifyResult.questions[0];
@@ -327,17 +337,26 @@ export async function handleInboundWhatsAppMessage(params: {
     return;
   }
 
-  const result = await getQuoteEstimate({
-    data: {
-      businessName: tenant.name,
-      laborRate: tenant.laborRate,
-      serviceCallFee: tenant.serviceCallFee,
-      priceSheet,
-      description: body || NO_DESCRIPTION_PLACEHOLDER,
-      imageBase64,
-      imageMediaType,
-    },
-  });
+  let result;
+  try {
+    result = await getQuoteEstimate({
+      data: {
+        businessName: tenant.name,
+        laborRate: tenant.laborRate,
+        serviceCallFee: tenant.serviceCallFee,
+        priceSheet,
+        description: body || NO_DESCRIPTION_PLACEHOLDER,
+        imageBase64,
+        imageMediaType,
+      },
+    });
+  } catch (err) {
+    if (err instanceof Error && err.message === UNSUPPORTED_IMAGE_MESSAGE) {
+      await adapter.sendMessage(fromPhone, UNSUPPORTED_IMAGE_MESSAGE);
+      return;
+    }
+    throw err;
+  }
 
   if (result.needsClarification) {
     const question = result.questions[0];

@@ -7,6 +7,35 @@ export type CompressedImage = { base64: string; mediaType: string };
 const MAX_DIMENSION = 1280;
 const TARGET_QUALITY = 0.8;
 
+// Kept identical to the string thrown server-side in estimate-server.ts —
+// same customer-facing wording whether the rejection happens here (before
+// any upload/compression) or there (a direct API call bypassing this
+// client check). Duplicated rather than imported: this is a pure client
+// util and estimate-server.ts is a server module, so a direct import risks
+// pulling server-only code into the client bundle for one string constant.
+export const UNSUPPORTED_IMAGE_MESSAGE = "Please upload a JPG or PNG photo. HEIC photos aren't supported.";
+
+// Signature (magic-byte) based, never filename/extension or the browser's
+// reported File.type — a HEIC file renamed to .jpg still fails this, and a
+// real JPG with a misleading .heic filename still passes. JPEG: FF D8 FF.
+// PNG: 89 50 4E 47 0D 0A 1A 0A. Anything else (HEIC/HEIF's ISOBMFF "ftyp"
+// header, WEBP, GIF, BMP, TIFF, AVIF, etc.) is rejected — JIR only accepts
+// what it explicitly supports, not everything except HEIC.
+export async function isSupportedImageFile(file: File): Promise<boolean> {
+  const bytes = new Uint8Array(await file.slice(0, 12).arrayBuffer());
+  const isJpeg = bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  const isPng =
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47 &&
+    bytes[4] === 0x0d &&
+    bytes[5] === 0x0a &&
+    bytes[6] === 0x1a &&
+    bytes[7] === 0x0a;
+  return isJpeg || isPng;
+}
+
 function compressBlob(source: HTMLImageElement): Promise<Blob> {
   return new Promise((resolve, reject) => {
     const canvas = document.createElement("canvas");

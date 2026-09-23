@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { money } from "@/lib/mock-data";
 import { cn } from "@/lib/utils";
-import { fileToCompressedBase64, urlToCompressedBase64 } from "@/lib/image-client";
+import { fileToCompressedBase64, urlToCompressedBase64, isSupportedImageFile, UNSUPPORTED_IMAGE_MESSAGE } from "@/lib/image-client";
 import {
   getFollowUpAnswer,
   getQuoteEstimate,
@@ -104,13 +104,20 @@ export function QuoteFlow({
 
   const accentStyle = accent ? { backgroundColor: accent, borderColor: accent } : undefined;
 
-  function pickFile(e: React.ChangeEvent<HTMLInputElement>) {
+  async function pickFile(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
-    if (f) {
-      setUploadedFile(f);
-      setSelectedSample(null);
-      toast.success("Photo attached");
+    e.target.value = "";
+    if (!f) return;
+    // Signature check, not filename/extension — rejects a real HEIC/HEIF
+    // photo (the iPhone camera-roll default) before any compression,
+    // upload, or Claude call is ever attempted for it.
+    if (!(await isSupportedImageFile(f))) {
+      toast.error(UNSUPPORTED_IMAGE_MESSAGE);
+      return;
     }
+    setUploadedFile(f);
+    setSelectedSample(null);
+    toast.success("Photo attached");
   }
 
   async function resolveImage(): Promise<{ base64?: string; mediaType?: string }> {
