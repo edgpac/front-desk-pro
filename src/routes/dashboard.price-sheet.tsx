@@ -50,6 +50,7 @@ function newRow(): PriceSheetRow {
     priceMax: 0,
     hours: 0,
     bundleable: false,
+    materialsPolicy: "included",
   };
 }
 
@@ -139,6 +140,7 @@ function PriceSheetPage() {
             priceMax: row.priceMax,
             hours: row.hours,
             bundleable: row.bundleable,
+            materialsPolicy: row.materialsPolicy,
           })),
         },
       });

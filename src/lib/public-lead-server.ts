@@ -73,7 +73,7 @@ export const getTenantForQuote = createServerFn({ method: "GET" })
     // leak another tenant's prices.
     const { data: items, error: itemsError } = await admin
       .from("price_sheet_items")
-      .select("id, task, category, keywords, pricing_type, price_min, price_max, hours, bundleable")
+      .select("id, task, category, keywords, pricing_type, price_min, price_max, hours, bundleable, materials_policy")
       .eq("tenant_id", tenant.id)
       .order("sort_order", { ascending: true });
     if (itemsError) {
@@ -97,6 +97,7 @@ export const getTenantForQuote = createServerFn({ method: "GET" })
         priceMax: item["price_max"] as number,
         hours: item["hours"] as number,
         bundleable: item["bundleable"] as boolean,
+        materialsPolicy: item["materials_policy"] as "included" | "customer_pays_receipt" | "confirmed_after_inspection",
       })),
     };
   });

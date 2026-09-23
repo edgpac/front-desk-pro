@@ -181,6 +181,8 @@ export const getLead = (id: string) => LEADS.find((l) => l.id === id);
 // of the two disconnected shapes this used to be split across.
 export type PricingType = "flat" | "hourly" | "range";
 
+export type MaterialsPolicy = "included" | "customer_pays_receipt" | "confirmed_after_inspection";
+
 export type PriceSheetRow = {
   id: string;
   task: string;
@@ -193,6 +195,11 @@ export type PriceSheetRow = {
   // Flat/quick-fix items where multiple matched issues in one visit should
   // still be charged once — see estimate-server.ts's buildPrompt.
   bundleable: boolean;
+  // Business-configured, per row, never AI-inferred — see
+  // estimate-server.ts's buildPrompt MATERIALS POLICY rules. No dashboard
+  // control exists yet to edit this (a later, separate step); it round-trips
+  // through save/load in the meantime, defaulting to "included".
+  materialsPolicy: MaterialsPolicy;
 };
 
 export function formatPrice(row: Pick<PriceSheetRow, "pricingType" | "priceMin" | "priceMax">, currency = "USD") {
@@ -204,16 +211,16 @@ export function formatPrice(row: Pick<PriceSheetRow, "pricingType" | "priceMin" 
 }
 
 export const PRICE_SHEET: PriceSheetRow[] = [
-  { id: "p1", task: "Service call / diagnostic", category: "General", keywords: ["diagnostic", "service call"], pricingType: "flat", priceMin: 89, priceMax: 89, hours: 0.5, bundleable: true },
-  { id: "p2", task: "Standard labor rate", category: "General", keywords: ["labor"], pricingType: "hourly", priceMin: 125, priceMax: 125, hours: 1, bundleable: false },
-  { id: "p3", task: "After-hours labor rate", category: "General", keywords: ["after hours", "emergency", "labor"], pricingType: "hourly", priceMin: 185, priceMax: 185, hours: 1, bundleable: false },
-  { id: "p4", task: "Drain clearing — kitchen line", category: "Drains", keywords: ["kitchen drain", "clog", "backed up"], pricingType: "flat", priceMin: 210, priceMax: 210, hours: 1, bundleable: false },
-  { id: "p5", task: "Drain clearing — main line", category: "Drains", keywords: ["main line", "sewer", "backup"], pricingType: "range", priceMin: 325, priceMax: 650, hours: 2, bundleable: false },
-  { id: "p6", task: "P-trap rebuild", category: "Drains", keywords: ["p-trap", "drips", "under sink"], pricingType: "flat", priceMin: 145, priceMax: 145, hours: 1, bundleable: false },
-  { id: "p7", task: "Water heater — drain valve", category: "Water heaters", keywords: ["water heater", "drain valve", "dripping"], pricingType: "flat", priceMin: 165, priceMax: 165, hours: 1, bundleable: false },
-  { id: "p8", task: "Water heater — 40gal replacement", category: "Water heaters", keywords: ["water heater", "replacement", "old heater"], pricingType: "range", priceMin: 1650, priceMax: 2200, hours: 3, bundleable: false },
-  { id: "p9", task: "Toilet reset with new wax ring", category: "Fixtures", keywords: ["toilet", "wax ring", "rocking"], pricingType: "flat", priceMin: 195, priceMax: 195, hours: 1, bundleable: false },
-  { id: "p10", task: "Hose bibb repair", category: "Fixtures", keywords: ["hose bibb", "spigot", "outdoor faucet"], pricingType: "flat", priceMin: 135, priceMax: 135, hours: 1, bundleable: false },
+  { id: "p1", task: "Service call / diagnostic", category: "General", keywords: ["diagnostic", "service call"], pricingType: "flat", priceMin: 89, priceMax: 89, hours: 0.5, bundleable: true, materialsPolicy: "included" },
+  { id: "p2", task: "Standard labor rate", category: "General", keywords: ["labor"], pricingType: "hourly", priceMin: 125, priceMax: 125, hours: 1, bundleable: false, materialsPolicy: "included" },
+  { id: "p3", task: "After-hours labor rate", category: "General", keywords: ["after hours", "emergency", "labor"], pricingType: "hourly", priceMin: 185, priceMax: 185, hours: 1, bundleable: false, materialsPolicy: "included" },
+  { id: "p4", task: "Drain clearing — kitchen line", category: "Drains", keywords: ["kitchen drain", "clog", "backed up"], pricingType: "flat", priceMin: 210, priceMax: 210, hours: 1, bundleable: false, materialsPolicy: "included" },
+  { id: "p5", task: "Drain clearing — main line", category: "Drains", keywords: ["main line", "sewer", "backup"], pricingType: "range", priceMin: 325, priceMax: 650, hours: 2, bundleable: false, materialsPolicy: "included" },
+  { id: "p6", task: "P-trap rebuild", category: "Drains", keywords: ["p-trap", "drips", "under sink"], pricingType: "flat", priceMin: 145, priceMax: 145, hours: 1, bundleable: false, materialsPolicy: "customer_pays_receipt" },
+  { id: "p7", task: "Water heater — drain valve", category: "Water heaters", keywords: ["water heater", "drain valve", "dripping"], pricingType: "flat", priceMin: 165, priceMax: 165, hours: 1, bundleable: false, materialsPolicy: "included" },
+  { id: "p8", task: "Water heater — 40gal replacement", category: "Water heaters", keywords: ["water heater", "replacement", "old heater"], pricingType: "range", priceMin: 1650, priceMax: 2200, hours: 3, bundleable: false, materialsPolicy: "confirmed_after_inspection" },
+  { id: "p9", task: "Toilet reset with new wax ring", category: "Fixtures", keywords: ["toilet", "wax ring", "rocking"], pricingType: "flat", priceMin: 195, priceMax: 195, hours: 1, bundleable: false, materialsPolicy: "included" },
+  { id: "p10", task: "Hose bibb repair", category: "Fixtures", keywords: ["hose bibb", "spigot", "outdoor faucet"], pricingType: "flat", priceMin: 135, priceMax: 135, hours: 1, bundleable: false, materialsPolicy: "included" },
 ];
 
 export const FUNNEL = [

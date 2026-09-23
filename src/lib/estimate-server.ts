@@ -7,6 +7,8 @@ import { requireActiveSubscriptionForSlug } from "@/lib/entitlements-server";
 // out), but driven by a tenant's own price sheet/labor rate instead of one
 // business's hardcoded numbers.
 
+export type MaterialsPolicy = "included" | "customer_pays_receipt" | "confirmed_after_inspection";
+
 export type PriceSheetItem = {
   // Stable identity for this row — the ONLY thing getQuoteEstimate's
   // validation trusts to look a match back up against. Never re-derived
@@ -23,6 +25,10 @@ export type PriceSheetItem = {
   // Flat/quick-fix items where multiple matched issues in one visit should
   // still be charged once, not once per issue — see buildPrompt below.
   bundleable: boolean;
+  // Business-configured, per row, never AI-inferred or AI-chosen — the AI's
+  // only job is to read this off the matched row and communicate it. See
+  // buildPrompt's MATERIALS POLICY rules and validateQuoteAgainstPriceSheet.
+  materialsPolicy: MaterialsPolicy;
 };
 
 // Sentinel id for the tenant-level serviceCallFee scalar, which isn't a
@@ -104,6 +110,7 @@ export const SAMPLE_PRICE_SHEET: PriceSheetItem[] = [
     category: "Plumbing",
     pricingType: "range",
     bundleable: false,
+    materialsPolicy: "included",
   },
   {
     id: "sample-2",
@@ -115,6 +122,7 @@ export const SAMPLE_PRICE_SHEET: PriceSheetItem[] = [
     category: "Plumbing",
     pricingType: "range",
     bundleable: false,
+    materialsPolicy: "included",
   },
   {
     id: "sample-3",
@@ -126,6 +134,7 @@ export const SAMPLE_PRICE_SHEET: PriceSheetItem[] = [
     category: "Plumbing",
     pricingType: "range",
     bundleable: false,
+    materialsPolicy: "included",
   },
   {
     id: "sample-4",
@@ -137,6 +146,7 @@ export const SAMPLE_PRICE_SHEET: PriceSheetItem[] = [
     category: "Plumbing",
     pricingType: "range",
     bundleable: false,
+    materialsPolicy: "included",
   },
   {
     id: "sample-5",
@@ -148,6 +158,7 @@ export const SAMPLE_PRICE_SHEET: PriceSheetItem[] = [
     category: "Electrical",
     pricingType: "range",
     bundleable: false,
+    materialsPolicy: "included",
   },
   {
     id: "sample-6",
@@ -159,6 +170,7 @@ export const SAMPLE_PRICE_SHEET: PriceSheetItem[] = [
     category: "Electrical",
     pricingType: "range",
     bundleable: false,
+    materialsPolicy: "included",
   },
   {
     id: "sample-7",
@@ -170,6 +182,7 @@ export const SAMPLE_PRICE_SHEET: PriceSheetItem[] = [
     category: "Electrical",
     pricingType: "range",
     bundleable: true,
+    materialsPolicy: "included",
   },
   {
     id: "sample-8",
@@ -181,6 +194,10 @@ export const SAMPLE_PRICE_SHEET: PriceSheetItem[] = [
     category: "Plumbing",
     pricingType: "range",
     bundleable: false,
+    // Illustrative example, same precedent as sample-7's bundleable:true —
+    // labor only, materials/parts confirmed once the actual faucet and
+    // scope are known.
+    materialsPolicy: "confirmed_after_inspection",
   },
 ];
 
@@ -309,7 +326,8 @@ function buildPrompt(input: QuoteInput): string {
           : item.priceMin === item.priceMax
             ? `$${item.priceMin}`
             : `$${item.priceMin}-$${item.priceMax}`;
-      return `- [id: ${item.id}] [${item.category}] ${item.task} (matches: ${item.keywords.join(", ")}) — about ${item.hours}hr, ${price}${item.bundleable ? " [BUNDLEABLE]" : ""}`;
+      const materialsTag = item.materialsPolicy !== "included" ? ` [MATERIALS: ${item.materialsPolicy}]` : "";
+      return `- [id: ${item.id}] [${item.category}] ${item.task} (matches: ${item.keywords.join(", ")}) — about ${item.hours}hr, ${price}${item.bundleable ? " [BUNDLEABLE]" : ""}${materialsTag}`;
     })
     .join("\n");
 
@@ -365,6 +383,16 @@ Worked examples, using a price sheet that has "[id: ps-1] Quick fix / minor repa
 - "I need a doorknob fixed and a towel bar reattached" → matchedServices: [{"customerIssue": "doorknob fixed", "priceSheetItemId": "ps-1"}, {"customerIssue": "towel bar reattached", "priceSheetItemId": "ps-1"}] → both point at the same bundleable item, so ONE line item: "Quick fix / minor repair — $60," priceSheetItemId "ps-1." Not $120, not $0, not split across two differently-named lines.
 - "I need a doorknob replaced and my kitchen sink drain unclogged" → matchedServices: [{"customerIssue": "doorknob replaced", "priceSheetItemId": "ps-1"}, {"customerIssue": "kitchen sink drain unclogged", "priceSheetItemId": "ps-2"}] → two different items, so TWO line items: "Quick fix / minor repair — $60" (priceSheetItemId "ps-1") AND "Toilet / sink / tub unclogging — $60" (priceSheetItemId "ps-2") — both fully priced, both present, neither omitted or folded into the service call.
 
+MATERIALS POLICY — each price-sheet item above carries a materials policy, shown as [MATERIALS: ...] when it isn't the default. This is a business configuration decision, never yours to make: read the matched item's own policy and communicate it, never infer, change, or choose a different one based on the job, the photo, or anything the customer says.
+
+- No tag shown ("included"): the configured price includes labor and standard materials for that service. Present it as the full price — no parts disclaimer needed unless something else about the request makes it genuinely conditional.
+- [MATERIALS: customer_pays_receipt]: the configured price is labor/service only. Materials are additional, billed at their exact actual purchase cost, and you will never state a specific parts dollar amount for this — not a guess, not a range, not a number the customer suggests. Say plainly that parts are separate and billed at actual receipt cost.
+- [MATERIALS: confirmed_after_inspection]: the configured price is labor/service only. The materials required — and their cost — can't be determined until the job is inspected and the scope is confirmed. Say plainly that parts/materials will be confirmed after inspection, once again never stating a specific parts dollar amount.
+
+For either non-included policy: the line item's "amount" is always exactly the row's own configured price — never the configured price plus an estimated, guessed, or customer-suggested materials figure, and never presented as though it were the complete, all-in final job cost. The ONLY dollar amounts you may ever write anywhere in your response are a price-sheet item's own configured price, the labor rate, or the service call fee — this rule already applies everywhere in this prompt, and materials policy gives you no exception to it. If the customer states what they think a part costs ("the faucet is about $80") or says they already bought it, acknowledge it in the diagnosis if relevant, but that number never becomes a business charge and never changes which policy governs the row — the row's configured policy is authoritative regardless of anything the customer says.
+
+Each matched item's policy is independent — a request matching one "included" item and one "customer_pays_receipt" item treats them completely separately; there is no single policy for the whole estimate.
+
 RULES:
 1. If the photo and description together are not enough to price this confidently, respond with 1-2 short clarifying questions instead of guessing. Give each question 2-4 short tappable answer options. Only ask if the answer would actually change the price. ${
     hasPhoto && !hasDescription
@@ -416,6 +444,14 @@ const CREDIT_WORDING_INDICATORS = [
   "count against",
   "deducted from",
 ];
+
+// Wording indicators for the two non-"included" materials policies — same
+// soft-check shape as CREDIT_WORDING_INDICATORS above: nothing here checks
+// a dollar amount (that's already covered by the per-item price validation
+// below), only whether the required customer-facing language is actually
+// present.
+const RECEIPT_POLICY_INDICATORS = ["receipt", "actual cost", "actual purchase", "billed at cost", "parts are separate", "parts are additional", "materials are separate", "materials are additional"];
+const INSPECTION_POLICY_INDICATORS = ["confirmed after", "after inspection", "after we inspect", "once we see", "once we inspect", "scope is confirmed", "confirm the scope", "confirmed once", "will be confirmed"];
 
 function validateQuoteAgainstPriceSheet(
   parsed: { matchedServices?: unknown; lineItems?: unknown; diagnosis?: unknown },
@@ -555,6 +591,29 @@ function validateQuoteAgainstPriceSheet(
     if (!mentionsCredit) {
       failures.push(
         "The diagnosis includes a service-call/diagnostic charge alongside real repair work but doesn't state that the fee applies toward the approved repair — add that language to the diagnosis text (wording only, don't change any amounts).",
+      );
+    }
+  }
+
+  // Materials-policy wording check — same soft-check shape as the
+  // service-call credit check above. The hard invariant (never a business
+  // charge beyond the row's own configured price) is already guaranteed by
+  // the per-item amount checks earlier in this function regardless of
+  // materials policy; this only verifies the required customer-facing
+  // language is actually present when a row's policy isn't "included".
+  for (const li of lineItems) {
+    const id = li?.priceSheetItemId;
+    if (!id || id === SERVICE_CALL_SENTINEL_ID) continue;
+    const item = byId.get(id);
+    if (!item || item.materialsPolicy === "included") continue;
+
+    const haystack = `${li.detail ?? ""} ${typeof parsed.diagnosis === "string" ? parsed.diagnosis : ""}`.toLowerCase();
+    const indicators =
+      item.materialsPolicy === "customer_pays_receipt" ? RECEIPT_POLICY_INDICATORS : INSPECTION_POLICY_INDICATORS;
+    const mentionsPolicy = indicators.some((phrase) => haystack.includes(phrase));
+    if (!mentionsPolicy) {
+      failures.push(
+        `lineItem "${li.description}" matches "${item.task}" (materials_policy: ${item.materialsPolicy}) but its detail/diagnosis doesn't state the required materials wording for that policy — add it (never a specific parts dollar amount, wording only).`,
       );
     }
   }

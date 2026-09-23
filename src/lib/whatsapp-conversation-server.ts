@@ -99,7 +99,7 @@ export async function handleInboundWhatsAppMessage(params: {
 
     const { data: clarifyPriceSheetRows } = await admin
       .from("price_sheet_items")
-      .select("id, task, category, keywords, pricing_type, price_min, price_max, hours, bundleable")
+      .select("id, task, category, keywords, pricing_type, price_min, price_max, hours, bundleable, materials_policy")
       .eq("tenant_id", tenant.id);
     const clarifyPriceSheet: PriceSheetItem[] = (clarifyPriceSheetRows ?? []).map((row) => ({
       id: row.id,
@@ -111,6 +111,7 @@ export async function handleInboundWhatsAppMessage(params: {
       priceMax: row.price_max,
       hours: row.hours,
       bundleable: row.bundleable,
+      materialsPolicy: row.materials_policy,
     }));
 
     // The original photo stays canonical regardless of whether this reply
@@ -310,7 +311,7 @@ export async function handleInboundWhatsAppMessage(params: {
 
   const { data: priceSheetRows } = await admin
     .from("price_sheet_items")
-    .select("id, task, category, keywords, pricing_type, price_min, price_max, hours, bundleable")
+    .select("id, task, category, keywords, pricing_type, price_min, price_max, hours, bundleable, materials_policy")
     .eq("tenant_id", tenant.id);
 
   const priceSheet: PriceSheetItem[] = (priceSheetRows ?? []).map((row) => ({
@@ -323,6 +324,7 @@ export async function handleInboundWhatsAppMessage(params: {
     priceMax: row.price_max,
     hours: row.hours,
     bundleable: row.bundleable,
+    materialsPolicy: row.materials_policy,
   }));
 
   let imageBase64: string;

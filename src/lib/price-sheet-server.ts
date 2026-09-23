@@ -1,7 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { callClaude } from "@/lib/estimate-server";
-import type { PriceSheetRow, PricingType } from "@/lib/mock-data";
+import type { MaterialsPolicy, PriceSheetRow, PricingType } from "@/lib/mock-data";
 
 type PriceSheetItemRow = {
   id: string;
@@ -13,6 +13,7 @@ type PriceSheetItemRow = {
   price_max: number;
   hours: number;
   bundleable: boolean;
+  materials_policy: MaterialsPolicy;
 };
 
 function toRow(item: PriceSheetItemRow): PriceSheetRow {
@@ -26,6 +27,7 @@ function toRow(item: PriceSheetItemRow): PriceSheetRow {
     priceMax: item.price_max,
     hours: item.hours,
     bundleable: item.bundleable,
+    materialsPolicy: item.materials_policy,
   };
 }
 
@@ -41,7 +43,7 @@ export const listMyPriceSheet = createServerFn({ method: "GET" })
 
     const { data, error } = await context.supabase
       .from("price_sheet_items")
-      .select("id, task, category, keywords, pricing_type, price_min, price_max, hours, bundleable")
+      .select("id, task, category, keywords, pricing_type, price_min, price_max, hours, bundleable, materials_policy")
       .eq("tenant_id", tenant.id)
       .order("sort_order", { ascending: true });
     if (error) throw new Error(`Could not load price sheet: ${error.message}`);
@@ -63,6 +65,7 @@ export const saveMyPriceSheet = createServerFn({ method: "POST" })
         priceMax: number;
         hours: number;
         bundleable: boolean;
+        materialsPolicy: MaterialsPolicy;
       }>;
     }) => input,
   )
@@ -93,6 +96,7 @@ export const saveMyPriceSheet = createServerFn({ method: "POST" })
         price_max: item.priceMax,
         hours: item.hours,
         bundleable: item.bundleable,
+        materials_policy: item.materialsPolicy,
         sort_order: index,
       })),
     );
@@ -111,6 +115,10 @@ export type ExtractedPriceSheetItem = {
   // Never something a printed price list states — always defaults to false
   // on extraction; the owner opts individual items in by hand afterward.
   bundleable: boolean;
+  // Same reasoning as bundleable — a printed price list never states this;
+  // always defaults to "included" on extraction, the owner changes it by
+  // hand afterward once the dashboard control exists.
+  materialsPolicy: MaterialsPolicy;
 };
 
 const VALID_PRICING_TYPES: PricingType[] = ["flat", "hourly", "range"];
@@ -188,6 +196,7 @@ function parseExtractedItems(raw: string): ExtractedPriceSheetItem[] {
       priceMax: Number(item["priceMax"] ?? priceMin) || priceMin,
       hours: Number(item["hours"]) || 1,
       bundleable: false,
+      materialsPolicy: "included",
     };
   });
 }
