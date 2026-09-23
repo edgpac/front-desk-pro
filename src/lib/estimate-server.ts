@@ -528,7 +528,13 @@ function isServiceCallLineItem(li: LineItem, priceSheet: PriceSheetItem[]): bool
   const haystack = `${item.task} ${item.keywords.join(" ")}`.toLowerCase();
   return SERVICE_CALL_SYNONYMS.some((syn) => haystack.includes(syn));
 }
+// Covers all three languages buildPrompt can actually instruct the model to
+// respond in (see detectLanguage/LANGUAGE_NAME below) — an English-only list
+// fails this check on any correct non-English response, causing a spurious
+// retry (also in the same language, so also failing) and then a hard
+// customer-facing error, even though the model did exactly what was asked.
 const CREDIT_WORDING_INDICATORS = [
+  // English
   "toward",
   "credited",
   "applies to the",
@@ -538,6 +544,43 @@ const CREDIT_WORDING_INDICATORS = [
   "counts toward",
   "count against",
   "deducted from",
+  // Spanish
+  "hacia la reparación",
+  "hacia el costo",
+  "hacia el total",
+  "se aplicará hacia",
+  "se aplica hacia",
+  "se acreditará",
+  "acreditado",
+  "acreditará",
+  "se aplica a",
+  "se aplicará a",
+  "se descuenta de",
+  "se descontará de",
+  "cuenta hacia",
+  "abona a",
+  "abonará a",
+  // Hebrew — several verb forms included since Hebrew conjugates by subject
+  // (ייזקף vs תיזקף vs יזוכה), so a single form is not reliable on its own
+  "לקראת",
+  "יזוכה",
+  "תיזקף",
+  "ייזקף",
+  "יזקף",
+  "מזוכה",
+  "זיכוי",
+  "לזכות",
+  "נזקף לחשבון",
+  "על חשבון",
+  "לטובת",
+  // Stems rather than fully-conjugated forms (ינוכה vs ינוכו vs תנוכה all
+  // share these) — Hebrew verb conjugation varies by subject/number/gender,
+  // so matching the consonantal root is more reliable than any one form
+  "יופחת",
+  "תופחת",
+  "ינוכ",
+  "תנוכ",
+  "מנוכ",
 ];
 
 // Indicators that a tenant's "negotiated" service-call/diagnostic fee was
@@ -551,10 +594,7 @@ const CREDIT_WORDING_INDICATORS = [
 // respond in (see detectLanguage/LANGUAGE_NAME below) — an English-only list
 // would fail this check on essentially every Spanish-language response,
 // which matters directly here since negotiated mode's first real tenant
-// (a Mexico-based business) will get mostly Spanish customer messages. The
-// older CREDIT_WORDING_INDICATORS/RECEIPT_POLICY_INDICATORS/
-// INSPECTION_POLICY_INDICATORS checks have this same English-only gap —
-// out of scope to fix here, flagged separately, not silently left broken.
+// (a Mexico-based business) will get mostly Spanish customer messages.
 const NEGOTIATED_WORDING_INDICATORS = [
   // English
   "confirmed",
@@ -587,9 +627,67 @@ const NEGOTIATED_WORDING_INDICATORS = [
 // soft-check shape as CREDIT_WORDING_INDICATORS above: nothing here checks
 // a dollar amount (that's already covered by the per-item price validation
 // below), only whether the required customer-facing language is actually
-// present.
-const RECEIPT_POLICY_INDICATORS = ["receipt", "actual cost", "actual purchase", "billed at cost", "parts are separate", "parts are additional", "materials are separate", "materials are additional"];
-const INSPECTION_POLICY_INDICATORS = ["confirmed after", "after inspection", "after we inspect", "once we see", "once we inspect", "scope is confirmed", "confirm the scope", "confirmed once", "will be confirmed"];
+// present. Same en/es/he coverage rationale as CREDIT_WORDING_INDICATORS —
+// an English-only list fails this check on any correct non-English response.
+const RECEIPT_POLICY_INDICATORS = [
+  // English
+  "receipt",
+  "actual cost",
+  "actual purchase",
+  "billed at cost",
+  "parts are separate",
+  "parts are additional",
+  "materials are separate",
+  "materials are additional",
+  // Spanish
+  "recibo",
+  "costo real",
+  "costo de compra",
+  "precio de compra",
+  "compra real",
+  "facturado al costo",
+  "las piezas son aparte",
+  "las piezas son adicionales",
+  "los materiales son aparte",
+  "los materiales son adicionales",
+  "por separado",
+  "según el recibo",
+  // Hebrew
+  "קבלה",
+  "עלות בפועל",
+  "מחיר רכישה",
+  "בנפרד",
+  "לפי קבלה",
+];
+const INSPECTION_POLICY_INDICATORS = [
+  // English
+  "confirmed after",
+  "after inspection",
+  "after we inspect",
+  "once we see",
+  "once we inspect",
+  "scope is confirmed",
+  "confirm the scope",
+  "confirmed once",
+  "will be confirmed",
+  // Spanish
+  "confirmado después de la inspección",
+  "confirmado después de inspeccionar",
+  "después de la inspección",
+  "después de inspeccionar",
+  "una vez que veamos",
+  "una vez que inspeccionemos",
+  "una vez inspeccionado",
+  "alcance confirmado",
+  "confirmaremos el alcance",
+  "se confirmará",
+  // Hebrew
+  "יאושר לאחר הבדיקה",
+  "לאחר הבדיקה",
+  "לאחר שנבדוק",
+  "לאחר שנבחן",
+  "היקף העבודה יאושר",
+];
 
 function validateQuoteAgainstPriceSheet(
   parsed: { matchedServices?: unknown; lineItems?: unknown; diagnosis?: unknown },
