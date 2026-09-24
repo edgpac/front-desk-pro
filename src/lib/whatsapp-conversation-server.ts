@@ -66,21 +66,36 @@ export type ChannelAdapter = {
 // decision instead of scattered inline conditions. See
 // handleInboundWhatsAppMessage's use of this below for what each outcome
 // actually does.
+//
+// Any flagged lead (regardless of flag_type) with no confidence set is a
+// resolved/terminal state, not active clarification — routed to
+// fresh_quote uniformly. Live-tested finding: an EARLIER design gave
+// needs_human_review its own permanently-sticky "sent to review" reply for
+// every future message from that phone, for the rest of the 48-hour
+// window — including a completely different, legitimate new request. The
+// one-time recovery message still fires immediately when the failure
+// happens (see the catch block that sets this flag); this only governs
+// what a LATER message gets, and that must never be permanently blocked.
+// The flag itself is unchanged and still drives the owner's dashboard
+// "needs review" view — this only affects customer-facing routing.
 export type LeadRouteDecision =
-  | "fresh_quote" // no open lead, or one resolved out-of-scope — start clean
-  | "needs_human_review_recovery" // AI previously failed to finalize this lead
+  | "fresh_quote" // no open lead, or one resolved/flagged for any reason — start clean
   | "continue_clarification" // genuinely still mid-clarification
   | "quoted_follow_up"; // already has a real quote (confidence set) — includes pending_negotiated_price
 
 export function decideLeadRoute(openLead: { confidence: string | null; flag_type: string | null } | null | undefined): LeadRouteDecision {
   if (!openLead) return "fresh_quote";
-  if (openLead.flag_type === "needs_human_review") return "needs_human_review_recovery";
-  // A resolved out-of-scope lead also has confidence: null (createFlaggedLead/
-  // finalizeLeadAsOutOfScope never set it) but is terminal, not active
-  // clarification — decision: treat it exactly like no open lead existed.
-  if (openLead.flag_type === "outside_service_scope") return "fresh_quote";
-  if (openLead.confidence === null) return "continue_clarification";
-  return "quoted_follow_up";
+  // Order matters: pending_negotiated_price also has a non-null flag_type,
+  // but always has a real confidence value too (finalizeLeadWithQuote
+  // always sets one) — checking confidence first keeps its verified
+  // reopen/follow-up path completely unaffected by the flag_type check
+  // below, which exists only to catch the flag_type + null-confidence
+  // combination (outside_service_scope, needs_human_review, or any other
+  // reason) that createFlaggedLead/finalizeLeadAsOutOfScope/the failure
+  // handler below actually produce.
+  if (openLead.confidence !== null) return "quoted_follow_up";
+  if (openLead.flag_type != null) return "fresh_quote";
+  return "continue_clarification";
 }
 
 export type InboundWhatsAppTenant = {
@@ -122,17 +137,12 @@ export async function handleInboundWhatsAppMessage(params: {
     .maybeSingle();
 
   // P2: see decideLeadRoute's own doc comment for what each outcome means
-  // and why confidence alone was never enough to distinguish them.
+  // and why confidence alone was never enough to distinguish them. A
+  // flagged lead (needs_human_review, outside_service_scope, or any other
+  // reason) routes to fresh_quote below — the one-time recovery message
+  // for a failure fires directly in the catch block that sets the flag,
+  // not here; a later message always gets a genuine fresh attempt.
   const route = decideLeadRoute(openLead);
-
-  if (route === "needs_human_review_recovery" && openLead) {
-    await admin.from("lead_messages").insert({ lead_id: openLead.id, role: "customer", body });
-    const recoveryMessage =
-      "Thanks for the additional information. We've sent this to the team for review, and someone will follow up with you.";
-    await admin.from("lead_messages").insert({ lead_id: openLead.id, role: "assistant", body: recoveryMessage });
-    await adapter.sendMessage(fromPhone, recoveryMessage);
-    return;
-  }
 
   // confidence is only ever set once a real quote exists (createLead and
   // finalizeLeadWithQuote both require it; createClarifyingLead deliberately
