@@ -121,6 +121,13 @@ export const getTenantForQuote = createServerFn({ method: "GET" })
 const PENDING_NEGOTIATED_PRICE_REASON =
   "Pricing is deferred for this service — the exact service-call/diagnostic fee needs to be confirmed directly with the customer.";
 
+// P2 mixed-pricing: distinct from PENDING_NEGOTIATED_PRICE_REASON above —
+// that one means NOTHING was priced; this means SOMETHING was priced (a
+// real, correct line-item total exists) and something else, separately,
+// still needs pricing confirmed. Generic across any tenant/service.
+const PARTIALLY_PRICED_REASON =
+  "Part of this request has a confirmed price; the rest still needs to be priced directly with the customer.";
+
 type CreateLeadInput = {
   tenantSlug: string;
   customerName: string;
@@ -139,6 +146,12 @@ type CreateLeadInput = {
   // 0 — this is the one authoritative signal for that state, persisted
   // explicitly rather than reconstructed.
   pendingNegotiatedPrice?: boolean;
+  // P2 mixed-pricing: true only for estimate-server.ts's
+  // hasPartiallyDeferredWork — mutually exclusive with
+  // pendingNegotiatedPrice by construction (that requires zero line items,
+  // this requires at least one real one). Takes priority when both could
+  // theoretically be checked — see the flag_type logic below.
+  hasPartiallyDeferredWork?: boolean;
 };
 
 // The one real trigger point this whole app was missing: a real customer
@@ -176,9 +189,17 @@ export const createLead = createServerFn({ method: "POST" })
         diagnosis: data.diagnosis,
         confidence: data.confidence,
         ai_line_items_snapshot: data.lineItems,
-        ...(data.pendingNegotiatedPrice
-          ? { status: "flagged", flag_type: "pending_negotiated_price", flag_reason: PENDING_NEGOTIATED_PRICE_REASON }
-          : {}),
+        // P2: mutually exclusive by construction (hasPartiallyDeferredWork
+        // requires real line items, pendingNegotiatedPrice requires zero) —
+        // checked in this order regardless, so a future caller that somehow
+        // set both can never produce the wrong, more-alarming
+        // pending_negotiated_price state for a lead that actually has a
+        // real, priced portion.
+        ...(data.hasPartiallyDeferredWork
+          ? { status: "flagged", flag_type: "partially_priced", flag_reason: PARTIALLY_PRICED_REASON }
+          : data.pendingNegotiatedPrice
+            ? { status: "flagged", flag_type: "pending_negotiated_price", flag_reason: PENDING_NEGOTIATED_PRICE_REASON }
+            : {}),
       })
       .select("id")
       .single();
@@ -218,6 +239,7 @@ export const createLead = createServerFn({ method: "POST" })
         confidence: data.confidence,
         ...(data.isEmergency !== undefined ? { isEmergency: data.isEmergency } : {}),
         ...(data.pendingNegotiatedPrice !== undefined ? { pendingNegotiatedPrice: data.pendingNegotiatedPrice } : {}),
+        ...(data.hasPartiallyDeferredWork !== undefined ? { hasPartiallyDeferredWork: data.hasPartiallyDeferredWork } : {}),
       },
       lineItems: data.lineItems.map((item, index) => ({ id: String(index), ...item })),
       total,
@@ -347,6 +369,8 @@ type FinalizeLeadInput = {
   lineItems: Array<{ description: string; qty: number; unit: string; rate: number }>;
   // Same meaning/authority as CreateLeadInput.pendingNegotiatedPrice above.
   pendingNegotiatedPrice?: boolean;
+  // Same meaning/authority as CreateLeadInput.hasPartiallyDeferredWork above.
+  hasPartiallyDeferredWork?: boolean;
 };
 
 // Completes a lead that createClarifyingLead started earlier in the same
@@ -383,9 +407,12 @@ export const finalizeLeadWithQuote = createServerFn({ method: "POST" })
         diagnosis: data.diagnosis,
         confidence: data.confidence,
         ai_line_items_snapshot: data.lineItems,
-        ...(data.pendingNegotiatedPrice
-          ? { status: "flagged", flag_type: "pending_negotiated_price", flag_reason: PENDING_NEGOTIATED_PRICE_REASON }
-          : {}),
+        // P2: same priority ordering as createLead above.
+        ...(data.hasPartiallyDeferredWork
+          ? { status: "flagged", flag_type: "partially_priced", flag_reason: PARTIALLY_PRICED_REASON }
+          : data.pendingNegotiatedPrice
+            ? { status: "flagged", flag_type: "pending_negotiated_price", flag_reason: PENDING_NEGOTIATED_PRICE_REASON }
+            : {}),
       })
       .eq("id", data.leadId);
     if (updateError) {
@@ -422,6 +449,7 @@ export const finalizeLeadWithQuote = createServerFn({ method: "POST" })
         confidence: data.confidence,
         ...(data.isEmergency !== undefined ? { isEmergency: data.isEmergency } : {}),
         ...(data.pendingNegotiatedPrice !== undefined ? { pendingNegotiatedPrice: data.pendingNegotiatedPrice } : {}),
+        ...(data.hasPartiallyDeferredWork !== undefined ? { hasPartiallyDeferredWork: data.hasPartiallyDeferredWork } : {}),
       },
       lineItems: data.lineItems.map((item, index) => ({ id: String(index), ...item })),
       total,

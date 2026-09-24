@@ -195,7 +195,14 @@ function LeadInbox() {
                 <span className="num hidden text-sm font-medium text-foreground sm:inline">
                   {(() => {
                     const pricing = getLeadPricingStatus(lead);
-                    return pricing.priced ? money(pricing.amount) : pricing.label;
+                    if (!pricing.priced) return pricing.label;
+                    // P2 mixed-pricing: real total, plus a visible marker
+                    // that it isn't the whole request — the StatusPill
+                    // below already shows "NEEDS REVIEW" for this lead
+                    // (status: 'flagged' regardless of which flag_type),
+                    // this just distinguishes the total from a plain
+                    // fully-priced lead's.
+                    return pricing.hasDeferredPortion ? `${money(pricing.amount)} + pending` : money(pricing.amount);
                   })()}
                 </span>
                 <StatusPill status={lead.status} />

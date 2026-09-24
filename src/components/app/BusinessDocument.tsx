@@ -116,6 +116,39 @@ export function BusinessDocument({
     );
   }
 
+  // P2 mixed-pricing: a proposal is an estimate by nature, so it's fine to
+  // generate one showing the real priced portion with a visible pending
+  // notice (below). An invoice/receipt represents a final, complete
+  // charge — generating one while part of the request is still unresolved
+  // would misrepresent it as settled, so those two are blocked here,
+  // distinct from (and less restrictive than) the "nothing priced at all"
+  // block above.
+  if (pricingStatus.hasDeferredPortion && kind !== "proposal") {
+    return (
+      <div className="bg-paper p-6 lg:p-10 print:bg-white print:p-0">
+        <div className="mx-auto max-w-3xl">
+          <Link
+            to="/dashboard/leads/$id"
+            params={{ id: lead.id }}
+            className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
+          >
+            <ArrowLeft className="h-3.5 w-3.5" /> Back to lead
+          </Link>
+          <div className="mt-6 border border-border-strong bg-card p-8 text-center">
+            <p className="font-semibold text-foreground">Partially priced</p>
+            <p className="mt-2 text-sm text-muted-foreground">
+              Part of this request has a confirmed price ({money(pricingStatus.amount, tenant.currency)}), but
+              another part is still pending — an {DOCUMENT_LABEL[kind].toLowerCase()} would misrepresent that as a
+              final, complete charge. A proposal is fine to generate in the meantime; confirm the remaining price,
+              add it as a line item, and mark this reviewed before generating {kind === "invoice" ? "an" : "a"}{" "}
+              {DOCUMENT_LABEL[kind].toLowerCase()}.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const subtotal = pricingStatus.amount;
   const tax = kind === "proposal" ? 0 : (subtotal * tenant.taxRate) / 100;
   const total = subtotal + tax;
@@ -250,7 +283,20 @@ export function BusinessDocument({
                   <span className="num">{money(total, tenant.currency)}</span>
                 </div>
               )}
-              {kind === "proposal" && (
+              {kind === "proposal" && pricingStatus.hasDeferredPortion && (
+                // P2 mixed-pricing: only reachable when kind === "proposal" —
+                // the guard above already blocks invoice/receipt entirely
+                // whenever hasDeferredPortion is true. The total above is
+                // real and correct for what IS priced; this makes clear,
+                // structurally rather than relying on the diagnosis prose
+                // alone, that it isn't the whole request.
+                <p className="pt-2 text-xs font-semibold leading-relaxed text-accent">
+                  Pricing pending: this total covers only part of what was requested. Another item still needs an
+                  in-person look before it can be priced — see the diagnosis below for details. No amount has been
+                  determined for it yet.
+                </p>
+              )}
+              {kind === "proposal" && !pricingStatus.hasDeferredPortion && (
                 <p className="pt-2 text-xs leading-relaxed text-muted-foreground">
                   <span className="font-semibold text-foreground">Remote Estimate:</span> This price is
                   based on the photos and information provided and reflects the expected scope of work. If

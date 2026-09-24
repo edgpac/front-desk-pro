@@ -32,6 +32,7 @@ function formatQuotePriceLine(
   currency: string,
   isDiagnosisOnly: boolean,
   hasNoPricedWork: boolean,
+  hasPartiallyDeferredWork: boolean,
 ): string {
   if (hasNoPricedWork) {
     // Distinct from isDiagnosisOnly: that case still has a real, priced fee
@@ -39,10 +40,17 @@ function formatQuotePriceLine(
     // matched at all — no lineItem, no number, "$0" would be a lie.
     return `We can't price this without seeing it in person — a service-call/diagnostic fee applies, and we'll confirm the exact amount when we contact you to schedule the visit.`;
   }
-  if (isDiagnosisOnly) {
-    return `Diagnosis visit fee: ${money(totalLow, currency)}, due for an in-person visit — this applies toward the total repair cost once we know what's needed.`;
+  const pricedPortion = isDiagnosisOnly
+    ? `Diagnosis visit fee: ${money(totalLow, currency)}, due for an in-person visit — this applies toward the total repair cost once we know what's needed.`
+    : `Estimated price: ${money(totalLow, currency)}.`;
+  // P2 mixed-pricing: at least one other described issue has no price-sheet
+  // match and was deferred — the total above is real and correct for what
+  // IS priced, but it is not the whole request, so that must be said
+  // explicitly rather than left to be inferred.
+  if (hasPartiallyDeferredWork) {
+    return `${pricedPortion} One part of this request still needs an in-person look before we can price it — we'll confirm that separately when we're in touch.`;
   }
-  return `Estimated price: ${money(totalLow, currency)}.`;
+  return pricedPortion;
 }
 
 // Channel-agnostic core extracted from api.whatsapp.webhook.tsx (the
@@ -92,7 +100,10 @@ export function decideLeadRoute(openLead: { confidence: string | null; flag_type
   // below, which exists only to catch the flag_type + null-confidence
   // combination (outside_service_scope, needs_human_review, or any other
   // reason) that createFlaggedLead/finalizeLeadAsOutOfScope/the failure
-  // handler below actually produce.
+  // handler below actually produce. P2 mixed-pricing's partially_priced
+  // also always has a real confidence value (same finalizeLeadWithQuote
+  // path) — it needs zero changes here, already correctly falls into
+  // quoted_follow_up, same as pending_negotiated_price does.
   if (openLead.confidence !== null) return "quoted_follow_up";
   if (openLead.flag_type != null) return "fresh_quote";
   return "continue_clarification";
@@ -313,12 +324,13 @@ export async function handleInboundWhatsAppMessage(params: {
         isEmergency: clarifyResult.isEmergency,
         lineItems: clarifyLineItems,
         pendingNegotiatedPrice: clarifyResult.hasNoPricedWork,
+        hasPartiallyDeferredWork: clarifyResult.hasPartiallyDeferredWork,
       },
     });
 
     await adapter.sendMessage(
       fromPhone,
-      `${clarifyResult.diagnosis} ${formatQuotePriceLine(clarifyResult.totalLow, tenant.currency, clarifyResult.isDiagnosisOnly, clarifyResult.hasNoPricedWork)} This estimate is based on the photos and information provided remotely. If the actual issue or scope of work is different than what was presented, the final price may change after inspection. Want me to get this booked in?`,
+      `${clarifyResult.diagnosis} ${formatQuotePriceLine(clarifyResult.totalLow, tenant.currency, clarifyResult.isDiagnosisOnly, clarifyResult.hasNoPricedWork, clarifyResult.hasPartiallyDeferredWork)} This estimate is based on the photos and information provided remotely. If the actual issue or scope of work is different than what was presented, the final price may change after inspection. Want me to get this booked in?`,
     );
 
     return;
@@ -383,6 +395,11 @@ export async function handleInboundWhatsAppMessage(params: {
             // state a number for" problem, and lineItemRows is already fetched
             // above for this exact branch.
             hasNoPricedWork: openLead.flag_type === "pending_negotiated_price" || (lineItemRows ?? []).length === 0,
+            // P2 mixed-pricing: this lead's real, priced lineItemRows are
+            // only part of what was originally described — another issue is
+            // still deferred, so a "how much total?" follow-up must not
+            // treat the listed items as the complete picture.
+            hasPartiallyDeferredWork: openLead.flag_type === "partially_priced",
           },
         });
 
@@ -564,11 +581,12 @@ export async function handleInboundWhatsAppMessage(params: {
       isEmergency: result.isEmergency,
       lineItems,
       pendingNegotiatedPrice: result.hasNoPricedWork,
+      hasPartiallyDeferredWork: result.hasPartiallyDeferredWork,
     },
   });
 
   await adapter.sendMessage(
     fromPhone,
-    `${result.diagnosis} ${formatQuotePriceLine(result.totalLow, tenant.currency, result.isDiagnosisOnly, result.hasNoPricedWork)} This estimate is based on the photos and information provided remotely. If the actual issue or scope of work is different than what was presented, the final price may change after inspection. Want me to get this booked in?`,
+    `${result.diagnosis} ${formatQuotePriceLine(result.totalLow, tenant.currency, result.isDiagnosisOnly, result.hasNoPricedWork, result.hasPartiallyDeferredWork)} This estimate is based on the photos and information provided remotely. If the actual issue or scope of work is different than what was presented, the final price may change after inspection. Want me to get this booked in?`,
   );
 }

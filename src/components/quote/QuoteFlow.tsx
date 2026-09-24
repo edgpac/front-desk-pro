@@ -66,6 +66,7 @@ type ResultState = {
   totalHigh: number;
   isDiagnosisOnly: boolean;
   hasNoPricedWork: boolean;
+  hasPartiallyDeferredWork: boolean;
 };
 
 export function QuoteFlow({
@@ -274,6 +275,7 @@ export function QuoteFlow({
           history: thread,
           tenantSlug,
           hasNoPricedWork: result.hasNoPricedWork,
+          hasPartiallyDeferredWork: result.hasPartiallyDeferredWork,
         },
       });
       setThread((t) => [...t, { role: "desk", text: answer }]);
@@ -745,6 +747,16 @@ export function QuoteFlow({
               ) : (
                 <p className="mt-1.5 text-sm text-muted-foreground">
                   Firm once we see it in person. If it comes in under, you pay the under.
+                </p>
+              )}
+              {result.hasPartiallyDeferredWork && (
+                // P2 mixed-pricing: the total above is real and correct for
+                // what IS priced — this makes clear it isn't the whole
+                // request, without hiding the real number or replacing it
+                // with "Price pending".
+                <p className="mt-2 border-t border-border-strong pt-2 text-sm font-semibold text-accent">
+                  One part of this still needs an in-person look before we can price it — we'll confirm that
+                  separately.
                 </p>
               )}
             </>

@@ -114,6 +114,11 @@ function LeadDetail() {
   // review panel's title/copy (why this lead needs review), not for whether
   // a total/document can be shown.
   const isPendingPrice = lead?.flagType === "pending_negotiated_price";
+  // P2 mixed-pricing: same narrow purpose as isPendingPrice above, for the
+  // flagged-review panel's title/copy specifically — never reuses
+  // isPendingPrice's "the entire price is pending" wording, since here
+  // part of the request already has a real, confirmed price.
+  const isPartiallyPriced = lead?.flagType === "partially_priced";
   // P1-B: the authoritative answer to "can a real total be shown/used for
   // this lead right now" — covers both the active-flag case and the case a
   // flag was cleared (e.g. "Mark reviewed") without a price ever being
@@ -137,6 +142,7 @@ function LeadDetail() {
         total,
         currency: tenant.currency,
         noPriceYet: !pricingStatus.priced,
+        hasDeferredPortion: pricingStatus.priced && Boolean(pricingStatus.hasDeferredPortion),
       })
     : "";
   const message = manualMessage ?? suggestedReply;
@@ -281,7 +287,18 @@ function LeadDetail() {
       );
       return;
     }
-    const line = `📎 Sharing your ${DOCUMENT_LABEL[kind].toLowerCase()} (${docNumber}) — ${money(total, tenant.currency)} total.`;
+    // P2 mixed-pricing: same reasoning as BusinessDocument.tsx's guard —
+    // an invoice/receipt implies a final, complete charge, which a
+    // partially-priced lead isn't. A proposal (an estimate by nature) is
+    // still fine to share.
+    if (pricingStatus.hasDeferredPortion && kind !== "proposal") {
+      toast.error(
+        `Part of this request still needs pricing — a ${DOCUMENT_LABEL[kind].toLowerCase()} can't be shared until the whole job is priced. A proposal is fine to share in the meantime.`,
+      );
+      return;
+    }
+    const pendingNote = pricingStatus.hasDeferredPortion ? " (pricing pending for part of this request)" : "";
+    const line = `📎 Sharing your ${DOCUMENT_LABEL[kind].toLowerCase()} (${docNumber}) — ${money(total, tenant.currency)} total${pendingNote}.`;
     setManualMessage(message.trim() ? `${message}\n\n${line}` : line);
     toast.info("Added to the draft — will actually attach the document once a real channel is wired up.");
   }
@@ -350,14 +367,16 @@ function LeadDetail() {
           </Panel>
 
           {lead.status === "flagged" ? (
-            <Panel title={isPendingPrice ? "Pricing pending" : "Needs your review"}>
+            <Panel title={isPendingPrice ? "Pricing pending" : isPartiallyPriced ? "Partially priced" : "Needs your review"}>
               <p className="text-sm text-foreground">
                 {lead.flagReason || "The AI couldn't safely quote this automatically."}
               </p>
               <p className="mt-2 text-xs text-muted-foreground">
                 {isPendingPrice
                   ? "Call the customer to confirm the service-call/diagnostic fee, then add it as a line item below and mark this reviewed."
-                  : "No price was invented for this — reply to the customer yourself from the message thread below once you've worked out a number."}
+                  : isPartiallyPriced
+                    ? "Part of this request already has a real, priced line item below. Call the customer to confirm pricing for the rest, add it as another line item, then mark this reviewed."
+                    : "No price was invented for this — reply to the customer yourself from the message thread below once you've worked out a number."}
               </p>
               <div className="mt-3 flex justify-end">
                 <Button size="sm" variant="outline" onClick={() => void changeStatus("new")}>
@@ -466,7 +485,16 @@ function LeadDetail() {
             <div className="mt-3 flex items-center justify-between border-t border-border-strong pt-3">
               <span className="text-sm font-semibold text-foreground">Total</span>
               {pricingStatus.priced ? (
-                <span className="num text-lg font-extrabold text-foreground">{money(pricingStatus.amount, tenant.currency)}</span>
+                <span className="text-right">
+                  <span className="num block text-lg font-extrabold text-foreground">
+                    {money(pricingStatus.amount, tenant.currency)}
+                  </span>
+                  {pricingStatus.hasDeferredPortion && (
+                    <span className="block text-xs font-medium text-muted-foreground">
+                      + pricing pending for part of this request
+                    </span>
+                  )}
+                </span>
               ) : (
                 <span className="text-sm font-semibold text-muted-foreground">{pricingStatus.label}</span>
               )}

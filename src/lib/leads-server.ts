@@ -19,7 +19,13 @@ type LeadRow = {
   diagnosis: string;
   confidence: Lead["confidence"] | null;
   flag_reason: string | null;
-  flag_type: "conflicting_information" | "needs_human_review" | "outside_service_scope" | "pending_negotiated_price" | null;
+  flag_type:
+    | "conflicting_information"
+    | "needs_human_review"
+    | "outside_service_scope"
+    | "pending_negotiated_price"
+    | "partially_priced"
+    | null;
   ai_line_items_snapshot: LineItem[] | null;
   created_at: string;
 };

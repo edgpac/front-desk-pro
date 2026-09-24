@@ -15,6 +15,11 @@ type NotifyLead = {
   // same authoritative signal, threaded through so this email never
   // renders a fabricated "$0" for a quote that was never actually priced.
   pendingNegotiatedPrice?: boolean;
+  // P2 mixed-pricing: see public-lead-server.ts's
+  // CreateLeadInput.hasPartiallyDeferredWork — the lineItems/total below
+  // ARE real in this case (mutually exclusive with pendingNegotiatedPrice),
+  // this only adds a notice that they're not the whole picture.
+  hasPartiallyDeferredWork?: boolean;
 };
 
 // Ported from Cabos Handyman's api/send-booking-email.js — a real, already-
@@ -77,7 +82,12 @@ function buildEmailHtml(params: { tenant: NotifyTenant; lead: NotifyLead; lineIt
             <td style="padding: 10px 5px;"><strong>Total</strong></td>
             <td style="padding: 10px 5px; text-align: right; font-size: 18px; color: #B4531F;"><strong>${money(total, tenant.currency)}</strong></td>
           </tr>
-        </table>`
+        </table>
+        ${
+          lead.hasPartiallyDeferredWork
+            ? `<p style="margin: 10px 0 0; font-weight: bold; color: #B4531F;">Part of this request still needs pricing — call the customer to confirm before finalizing.</p>`
+            : ""
+        }`
         }
       </div>
 

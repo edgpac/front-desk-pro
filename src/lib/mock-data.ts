@@ -45,7 +45,17 @@ export type Lead = {
   // no price was ever determined (service_call_fee_mode = "negotiated",
   // nothing else matched) — never the same thing as a genuine $0 lead, and
   // every consumer that displays this lead's total must check this first.
-  flagType?: "conflicting_information" | "needs_human_review" | "outside_service_scope" | "pending_negotiated_price" | null;
+  // "partially_priced" (P2 mixed-pricing) means the opposite mix: at least
+  // one issue has a real, priced line item AND at least one other issue is
+  // still deferred — distinct from pending_negotiated_price (nothing priced
+  // at all) and from a plain unflagged lead (fully priced, nothing pending).
+  flagType?:
+    | "conflicting_information"
+    | "needs_human_review"
+    | "outside_service_scope"
+    | "pending_negotiated_price"
+    | "partially_priced"
+    | null;
 };
 
 // Structural type, not LineItem — callers with a narrower shape (e.g.
@@ -79,7 +89,17 @@ export const money = (n: number, currency: string = "USD") =>
 // AI/owner explicitly priced something at $0) — it is never confused with
 // "no line items at all," so checking lineItems.length here is safe and
 // exact, not a heuristic.
-export type LeadPricingStatus = { priced: false; label: "Price pending" | "Not yet priced" } | { priced: true; amount: number };
+//
+// P2 addition: hasDeferredPortion is optional and additive — every existing
+// caller that only checks `.priced`/`.amount` keeps compiling and behaving
+// identically. Only a "partially_priced" lead (real line items AND at least
+// one other issue still deferred — see estimate-server.ts's
+// hasPartiallyDeferredWork) ever sets it, and the canonical amount is still
+// exactly the sum of the real, priced line items — the deferred portion
+// never contributes a number, invented or otherwise.
+export type LeadPricingStatus =
+  | { priced: false; label: "Price pending" | "Not yet priced" }
+  | { priced: true; amount: number; hasDeferredPortion?: boolean };
 
 export function getLeadPricingStatus(lead: {
   flagType?: Lead["flagType"];
@@ -87,7 +107,9 @@ export function getLeadPricingStatus(lead: {
 }): LeadPricingStatus {
   if (lead.flagType === "pending_negotiated_price") return { priced: false, label: "Price pending" };
   if (lead.lineItems.length === 0) return { priced: false, label: "Not yet priced" };
-  return { priced: true, amount: lineItemsTotal(lead.lineItems) };
+  const amount = lineItemsTotal(lead.lineItems);
+  if (lead.flagType === "partially_priced") return { priced: true, amount, hasDeferredPortion: true };
+  return { priced: true, amount };
 }
 
 export const LEADS: Lead[] = [

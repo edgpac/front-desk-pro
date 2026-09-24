@@ -15,6 +15,11 @@ export function buildSuggestedReply(params: {
   // meaningless in either case (0, nothing was priced) — the reply must
   // never say "Estimated price: $0" for either.
   noPriceYet?: boolean;
+  // P2 mixed-pricing: mutually exclusive with noPriceYet — `total` here IS
+  // real and correct, but it's only part of the original request; another
+  // issue is still deferred. See mock-data.ts's
+  // LeadPricingStatus.hasDeferredPortion.
+  hasDeferredPortion?: boolean;
 }) {
   const language = detectLanguage(params.problem, params.diagnosis);
   if (params.noPriceYet) {
@@ -24,6 +29,12 @@ export function buildSuggestedReply(params: {
     return `${params.diagnosis} The exact service-call/diagnostic fee will be confirmed when we contact you. This estimate is based on the photos and information provided remotely. Want me to get this scheduled?`;
   }
   const amount = money(params.total, params.currency ?? "USD");
+  if (params.hasDeferredPortion) {
+    if (language === "es") {
+      return `Según las fotos: ${params.diagnosis} Precio confirmado para lo anterior: ${amount}. El resto de lo que describió aún necesita una revisión en persona — le confirmaremos ese precio por separado, sin monto estimado por ahora. ¿Le gustaría que agendemos la visita?`;
+    }
+    return `${params.diagnosis} Confirmed price for the above: ${amount}. The rest of what you described still needs an in-person look — we'll confirm that price separately, no estimate for it yet. Want me to get this booked in?`;
+  }
   if (language === "es") {
     return `Según las fotos: ${params.diagnosis} Precio estimado: ${amount}. Este estimado se basa en las fotos e información proporcionada de forma remota. Si el problema real o el alcance del trabajo es diferente a lo presentado, el precio final podría cambiar después de una inspección en sitio. ¿Le gustaría que agendemos la visita?`;
   }

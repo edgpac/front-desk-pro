@@ -135,6 +135,14 @@ export type QuoteResult =
       // matched). totalLow/totalHigh are 0 here but that's not a real price
       // of $0 — the UI must not show a "$0–$0" headline for this.
       hasNoPricedWork: boolean;
+      // P2 mixed-pricing: true when at least one described issue matched
+      // and priced (lineItems.length > 0 — mutually exclusive with
+      // hasNoPricedWork by construction) AND at least one other issue was
+      // deferred (a matchedServices entry with priceSheetItemId: null).
+      // totalLow/totalHigh here are the real, correct sum of the priced
+      // portion only — never inflated or padded for the deferred issue,
+      // which must never receive an invented amount.
+      hasPartiallyDeferredWork: boolean;
     };
 
 export const SAMPLE_PRICE_SHEET: PriceSheetItem[] = [
@@ -988,7 +996,11 @@ function validateQuoteAgainstPriceSheet(
   return failures;
 }
 
-function buildQuoteResult(parsed: any, priceSheet: PriceSheetItem[]): QuoteResult {
+// Exported only so the P2 mixed-pricing assertion script can construct
+// inputs and verify hasPartiallyDeferredWork/hasNoPricedWork directly —
+// getQuoteEstimate itself needs network/DB access, not practical for a
+// standalone script (no test framework exists in this repo).
+export function buildQuoteResult(parsed: any, priceSheet: PriceSheetItem[]): QuoteResult {
   const lineItems: LineItem[] = Array.isArray(parsed.lineItems) ? parsed.lineItems : [];
   // Always the mechanical sum of the (already-validated) line items —
   // never whatever Claude separately reported. Every line item already
@@ -1032,6 +1044,19 @@ function buildQuoteResult(parsed: any, priceSheet: PriceSheetItem[]): QuoteResul
   // to be confirmed") — the UI needs a third distinct state, not the normal
   // priced-job headline.
   const hasNoPricedWork = lineItems.length === 0;
+  // P2 mixed-pricing: matchedServices is the per-issue reasoning step
+  // (PRICE-SHEET MATCHING RULES rule 1) — already parsed, already used by
+  // validateQuoteAgainstPriceSheet above, discarded after this function
+  // returns. priceSheetItemId: null on an entry means that specific issue
+  // was deferred (negotiated mode) or out-of-scope; mutually exclusive
+  // with hasNoPricedWork by construction (that requires zero line items,
+  // this requires at least one).
+  const matchedServices: Array<{ priceSheetItemId: string | null } | null | undefined> = Array.isArray(
+    parsed.matchedServices,
+  )
+    ? parsed.matchedServices
+    : [];
+  const hasPartiallyDeferredWork = !hasNoPricedWork && matchedServices.some((m) => m?.priceSheetItemId == null);
   const total = lineItems.reduce((sum, i) => sum + (Number(i.amount) || 0), 0);
   return {
     needsClarification: false,
@@ -1044,6 +1069,7 @@ function buildQuoteResult(parsed: any, priceSheet: PriceSheetItem[]): QuoteResul
     lineItems,
     isDiagnosisOnly,
     hasNoPricedWork,
+    hasPartiallyDeferredWork,
     totalLow: total,
     totalHigh: total,
   };
@@ -1243,6 +1269,13 @@ export type FollowUpInput = {
   // distinguish "nothing priced yet, by design" from "something went
   // wrong" when answering a pricing question.
   hasNoPricedWork?: boolean;
+  // P2 mixed-pricing: same meaning as QuoteResult.hasPartiallyDeferredWork
+  // — lineItems here IS real and non-empty, but it's only PART of what the
+  // customer originally described; another issue is still deferred.
+  // Without this, a "how much total?" question gets answered from the
+  // listed line items alone, silently implying they're the complete
+  // picture. Mutually exclusive with hasNoPricedWork.
+  hasPartiallyDeferredWork?: boolean;
 };
 
 export const getFollowUpAnswer = createServerFn({ method: "POST" })
@@ -1273,7 +1306,9 @@ export const getFollowUpAnswer = createServerFn({ method: "POST" })
 
     const pricingStatusBlock = data.hasNoPricedWork
       ? `\n\nPRICING STATUS: pending. No final price has been determined for this yet — the service-call/diagnostic fee is confirmed directly with the customer, not quoted automatically. Never state or imply $0, never invent a number, and never treat the empty line items above as "free" or "nothing to pay." If asked about price, say plainly that it will be confirmed when the business is in touch.`
-      : "";
+      : data.hasPartiallyDeferredWork
+        ? `\n\nPRICING STATUS: partial. The line items above are only PART of what this customer originally described — at least one other issue from the same request still has no determined price and is confirmed separately, directly with the customer. If asked for a total or "how much for everything," state the known line-item total clearly, then separately say the remaining item's price is still being confirmed — never imply the line items above are the complete picture, and never invent a number for the unresolved item.`
+        : "";
 
     const prompt = `You are answering a follow-up question on behalf of ${data.businessName} about an estimate you already gave a customer.
 

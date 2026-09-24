@@ -128,7 +128,8 @@ function DashboardHome() {
                     <span className="num text-sm text-foreground">
                       {(() => {
                         const pricing = getLeadPricingStatus(lead);
-                        return pricing.priced ? money(pricing.amount) : pricing.label;
+                        if (!pricing.priced) return pricing.label;
+                        return pricing.hasDeferredPortion ? `${money(pricing.amount)} + pending` : money(pricing.amount);
                       })()}
                     </span>
                     <StatusPill status={lead.status} />
