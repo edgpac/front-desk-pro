@@ -149,20 +149,25 @@ export async function handleInboundWhatsAppMessage(params: {
     // The original photo stays canonical regardless of whether this reply
     // has its own attachment — re-fetched fresh each round via the adapter
     // (a stable Twilio media URL today; a Meta media id in a future
-    // channel) rather than a cached short-lived redirect.
-    let clarifyImageBase64: string;
-    let clarifyImageMediaType: string;
-    try {
-      const media = await adapter.fetchMedia(openLead.photo_url);
-      clarifyImageBase64 = media.base64;
-      clarifyImageMediaType = media.mediaType;
-    } catch (err) {
-      console.error("Could not re-download the original WhatsApp photo:", err);
-      await adapter.sendMessage(
-        fromPhone,
-        "Sorry, I lost track of the original photo — could you resend it along with your answer?",
-      );
-      return;
+    // channel) rather than a cached short-lived redirect. A text-only
+    // original lead has no photo to re-fetch at all (see photoUrl: "" at
+    // lead creation, below) — that's an expected, valid state, not a lost
+    // photo, so it must not hit the "lost track of it" fallback every round.
+    let clarifyImageBase64: string | undefined;
+    let clarifyImageMediaType: string | undefined;
+    if (openLead.photo_url) {
+      try {
+        const media = await adapter.fetchMedia(openLead.photo_url);
+        clarifyImageBase64 = media.base64;
+        clarifyImageMediaType = media.mediaType;
+      } catch (err) {
+        console.error("Could not re-download the original WhatsApp photo:", err);
+        await adapter.sendMessage(
+          fromPhone,
+          "Sorry, I lost track of the original photo — could you resend it along with your answer?",
+        );
+        return;
+      }
     }
 
     let clarifyResult;
@@ -175,8 +180,8 @@ export async function handleInboundWhatsAppMessage(params: {
           serviceCallFeeMode: tenant.serviceCallFeeMode,
           priceSheet: clarifyPriceSheet,
           description: openLead.problem,
-          imageBase64: clarifyImageBase64,
-          imageMediaType: clarifyImageMediaType,
+          ...(clarifyImageBase64 !== undefined ? { imageBase64: clarifyImageBase64 } : {}),
+          ...(clarifyImageMediaType !== undefined ? { imageMediaType: clarifyImageMediaType } : {}),
           answers,
         },
       });
