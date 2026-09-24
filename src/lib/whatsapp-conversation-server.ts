@@ -232,7 +232,7 @@ export async function handleInboundWhatsAppMessage(params: {
     await finalizeLeadWithQuote({
       data: {
         leadId: openLead.id,
-        tenant: { name: tenant.name, email: tenant.email, currency: tenant.currency },
+        tenantSlug: tenant.slug,
         customerName: openLead.customer_name || profileName || "WhatsApp customer",
         phone: fromPhone,
         channel,

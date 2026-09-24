@@ -17,7 +17,14 @@ import {
   type LineItem,
   type PriceSheetItem,
 } from "@/lib/estimate-server";
-import { createLead, createFlaggedLead } from "@/lib/public-lead-server";
+import {
+  createLead,
+  createFlaggedLead,
+  createClarifyingLead,
+  finalizeLeadWithQuote,
+  finalizeLeadAsOutOfScope,
+  saveClarificationMessages,
+} from "@/lib/public-lead-server";
 import leakPhoto from "@/assets/leak-detail.jpg";
 import panelPhoto from "@/assets/electrician-panel.jpg";
 import sinkPhoto from "@/assets/plumber-under-sink.jpg";
@@ -105,6 +112,12 @@ export function QuoteFlow({
   const [phone, setPhone] = useState("");
   const [sendingLead, setSendingLead] = useState(false);
   const [leadSent, setLeadSent] = useState(false);
+  // P1-D: set the moment a clarification round is first persisted (see
+  // submitToAI below). Null means either no clarification has happened yet,
+  // or this is a demo/no-tenant session (tenantSlug undefined) where nothing
+  // is ever persisted. Once set, later rounds/finalization update this same
+  // lead instead of creating new ones.
+  const [clarifyingLeadId, setClarifyingLeadId] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const descriptionRef = useRef<HTMLTextAreaElement>(null);
 
@@ -138,7 +151,54 @@ export function QuoteFlow({
     return {};
   }
 
-  async function submitToAI(answersForThisRound: Answer[]) {
+  // P1-D: persists this round's Q&A to lead_messages, creating the
+  // clarifying lead on the very first round if one doesn't exist yet.
+  // newAnswersThisRound is just the round that was JUST answered (empty on
+  // the initial submission, which has nothing to answer yet) — kept
+  // separate from the full accumulated answers passed to getQuoteEstimate
+  // so this never re-persists earlier rounds. Never blocks the customer's
+  // flow on a persistence failure: the in-memory clarification loop (via
+  // priorAnswers/questions state) already works today regardless of this,
+  // so a failure here is logged and swallowed, not surfaced as an error.
+  async function persistClarificationRound(newAnswersThisRound: Answer[], nextQuestions: ClarifyingQuestion[]) {
+    if (!tenantSlug) return; // demo/no-tenant session — nothing to persist to
+    try {
+      if (clarifyingLeadId === null) {
+        // No clarification has ever happened for this request, and this
+        // round resolved immediately (a final quote or out-of-scope on the
+        // very first call) — nothing to persist here; sendQuoteToBusiness/
+        // sendFlaggedRequest create the lead normally, exactly as before.
+        if (nextQuestions.length === 0) return;
+        const { id } = await createClarifyingLead({
+          data: { tenantSlug, customerName: "", phone: "", channel, photoUrl: "", problem: description },
+        });
+        setClarifyingLeadId(id);
+        await saveClarificationMessages({
+          data: {
+            leadId: id,
+            messages: [
+              { role: "customer", body: description },
+              ...nextQuestions.map((q) => ({ role: "assistant" as const, body: q.question })),
+            ],
+          },
+        });
+      } else {
+        await saveClarificationMessages({
+          data: {
+            leadId: clarifyingLeadId,
+            messages: [
+              ...newAnswersThisRound.map((a) => ({ role: "customer" as const, body: a.answer })),
+              ...nextQuestions.map((q) => ({ role: "assistant" as const, body: q.question })),
+            ],
+          },
+        });
+      }
+    } catch (err) {
+      console.error("Could not persist clarification round:", err);
+    }
+  }
+
+  async function submitToAI(answersForThisRound: Answer[], newAnswersThisRound: Answer[] = []) {
     setStage("loading");
     try {
       const { base64, mediaType } = await resolveImage();
@@ -158,6 +218,7 @@ export function QuoteFlow({
       });
 
       if (outcome.needsClarification) {
+        await persistClarificationRound(newAnswersThisRound, outcome.questions);
         setQuestions(outcome.questions);
         setAnswers({});
         setStage("clarify");
@@ -165,10 +226,15 @@ export function QuoteFlow({
       }
 
       if (outcome.outOfScope) {
+        // The lead still resolves to "out of scope" as a final state — no
+        // further questions — so persist the round's answers with no
+        // follow-up questions, same helper, empty nextQuestions.
+        await persistClarificationRound(newAnswersThisRound, []);
         setStage("outOfScope");
         return;
       }
 
+      await persistClarificationRound(newAnswersThisRound, []);
       setResult(outcome);
       setStage("result");
     } catch (err) {
@@ -184,7 +250,7 @@ export function QuoteFlow({
     }));
     const combined = [...priorAnswers, ...newAnswers];
     setPriorAnswers(combined);
-    void submitToAI(combined);
+    void submitToAI(combined, newAnswers);
   }
 
   async function ask() {
@@ -230,6 +296,7 @@ export function QuoteFlow({
     setCustomerName("");
     setPhone("");
     setLeadSent(false);
+    setClarifyingLeadId(null);
   }
 
   async function sendQuoteToBusiness() {
@@ -243,26 +310,47 @@ export function QuoteFlow({
     }
     setSendingLead(true);
     try {
-      await createLead({
-        data: {
-          tenantSlug,
-          customerName: customerName.trim(),
-          phone: phone.trim(),
-          address: "",
-          channel,
-          problem: description,
-          diagnosis: result.diagnosis,
-          confidence: result.confidence,
-          isEmergency: result.isEmergency,
-          pendingNegotiatedPrice: result.hasNoPricedWork,
-          lineItems: result.lineItems.map((item) => ({
-            description: item.detail ? `${item.description} — ${item.detail}` : item.description,
-            qty: 1,
-            unit: "job",
-            rate: item.amount,
-          })),
-        },
-      });
+      const lineItems = result.lineItems.map((item) => ({
+        description: item.detail ? `${item.description} — ${item.detail}` : item.description,
+        qty: 1,
+        unit: "job",
+        rate: item.amount,
+      }));
+      // P1-D: a clarifying lead already exists from an earlier round —
+      // complete that same row instead of inserting a second one.
+      if (clarifyingLeadId !== null) {
+        await finalizeLeadWithQuote({
+          data: {
+            leadId: clarifyingLeadId,
+            tenantSlug,
+            customerName: customerName.trim(),
+            phone: phone.trim(),
+            channel,
+            problem: description,
+            diagnosis: result.diagnosis,
+            confidence: result.confidence,
+            isEmergency: result.isEmergency,
+            pendingNegotiatedPrice: result.hasNoPricedWork,
+            lineItems,
+          },
+        });
+      } else {
+        await createLead({
+          data: {
+            tenantSlug,
+            customerName: customerName.trim(),
+            phone: phone.trim(),
+            address: "",
+            channel,
+            problem: description,
+            diagnosis: result.diagnosis,
+            confidence: result.confidence,
+            isEmergency: result.isEmergency,
+            pendingNegotiatedPrice: result.hasNoPricedWork,
+            lineItems,
+          },
+        });
+      }
       setLeadSent(true);
       toast.success("Sent — the business will reach out.");
     } catch (err) {
@@ -284,18 +372,31 @@ export function QuoteFlow({
     }
     setSendingLead(true);
     try {
-      await createFlaggedLead({
-        data: {
-          tenantSlug,
-          customerName: customerName.trim(),
-          phone: phone.trim(),
-          channel,
-          photoUrl: null,
-          problem: description,
-          flagType: "outside_service_scope",
-          flagReason: `Nothing on the price sheet covers: ${description}`,
-        },
-      });
+      // P1-D: same reasoning as sendQuoteToBusiness above — complete the
+      // existing clarifying lead rather than creating a duplicate.
+      if (clarifyingLeadId !== null) {
+        await finalizeLeadAsOutOfScope({
+          data: {
+            leadId: clarifyingLeadId,
+            customerName: customerName.trim(),
+            phone: phone.trim(),
+            flagReason: `Nothing on the price sheet covers: ${description}`,
+          },
+        });
+      } else {
+        await createFlaggedLead({
+          data: {
+            tenantSlug,
+            customerName: customerName.trim(),
+            phone: phone.trim(),
+            channel,
+            photoUrl: null,
+            problem: description,
+            flagType: "outside_service_scope",
+            flagReason: `Nothing on the price sheet covers: ${description}`,
+          },
+        });
+      }
       setLeadSent(true);
       toast.success("Sent — the business will reach out with a custom quote.");
     } catch (err) {

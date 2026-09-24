@@ -331,7 +331,12 @@ export const createClarifyingLead = createServerFn({ method: "POST" })
 
 type FinalizeLeadInput = {
   leadId: string;
-  tenant: { name: string; email: string; currency: string };
+  // Resolved server-side, same as createLead/createClarifyingLead — not
+  // trusted from the caller. WhatsApp already has this data in hand but
+  // looks it up fresh anyway (cheap, and one less shape to keep in sync);
+  // the widget (P1-D) never had it available as a prop at all, so this is
+  // required, not just a simplification.
+  tenantSlug: string;
   customerName: string;
   phone: string;
   channel: "Widget" | "Quote link" | "Shared link" | "WhatsApp";
@@ -353,9 +358,28 @@ export const finalizeLeadWithQuote = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const admin = getAdminClient();
 
+    const { data: tenant, error: tenantError } = await admin
+      .from("tenants")
+      .select("name, email, currency")
+      .eq("slug", data.tenantSlug)
+      .single();
+    if (tenantError || !tenant) {
+      throw new Error(INTAKE_UNAVAILABLE_MESSAGE);
+    }
+
     const { error: updateError } = await admin
       .from("leads")
       .update({
+        // Writing customer_name/phone here too (not just diagnosis/quote
+        // fields) is required for the widget (P1-D): unlike WhatsApp, which
+        // already has a real phone/profile name the moment
+        // createClarifyingLead runs, the widget only collects contact info
+        // at the very end of the flow, after any clarification rounds — so
+        // the row created earlier still has empty placeholders that need
+        // to be filled in here. A no-op for WhatsApp, which already wrote
+        // the same values at createClarifyingLead time.
+        customer_name: data.customerName,
+        phone: data.phone,
         diagnosis: data.diagnosis,
         confidence: data.confidence,
         ai_line_items_snapshot: data.lineItems,
@@ -387,7 +411,7 @@ export const finalizeLeadWithQuote = createServerFn({ method: "POST" })
     const total = lineItemsTotal(data.lineItems);
 
     void sendLeadNotificationEmail({
-      tenant: data.tenant,
+      tenant: { name: tenant.name, email: tenant.email, currency: tenant.currency },
       lead: {
         customer: data.customerName,
         phone: data.phone,
@@ -404,4 +428,58 @@ export const finalizeLeadWithQuote = createServerFn({ method: "POST" })
     });
 
     return { id: data.leadId, total };
+  });
+
+// P1-D: generic "append messages to a lead's thread" — used by the widget
+// (QuoteFlow.tsx) to persist clarification Q&A as it happens, the same
+// lead_messages table WhatsApp already reads/writes for the identical
+// purpose (see whatsapp-conversation-server.ts's deterministic pairing).
+// Deliberately generic rather than "saveClarificationRound" or similar —
+// the caller decides what belongs in the transcript and in what order;
+// this just persists it. Same anonymous-write trust model as createLead/
+// finalizeLeadWithQuote above: the leadId is an opaque id the calling
+// widget session already legitimately holds, not a new security boundary.
+export const saveClarificationMessages = createServerFn({ method: "POST" })
+  .validator((input: { leadId: string; messages: Array<{ role: "customer" | "assistant"; body: string }> }) => input)
+  .handler(async ({ data }) => {
+    if (data.messages.length === 0) return { ok: true as const };
+    const admin = getAdminClient();
+    const { error } = await admin
+      .from("lead_messages")
+      .insert(data.messages.map((m) => ({ lead_id: data.leadId, role: m.role, body: m.body })));
+    if (error) throw new Error(`Could not save messages: ${error.message}`);
+    return { ok: true as const };
+  });
+
+type FinalizeAsOutOfScopeInput = {
+  leadId: string;
+  customerName: string;
+  phone: string;
+  flagReason: string;
+};
+
+// P1-D's other necessary half: once createClarifyingLead has started a
+// widget lead, a later "actually this is out of scope" outcome must
+// complete that same row (same reasoning as finalizeLeadWithQuote above),
+// not insert a second lead via createFlaggedLead — that would silently
+// duplicate every clarified-then-out-of-scope request. Same shape as the
+// WhatsApp equivalent (whatsapp-conversation-server.ts's inline update in
+// its own out-of-scope branch), exposed here as a public function since
+// the widget has no admin-client access of its own.
+export const finalizeLeadAsOutOfScope = createServerFn({ method: "POST" })
+  .validator((input: FinalizeAsOutOfScopeInput) => input)
+  .handler(async ({ data }) => {
+    const admin = getAdminClient();
+    const { error } = await admin
+      .from("leads")
+      .update({
+        customer_name: data.customerName,
+        phone: data.phone,
+        status: "flagged",
+        flag_type: "outside_service_scope",
+        flag_reason: data.flagReason,
+      })
+      .eq("id", data.leadId);
+    if (error) throw new Error(`Could not update lead: ${error.message}`);
+    return { id: data.leadId };
   });
