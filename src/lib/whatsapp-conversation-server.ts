@@ -331,14 +331,20 @@ export async function handleInboundWhatsAppMessage(params: {
 
   // A genuinely new job — either a first-time conversation, or a returning
   // customer the block above just determined has a different problem this
-  // time (new photo attached, or classified as such). Real-world finding
-  // from Cabos Handyman's actual WhatsApp use (see ROADMAP.md): customers
-  // greet first and don't lead with a photo unless asked. Ask immediately
-  // rather than attempting a diagnosis with nothing to diagnose.
-  if (!mediaRef) {
+  // time (new photo attached, or classified as such). A photo is the best
+  // signal, but getQuoteEstimate already handles a text-only description
+  // fine (imageBase64 is optional — the same call shape the widget's
+  // text-only flow already uses successfully). Only ask for more when the
+  // description itself is too thin to work with — matching the widget's
+  // own canSubmit threshold (QuoteFlow.tsx) — rather than always demanding
+  // a photo regardless of what the customer already said, which reads as a
+  // broken bot repeating itself when the customer has, in fact, described
+  // the job in enough detail.
+  const hasSubstantialDescription = body.trim().length > 10;
+  if (!mediaRef && !hasSubstantialDescription) {
     await adapter.sendMessage(
       fromPhone,
-      `Thanks for reaching out to ${tenant.name}! To get you a fast, accurate price, please send a photo along with a quick description of what you need.`,
+      `Thanks for reaching out to ${tenant.name}! To get you a fast, accurate price, send a photo along with a description of what you need — or just describe the problem in more detail and I can help without one.`,
     );
     return;
   }
@@ -364,16 +370,18 @@ export async function handleInboundWhatsAppMessage(params: {
     diagnosisFee: row.diagnosis_pricing_type ? { pricingType: row.diagnosis_pricing_type, amount: row.diagnosis_fee } : null,
   }));
 
-  let imageBase64: string;
-  let imageMediaType: string;
-  try {
-    const media = await adapter.fetchMedia(mediaRef);
-    imageBase64 = media.base64;
-    imageMediaType = media.mediaType;
-  } catch (err) {
-    console.error("Could not download WhatsApp photo:", err);
-    await adapter.sendMessage(fromPhone, "I couldn't load that photo — could you try sending it again?");
-    return;
+  let imageBase64: string | undefined;
+  let imageMediaType: string | undefined;
+  if (mediaRef) {
+    try {
+      const media = await adapter.fetchMedia(mediaRef);
+      imageBase64 = media.base64;
+      imageMediaType = media.mediaType;
+    } catch (err) {
+      console.error("Could not download WhatsApp photo:", err);
+      await adapter.sendMessage(fromPhone, "I couldn't load that photo — could you try sending it again?");
+      return;
+    }
   }
 
   let result;
@@ -386,8 +394,8 @@ export async function handleInboundWhatsAppMessage(params: {
         serviceCallFeeMode: tenant.serviceCallFeeMode,
         priceSheet,
         description: body || NO_DESCRIPTION_PLACEHOLDER,
-        imageBase64,
-        imageMediaType,
+        ...(imageBase64 !== undefined ? { imageBase64 } : {}),
+        ...(imageMediaType !== undefined ? { imageMediaType } : {}),
       },
     });
   } catch (err) {
@@ -414,7 +422,11 @@ export async function handleInboundWhatsAppMessage(params: {
         customerName: profileName || "WhatsApp customer",
         phone: fromPhone,
         channel,
-        photoUrl: mediaRef,
+        // No photo on a text-only lead — "" is the same "nothing to
+        // re-fetch" signal the clarification-continuation branch above
+        // already treats as expected (falls into its existing "lost track
+        // of the photo, please resend" guard) rather than a real media ref.
+        photoUrl: mediaRef ?? "",
         problem: openingProblem,
       },
     });
@@ -434,7 +446,7 @@ export async function handleInboundWhatsAppMessage(params: {
         customerName: profileName || "WhatsApp customer",
         phone: fromPhone,
         channel,
-        photoUrl: mediaRef,
+        photoUrl: mediaRef ?? null,
         problem: openingProblem,
         flagType: "outside_service_scope",
         flagReason: `Nothing on the price sheet covers: ${openingProblem}`,
@@ -465,7 +477,7 @@ export async function handleInboundWhatsAppMessage(params: {
       phone: fromPhone,
       address: "",
       channel,
-      photoUrl: mediaRef,
+      ...(mediaRef !== undefined ? { photoUrl: mediaRef } : {}),
       problem: body || NO_DESCRIPTION_PLACEHOLDER,
       diagnosis: result.diagnosis,
       confidence: result.confidence,
