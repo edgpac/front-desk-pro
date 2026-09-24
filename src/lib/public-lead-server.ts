@@ -483,3 +483,36 @@ export const finalizeLeadAsOutOfScope = createServerFn({ method: "POST" })
     if (error) throw new Error(`Could not update lead: ${error.message}`);
     return { id: data.leadId };
   });
+
+type FinalizeAsNeedsReviewInput = {
+  leadId: string;
+  customerName: string;
+  phone: string;
+};
+
+// Widget equivalent of the WhatsApp needs_human_review handling (P2): a
+// clarifying lead already exists when getQuoteEstimate exhausts its retry
+// on the finalize attempt. The widget never collects contact info until
+// after a successful quote, so without this the customer hit a dead-end
+// error screen having never been asked for a name/phone, and the lead sat
+// in the dashboard looking like a normal, silently-incomplete "new" lead
+// with no way for the business to actually reach them. Same pattern as
+// finalizeLeadAsOutOfScope: complete the existing row, don't insert a
+// second one.
+export const finalizeLeadAsNeedsReview = createServerFn({ method: "POST" })
+  .validator((input: FinalizeAsNeedsReviewInput) => input)
+  .handler(async ({ data }) => {
+    const admin = getAdminClient();
+    const { error } = await admin
+      .from("leads")
+      .update({
+        customer_name: data.customerName,
+        phone: data.phone,
+        status: "flagged",
+        flag_type: "needs_human_review",
+        flag_reason: "AI couldn't finalize this quote automatically after clarification.",
+      })
+      .eq("id", data.leadId);
+    if (error) throw new Error(`Could not update lead: ${error.message}`);
+    return { id: data.leadId };
+  });

@@ -243,17 +243,22 @@ export async function handleInboundWhatsAppMessage(params: {
       // forever, so every future message from this phone re-entered this
       // exact same clarification round for the rest of the 48-hour window,
       // live-confirmed as an actual defect. Mark it terminal instead: the
-      // conversation and its history are preserved, but the lead no longer
-      // satisfies the active-clarification gate above, so the next message
-      // won't loop back here — see needs_human_review handling at the top
-      // of this function.
+      // conversation and its history are preserved, and decideLeadRoute
+      // sends the NEXT message from this phone to fresh_quote (not back
+      // into clarification) — this message is only the one-time
+      // acknowledgment of this specific failure.
       console.error(`WhatsApp clarification finalize failed for lead ${openLead.id}, marking needs_human_review:`, err);
       await admin
         .from("leads")
         .update({ status: "flagged", flag_type: "needs_human_review", flag_reason: "AI couldn't finalize this quote automatically after clarification." })
         .eq("id", openLead.id);
+      // Deliberately not "sent to the team for review" — reads like an
+      // escalation/complaint. Softer framing, and explicitly invites a new
+      // request in the same breath (the next message gets a genuine fresh
+      // attempt either way, per decideLeadRoute — this just tells the
+      // customer that's an option instead of leaving it implicit).
       const recoveryMessage =
-        "Thanks for the additional information. We've sent this to the team for review, and someone will follow up with you.";
+        "Got it — we've noted everything so far, and the team will follow up with you on a price. If you're asking about something else, just describe it and we'll get you a fresh estimate.";
       await admin.from("lead_messages").insert({ lead_id: openLead.id, role: "assistant", body: recoveryMessage });
       await adapter.sendMessage(fromPhone, recoveryMessage);
       return;

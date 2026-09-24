@@ -23,6 +23,7 @@ import {
   createClarifyingLead,
   finalizeLeadWithQuote,
   finalizeLeadAsOutOfScope,
+  finalizeLeadAsNeedsReview,
   saveClarificationMessages,
 } from "@/lib/public-lead-server";
 import leakPhoto from "@/assets/leak-detail.jpg";
@@ -52,7 +53,7 @@ const SAMPLE_PHOTOS: SamplePhoto[] = [
   },
 ];
 
-type Stage = "intake" | "loading" | "clarify" | "result" | "outOfScope" | "error";
+type Stage = "intake" | "loading" | "clarify" | "result" | "outOfScope" | "needsReview";
 
 type ResultState = {
   isEmergency: boolean;
@@ -104,7 +105,6 @@ export function QuoteFlow({
   const [answers, setAnswers] = useState<Record<number, string>>({});
   const [priorAnswers, setPriorAnswers] = useState<Answer[]>([]);
   const [result, setResult] = useState<ResultState | null>(null);
-  const [errorMessage, setErrorMessage] = useState("");
   const [thread, setThread] = useState<{ role: "customer" | "desk"; text: string }[]>([]);
   const [draft, setDraft] = useState("");
   const [askingFollowUp, setAskingFollowUp] = useState(false);
@@ -238,8 +238,13 @@ export function QuoteFlow({
       setResult(outcome);
       setStage("result");
     } catch (err) {
-      setErrorMessage(err instanceof Error ? err.message : "Something went wrong. Try again.");
-      setStage("error");
+      // getQuoteEstimate exhausted its retry — never a dead-end error
+      // screen, since the customer hasn't been asked for contact info yet
+      // at this point and "the business will follow up manually" would be
+      // false without it. needsReview collects it (same pattern as
+      // outOfScope) and marks the lead for human review instead.
+      console.error("Could not finalize this quote:", err);
+      setStage("needsReview");
     }
   }
 
@@ -291,7 +296,6 @@ export function QuoteFlow({
     setAnswers({});
     setPriorAnswers([]);
     setResult(null);
-    setErrorMessage("");
     setThread([]);
     setCustomerName("");
     setPhone("");
@@ -399,6 +403,51 @@ export function QuoteFlow({
       }
       setLeadSent(true);
       toast.success("Sent — the business will reach out with a custom quote.");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Couldn't send that — try again.");
+    } finally {
+      setSendingLead(false);
+    }
+  }
+
+  // P2 (widget parity with WhatsApp's needs_human_review handling): reached
+  // when getQuoteEstimate exhausted its retry. Same branch shape as
+  // sendFlaggedRequest above — complete the existing clarifying lead if one
+  // exists, otherwise create a new flagged one, so this works whether the
+  // failure happened on the very first attempt or after a clarification
+  // round.
+  async function sendNeedsReviewRequest() {
+    if (!tenantSlug) {
+      toast.success("Request sent to the team");
+      setLeadSent(true);
+      return;
+    }
+    if (!customerName.trim() || !phone.trim()) {
+      toast.error("Add your name and phone so the business can reach you.");
+      return;
+    }
+    setSendingLead(true);
+    try {
+      if (clarifyingLeadId !== null) {
+        await finalizeLeadAsNeedsReview({
+          data: { leadId: clarifyingLeadId, customerName: customerName.trim(), phone: phone.trim() },
+        });
+      } else {
+        await createFlaggedLead({
+          data: {
+            tenantSlug,
+            customerName: customerName.trim(),
+            phone: phone.trim(),
+            channel,
+            photoUrl: null,
+            problem: description,
+            flagType: "needs_human_review",
+            flagReason: "AI couldn't finalize this quote automatically.",
+          },
+        });
+      }
+      setLeadSent(true);
+      toast.success("Sent — the business will reach out with a price.");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Couldn't send that — try again.");
     } finally {
@@ -534,13 +583,46 @@ export function QuoteFlow({
         </div>
       )}
 
-      {stage === "error" && (
+      {stage === "needsReview" && (
         <div className="p-5">
-          <p className="label-caps text-destructive">Couldn't get an estimate</p>
-          <p className="mt-2 text-sm text-foreground">{errorMessage}</p>
-          <Button className="mt-4" variant="outline" onClick={() => setStage("intake")}>
-            Back
-          </Button>
+          <p className="label-caps text-accent">Let's get this priced by hand</p>
+          <p className="mt-2 text-sm text-foreground">
+            This one needs a closer look before {businessName} can give you a firm number. Leave your name and
+            number and the team will follow up with a price directly.
+          </p>
+          {!leadSent && (
+            <div className="mt-4 flex flex-wrap gap-2">
+              <Input
+                value={customerName}
+                onChange={(e) => setCustomerName(e.target.value)}
+                placeholder="Your name"
+                className="max-w-[200px]"
+                aria-label="Your name"
+                disabled={sendingLead}
+              />
+              <Input
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                placeholder="(512) 555-0182"
+                className="max-w-[200px]"
+                aria-label="Phone number for the quote"
+                disabled={sendingLead}
+              />
+            </div>
+          )}
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <Button
+              size="lg"
+              style={accentStyle}
+              disabled={sendingLead || leadSent}
+              onClick={() => void sendNeedsReviewRequest()}
+            >
+              {leadSent ? "Sent — the team will reach out" : sendingLead ? "Sending…" : "Send my request"}
+            </Button>
+            <Button variant="outline" size="lg" onClick={() => setStage("intake")}>
+              Never mind
+            </Button>
+          </div>
         </div>
       )}
 
