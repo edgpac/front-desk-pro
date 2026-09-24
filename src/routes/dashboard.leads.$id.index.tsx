@@ -22,7 +22,7 @@ import { getMyTenant } from "@/lib/tenant-server";
 import { buildSuggestedReply, lineItemsMatch } from "@/lib/reply-composer";
 import {
   getLead,
-  lineItemsTotal,
+  getLeadPricingStatus,
   money,
   STATUS_LABEL,
   TENANT,
@@ -109,16 +109,20 @@ function LeadDetail() {
     };
   }, [authLoading, user, id]);
 
-  const total = lineItemsTotal(lineItems);
+  // isPendingPrice: narrower than pricingStatus below — specifically "is the
+  // pending_negotiated_price flag still active," used only for the flagged-
+  // review panel's title/copy (why this lead needs review), not for whether
+  // a total/document can be shown.
+  const isPendingPrice = lead?.flagType === "pending_negotiated_price";
+  // P1-B: the authoritative answer to "can a real total be shown/used for
+  // this lead right now" — covers both the active-flag case and the case a
+  // flag was cleared (e.g. "Mark reviewed") without a price ever being
+  // added, which used to fall straight through to a bare, indistinguishable-
+  // from-real $0. See mock-data.ts's getLeadPricingStatus.
+  const pricingStatus = lead ? getLeadPricingStatus({ flagType: lead.flagType, lineItems }) : ({ priced: false, label: "Not yet priced" } as const);
+  const total = pricingStatus.priced ? pricingStatus.amount : 0;
   const isEdited = aiSnapshot ? !lineItemsMatch(lineItems, aiSnapshot) : false;
   const diagnosisEdited = diagnosis !== originalDiagnosis;
-  // Authoritative, persisted signal — never inferred from lineItems.length
-  // or total being 0/empty. See public-lead-server.ts's
-  // CreateLeadInput.pendingNegotiatedPrice. Stays true until the owner
-  // explicitly moves the lead off "flagged" (e.g. after pricing it by
-  // phone and clicking "Mark reviewed"), even if they've already started
-  // editing line items in the meantime.
-  const isPendingPrice = lead?.flagType === "pending_negotiated_price";
 
   // The message draft is derived straight from the diagnosis + whatever the
   // line items currently total — so when the AI gets the job right, there's
@@ -132,7 +136,7 @@ function LeadDetail() {
         diagnosis,
         total,
         currency: tenant.currency,
-        pendingNegotiatedPrice: isPendingPrice,
+        noPriceYet: !pricingStatus.priced,
       })
     : "";
   const message = manualMessage ?? suggestedReply;
@@ -266,9 +270,15 @@ function LeadDetail() {
     // BusinessDocument.tsx's pending-price guard entirely (that only
     // protects the separate document page, not this shortcut), inserting
     // "$0 total" straight into the reply draft for a lead with no
-    // determined price. Same isPendingPrice signal, same treatment.
-    if (isPendingPrice) {
-      toast.error("This job's price is still pending — confirm it with the customer before sharing a document.");
+    // determined price. P1-B broadens this from isPendingPrice alone to
+    // pricingStatus — the same fix needed for the "reviewed but never
+    // priced" case, which is a different lead state but the identical bug.
+    if (!pricingStatus.priced) {
+      toast.error(
+        pricingStatus.label === "Price pending"
+          ? "This job's price is still pending — confirm it with the customer before sharing a document."
+          : "This job doesn't have a price yet — add a line item before sharing a document.",
+      );
       return;
     }
     const line = `📎 Sharing your ${DOCUMENT_LABEL[kind].toLowerCase()} (${docNumber}) — ${money(total, tenant.currency)} total.`;
@@ -455,10 +465,10 @@ function LeadDetail() {
             </div>
             <div className="mt-3 flex items-center justify-between border-t border-border-strong pt-3">
               <span className="text-sm font-semibold text-foreground">Total</span>
-              {isPendingPrice ? (
-                <span className="text-sm font-semibold text-muted-foreground">Price pending</span>
+              {pricingStatus.priced ? (
+                <span className="num text-lg font-extrabold text-foreground">{money(pricingStatus.amount, tenant.currency)}</span>
               ) : (
-                <span className="num text-lg font-extrabold text-foreground">{money(total, tenant.currency)}</span>
+                <span className="text-sm font-semibold text-muted-foreground">{pricingStatus.label}</span>
               )}
             </div>
           </Panel>

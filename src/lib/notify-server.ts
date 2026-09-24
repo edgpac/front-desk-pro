@@ -1,5 +1,5 @@
 import nodemailer from "nodemailer";
-import { money, type LineItem } from "@/lib/mock-data";
+import { lineItemAmount, money, type LineItem } from "@/lib/mock-data";
 
 type NotifyTenant = { name: string; email: string; currency: string };
 type NotifyLead = {
@@ -42,7 +42,7 @@ function buildEmailHtml(params: { tenant: NotifyTenant; lead: NotifyLead; lineIt
       (item) => `
         <tr>
           <td style="padding: 5px;">${escapeHtml(item.description)} (${item.qty} ${escapeHtml(item.unit)})</td>
-          <td style="padding: 5px; text-align: right;">${money(item.qty * item.rate, tenant.currency)}</td>
+          <td style="padding: 5px; text-align: right;">${money(lineItemAmount(item), tenant.currency)}</td>
         </tr>`,
     )
     .join("");

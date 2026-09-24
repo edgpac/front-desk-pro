@@ -12,7 +12,7 @@ import { listMyLeads, exportMyLeadsCsv } from "@/lib/leads-server";
 import { createLead } from "@/lib/public-lead-server";
 import { getMyTenant } from "@/lib/tenant-server";
 import { getMyBillingInfo } from "@/lib/stripe-server";
-import { LEADS, type Lead, type LeadStatus, STATUS_LABEL, lineItemsTotal, money } from "@/lib/mock-data";
+import { LEADS, type Lead, type LeadStatus, STATUS_LABEL, getLeadPricingStatus, money } from "@/lib/mock-data";
 
 export const Route = createFileRoute("/dashboard/leads/")({
   component: LeadInbox,
@@ -193,7 +193,10 @@ function LeadInbox() {
                 </div>
                 <span className="hidden text-xs text-muted-foreground sm:inline">{lead.requested}</span>
                 <span className="num hidden text-sm font-medium text-foreground sm:inline">
-                  {lead.flagType === "pending_negotiated_price" ? "Price pending" : money(lineItemsTotal(lead.lineItems))}
+                  {(() => {
+                    const pricing = getLeadPricingStatus(lead);
+                    return pricing.priced ? money(pricing.amount) : pricing.label;
+                  })()}
                 </span>
                 <StatusPill status={lead.status} />
               </Link>

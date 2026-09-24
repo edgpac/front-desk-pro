@@ -2,6 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { createClient } from "@supabase/supabase-js";
 import { sendLeadNotificationEmail } from "@/lib/notify-server";
 import { hasActiveSubscriptionForOwner } from "@/lib/entitlements-server";
+import { lineItemsTotal } from "@/lib/mock-data";
 import type { PriceSheetItem } from "@/lib/estimate-server";
 
 // Every function below is anonymous/unauthenticated by design (the public
@@ -201,7 +202,7 @@ export const createLead = createServerFn({ method: "POST" })
       }
     }
 
-    const total = data.lineItems.reduce((sum, item) => sum + item.qty * item.rate, 0);
+    const total = lineItemsTotal(data.lineItems);
 
     // Notify, but never let a broken inbox block the lead from being saved —
     // same fire-and-forget-with-logging shape as the proven Cabos pattern.
@@ -383,7 +384,7 @@ export const finalizeLeadWithQuote = createServerFn({ method: "POST" })
       }
     }
 
-    const total = data.lineItems.reduce((sum, item) => sum + item.qty * item.rate, 0);
+    const total = lineItemsTotal(data.lineItems);
 
     void sendLeadNotificationEmail({
       tenant: data.tenant,

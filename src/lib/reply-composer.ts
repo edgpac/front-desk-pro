@@ -9,13 +9,15 @@ export function buildSuggestedReply(params: {
   diagnosis: string;
   total: number;
   currency?: string;
-  // See public-lead-server.ts's CreateLeadInput.pendingNegotiatedPrice.
-  // When true, `total` is meaningless (always 0, nothing was priced) —
-  // the reply must never say "Estimated price: $0" for this state.
-  pendingNegotiatedPrice?: boolean;
+  // See mock-data.ts's getLeadPricingStatus — true whenever there's no real
+  // price to state yet, whether the lead is actively pending_negotiated_price
+  // or was reviewed/dismissed without a price ever being added. `total` is
+  // meaningless in either case (0, nothing was priced) — the reply must
+  // never say "Estimated price: $0" for either.
+  noPriceYet?: boolean;
 }) {
   const language = detectLanguage(params.problem, params.diagnosis);
-  if (params.pendingNegotiatedPrice) {
+  if (params.noPriceYet) {
     if (language === "es") {
       return `Según las fotos: ${params.diagnosis} El precio exacto para la visita de servicio/diagnóstico se confirmará cuando nos comuniquemos con usted. Este estimado se basa en las fotos e información proporcionada de forma remota. ¿Le gustaría que agendemos la visita?`;
     }

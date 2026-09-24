@@ -5,7 +5,7 @@ import { ArrowLeft, Download, Printer } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
-import { money, TENANT, type Lead, type Tenant } from "@/lib/mock-data";
+import { getLeadPricingStatus, lineItemAmount, money, TENANT, type Lead, type Tenant } from "@/lib/mock-data";
 
 export type DocumentKind = "proposal" | "invoice" | "receipt";
 
@@ -53,9 +53,12 @@ export function BusinessDocument({
   const [downloading, setDownloading] = useState(false);
   const documentRef = useRef<HTMLDivElement>(null);
 
-  const subtotal = lead.lineItems.reduce((sum, i) => sum + i.qty * i.rate, 0);
-  const tax = kind === "proposal" ? 0 : (subtotal * tenant.taxRate) / 100;
-  const total = subtotal + tax;
+  // P1-B: one authoritative check for "can a real financial document be
+  // generated for this lead" — see mock-data.ts's getLeadPricingStatus.
+  // Broadened from the original flagType-only check (below) to also cover a
+  // lead that was reviewed/dismissed without a price ever being added,
+  // which used to fall straight through to a fabricated $0 document.
+  const pricingStatus = getLeadPricingStatus({ flagType: lead.flagType, lineItems: lead.lineItems });
 
   const now = new Date();
   const docNumber = formatDocNumber(kind, lead.id);
@@ -84,13 +87,12 @@ export function BusinessDocument({
     }
   }
 
-  // See public-lead-server.ts's CreateLeadInput.pendingNegotiatedPrice —
-  // no price was ever determined for this lead (negotiated service-call
-  // mode, nothing else matched). Generating a financial document with a
-  // $0 subtotal/total would present that as a real, completed number —
-  // never fabricate one; block document generation entirely until the
-  // owner has priced the job (adds line items, then marks it reviewed).
-  if (lead.flagType === "pending_negotiated_price") {
+  // Generating a financial document with a fabricated $0 subtotal/total
+  // would present that as a real, completed number — never fabricate one;
+  // block document generation until the owner has priced the job (adds
+  // line items, then marks it reviewed). Covers both an actively pending
+  // lead and one that was reviewed/dismissed without a price ever added.
+  if (!pricingStatus.priced) {
     return (
       <div className="bg-paper p-6 lg:p-10 print:bg-white print:p-0">
         <div className="mx-auto max-w-3xl">
@@ -102,17 +104,21 @@ export function BusinessDocument({
             <ArrowLeft className="h-3.5 w-3.5" /> Back to lead
           </Link>
           <div className="mt-6 border border-border-strong bg-card p-8 text-center">
-            <p className="font-semibold text-foreground">Price pending</p>
+            <p className="font-semibold text-foreground">{pricingStatus.label}</p>
             <p className="mt-2 text-sm text-muted-foreground">
-              This job's price hasn't been determined yet — the service-call/diagnostic fee still needs to be
-              confirmed with the customer. Add the agreed price as a line item on the lead, then generate this
-              document.
+              {pricingStatus.label === "Price pending"
+                ? "This job's price hasn't been determined yet — the service-call/diagnostic fee still needs to be confirmed with the customer. Add the agreed price as a line item on the lead, then generate this document."
+                : "This job doesn't have a price yet. Add the agreed price as a line item on the lead, then generate this document."}
             </p>
           </div>
         </div>
       </div>
     );
   }
+
+  const subtotal = pricingStatus.amount;
+  const tax = kind === "proposal" ? 0 : (subtotal * tenant.taxRate) / 100;
+  const total = subtotal + tax;
 
   return (
     <div className="bg-paper p-6 lg:p-10 print:bg-white print:p-0">
@@ -209,7 +215,7 @@ export function BusinessDocument({
                     {money(item.rate, tenant.currency)}
                   </td>
                   <td className="num py-3 text-right font-semibold text-foreground">
-                    {money(item.qty * item.rate, tenant.currency)}
+                    {money(lineItemAmount(item), tenant.currency)}
                   </td>
                 </tr>
               ))}

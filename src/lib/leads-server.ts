@@ -2,7 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { myPlanHasFeature } from "@/lib/entitlements-server";
-import type { Lead, LeadStatus, LineItem } from "@/lib/mock-data";
+import { lineItemAmount, type Lead, type LeadStatus, type LineItem } from "@/lib/mock-data";
 
 const NO_PHOTO =
   "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='225' viewBox='0 0 400 225'%3E%3Crect width='400' height='225' fill='%23e5e1da'/%3E%3Ctext x='200' y='118' font-family='sans-serif' font-size='14' fill='%23918a7c' text-anchor='middle'%3ENo photo%3C/text%3E%3C/svg%3E";
@@ -205,7 +205,7 @@ export const exportMyLeadsCsv = createServerFn({ method: "GET" })
 
     const totalByLead = new Map<string, number>();
     for (const item of (items ?? []) as Array<{ lead_id: string; qty: number; rate: number }>) {
-      totalByLead.set(item.lead_id, (totalByLead.get(item.lead_id) ?? 0) + item.qty * item.rate);
+      totalByLead.set(item.lead_id, (totalByLead.get(item.lead_id) ?? 0) + lineItemAmount(item));
     }
 
     const header = ["Name", "Phone", "Address", "Channel", "Problem", "Estimate", "Status", "Created"];

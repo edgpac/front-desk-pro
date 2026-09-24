@@ -15,7 +15,7 @@ import {
   getAdminClient,
 } from "@/lib/public-lead-server";
 import { sendFollowUpNotificationEmail } from "@/lib/notify-server";
-import { money } from "@/lib/mock-data";
+import { lineItemAmount, money } from "@/lib/mock-data";
 
 // Mirrors QuoteFlow.tsx's rendering of the same field — a pure diagnosis
 // visit (nothing else matched yet) needs to say so plainly rather than
@@ -287,7 +287,7 @@ export async function handleInboundWhatsAppMessage(params: {
         const lineItemsForAnswer = (lineItemRows ?? []).map((row) => ({
           description: row.description,
           detail: "",
-          amount: row.rate * row.qty,
+          amount: lineItemAmount(row),
         }));
 
         const { data: historyRows } = await admin
@@ -307,7 +307,11 @@ export async function handleInboundWhatsAppMessage(params: {
             lineItems: lineItemsForAnswer,
             question: body,
             history,
-            hasNoPricedWork: openLead.flag_type === "pending_negotiated_price",
+            // P1-B: broadened from the flag alone — a lead reviewed/dismissed
+            // without a price ever being added has the identical "nothing to
+            // state a number for" problem, and lineItemRows is already fetched
+            // above for this exact branch.
+            hasNoPricedWork: openLead.flag_type === "pending_negotiated_price" || (lineItemRows ?? []).length === 0,
           },
         });
 

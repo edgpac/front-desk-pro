@@ -48,11 +48,47 @@ export type Lead = {
   flagType?: "conflicting_information" | "needs_human_review" | "outside_service_scope" | "pending_negotiated_price" | null;
 };
 
-export const lineItemsTotal = (items: LineItem[]) =>
-  items.reduce((sum, i) => sum + i.qty * i.rate, 0);
+// Structural type, not LineItem — callers with a narrower shape (e.g.
+// public-lead-server.ts's pre-persistence line items, which have no id yet)
+// satisfy this without needing one.
+export const lineItemAmount = (item: { qty: number; rate: number }) => item.qty * item.rate;
+
+export const lineItemsTotal = (items: Array<{ qty: number; rate: number }>) =>
+  items.reduce((sum, i) => sum + lineItemAmount(i), 0);
 
 export const money = (n: number, currency: string = "USD") =>
   n.toLocaleString("en-US", { style: "currency", currency, maximumFractionDigits: 0 });
+
+// P1-B: the one authoritative answer to "what should this lead's total show,
+// and can a real financial document/total be generated for it" — replaces
+// every hand-rolled `flagType === "pending_negotiated_price" ? ... : money(...)`
+// ternary, which only ever covered the actively-flagged case and let a lead
+// fall through to a bare, indistinguishable-from-real $0 the moment that flag
+// was cleared (e.g. "Mark reviewed" clicked without a price ever being added).
+//
+// Five states this must distinguish (P1-B's own list):
+//   1. genuinely priced at $0            -> priced: true, amount: 0 (lineItems has a real $0 row)
+//   2. priced with one or more line items -> priced: true, amount: <real total>
+//   3. never priced / no line items       -> priced: false, "Not yet priced"
+//   4. pricing pending (active flag)      -> priced: false, "Price pending"
+//   5. reviewed but still without a price -> same as 3: zero line items, flag
+//      already cleared — genuinely indistinguishable from "never priced" once
+//      the flag is gone, and that's correct: both mean "nothing to show yet."
+//
+// A genuine $0 (case 1) always has at least one real lineItems row (the
+// AI/owner explicitly priced something at $0) — it is never confused with
+// "no line items at all," so checking lineItems.length here is safe and
+// exact, not a heuristic.
+export type LeadPricingStatus = { priced: false; label: "Price pending" | "Not yet priced" } | { priced: true; amount: number };
+
+export function getLeadPricingStatus(lead: {
+  flagType?: Lead["flagType"];
+  lineItems: Array<{ qty: number; rate: number }>;
+}): LeadPricingStatus {
+  if (lead.flagType === "pending_negotiated_price") return { priced: false, label: "Price pending" };
+  if (lead.lineItems.length === 0) return { priced: false, label: "Not yet priced" };
+  return { priced: true, amount: lineItemsTotal(lead.lineItems) };
+}
 
 export const LEADS: Lead[] = [
   {

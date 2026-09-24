@@ -11,7 +11,7 @@ import { copyText } from "@/lib/clipboard";
 import { useAuth } from "@/lib/use-auth";
 import { getMyTenant } from "@/lib/tenant-server";
 import { listMyLeads } from "@/lib/leads-server";
-import { LEADS, TENANT, type Lead, type Tenant, embedSnippet, lineItemsTotal, money, quoteLink } from "@/lib/mock-data";
+import { LEADS, TENANT, type Lead, type Tenant, embedSnippet, getLeadPricingStatus, money, quoteLink } from "@/lib/mock-data";
 
 export const Route = createFileRoute("/dashboard/")({
   component: DashboardHome,
@@ -126,7 +126,10 @@ function DashboardHome() {
                   </div>
                   <div className="flex shrink-0 items-center gap-3">
                     <span className="num text-sm text-foreground">
-                      {lead.flagType === "pending_negotiated_price" ? "Price pending" : money(lineItemsTotal(lead.lineItems))}
+                      {(() => {
+                        const pricing = getLeadPricingStatus(lead);
+                        return pricing.priced ? money(pricing.amount) : pricing.label;
+                      })()}
                     </span>
                     <StatusPill status={lead.status} />
                   </div>
