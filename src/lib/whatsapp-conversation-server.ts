@@ -59,6 +59,30 @@ export type ChannelAdapter = {
   fetchMedia: (ref: string) => Promise<{ base64: string; mediaType: string }>;
 };
 
+// P2: the explicit state machine for routing an inbound message against an
+// existing lead — confidence stays null for three genuinely different
+// states (actively clarifying, resolved out-of-scope, failed AI
+// finalization), and this makes the distinction a single, testable
+// decision instead of scattered inline conditions. See
+// handleInboundWhatsAppMessage's use of this below for what each outcome
+// actually does.
+export type LeadRouteDecision =
+  | "fresh_quote" // no open lead, or one resolved out-of-scope — start clean
+  | "needs_human_review_recovery" // AI previously failed to finalize this lead
+  | "continue_clarification" // genuinely still mid-clarification
+  | "quoted_follow_up"; // already has a real quote (confidence set) — includes pending_negotiated_price
+
+export function decideLeadRoute(openLead: { confidence: string | null; flag_type: string | null } | null | undefined): LeadRouteDecision {
+  if (!openLead) return "fresh_quote";
+  if (openLead.flag_type === "needs_human_review") return "needs_human_review_recovery";
+  // A resolved out-of-scope lead also has confidence: null (createFlaggedLead/
+  // finalizeLeadAsOutOfScope never set it) but is terminal, not active
+  // clarification — decision: treat it exactly like no open lead existed.
+  if (openLead.flag_type === "outside_service_scope") return "fresh_quote";
+  if (openLead.confidence === null) return "continue_clarification";
+  return "quoted_follow_up";
+}
+
 export type InboundWhatsAppTenant = {
   id: string;
   slug: string;
@@ -97,12 +121,25 @@ export async function handleInboundWhatsAppMessage(params: {
     .limit(1)
     .maybeSingle();
 
+  // P2: see decideLeadRoute's own doc comment for what each outcome means
+  // and why confidence alone was never enough to distinguish them.
+  const route = decideLeadRoute(openLead);
+
+  if (route === "needs_human_review_recovery" && openLead) {
+    await admin.from("lead_messages").insert({ lead_id: openLead.id, role: "customer", body });
+    const recoveryMessage =
+      "Thanks for the additional information. We've sent this to the team for review, and someone will follow up with you.";
+    await admin.from("lead_messages").insert({ lead_id: openLead.id, role: "assistant", body: recoveryMessage });
+    await adapter.sendMessage(fromPhone, recoveryMessage);
+    return;
+  }
+
   // confidence is only ever set once a real quote exists (createLead and
   // finalizeLeadWithQuote both require it; createClarifyingLead deliberately
   // omits it) — so NULL here means this lead is still mid-clarification, not
   // yet quoted. Continue the AI conversation instead of treating this as a
   // human follow-up reply.
-  if (openLead && openLead.confidence === null) {
+  if (route === "continue_clarification" && openLead) {
     await admin.from("lead_messages").insert({ lead_id: openLead.id, role: "customer", body });
 
     const { data: priorMessages } = await admin
@@ -190,7 +227,26 @@ export async function handleInboundWhatsAppMessage(params: {
         await adapter.sendMessage(fromPhone, UNSUPPORTED_IMAGE_MESSAGE);
         return;
       }
-      throw err;
+      // P2: getQuoteEstimate exhausted its retry (e.g. a validation/wording
+      // failure it couldn't self-correct) partway through an existing
+      // conversation — re-throwing here left the lead at confidence: null
+      // forever, so every future message from this phone re-entered this
+      // exact same clarification round for the rest of the 48-hour window,
+      // live-confirmed as an actual defect. Mark it terminal instead: the
+      // conversation and its history are preserved, but the lead no longer
+      // satisfies the active-clarification gate above, so the next message
+      // won't loop back here — see needs_human_review handling at the top
+      // of this function.
+      console.error(`WhatsApp clarification finalize failed for lead ${openLead.id}, marking needs_human_review:`, err);
+      await admin
+        .from("leads")
+        .update({ status: "flagged", flag_type: "needs_human_review", flag_reason: "AI couldn't finalize this quote automatically after clarification." })
+        .eq("id", openLead.id);
+      const recoveryMessage =
+        "Thanks for the additional information. We've sent this to the team for review, and someone will follow up with you.";
+      await admin.from("lead_messages").insert({ lead_id: openLead.id, role: "assistant", body: recoveryMessage });
+      await adapter.sendMessage(fromPhone, recoveryMessage);
+      return;
     }
 
     if (clarifyResult.needsClarification) {
@@ -253,7 +309,7 @@ export async function handleInboundWhatsAppMessage(params: {
     return;
   }
 
-  if (openLead) {
+  if (route === "quoted_follow_up" && openLead) {
     // Already quoted (confidence is set). A message here could be a
     // follow-up on that same job ("still $194?", "when can you come?") or
     // a returning customer with a completely different problem. Decide
