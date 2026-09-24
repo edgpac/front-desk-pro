@@ -36,6 +36,7 @@ import { Route as DashboardLeadsIdRouteImport } from './routes/dashboard.leads.$
 import { Route as DashboardSettingsBillingRouteImport } from './routes/dashboard.settings.billing'
 import { Route as DashboardSettingsBusinessRouteImport } from './routes/dashboard.settings.business'
 import { Route as DashboardSettingsQualificationsRouteImport } from './routes/dashboard.settings.qualifications'
+import { Route as DashboardSettingsWhatsappTemplatesRouteImport } from './routes/dashboard.settings.whatsapp-templates'
 import { Route as DashboardLeadsIdIndexRouteImport } from './routes/dashboard.leads.$id.index'
 import { Route as DashboardLeadsIdInvoiceRouteImport } from './routes/dashboard.leads.$id.invoice'
 import { Route as DashboardLeadsIdProposalRouteImport } from './routes/dashboard.leads.$id.proposal'
@@ -179,6 +180,12 @@ const DashboardSettingsQualificationsRoute =
     path: '/settings/qualifications',
     getParentRoute: () => DashboardRoute,
   } as any)
+const DashboardSettingsWhatsappTemplatesRoute =
+  DashboardSettingsWhatsappTemplatesRouteImport.update({
+    id: '/settings/whatsapp-templates',
+    path: '/settings/whatsapp-templates',
+    getParentRoute: () => DashboardRoute,
+  } as any)
 const DashboardLeadsIdIndexRoute = DashboardLeadsIdIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -228,6 +235,7 @@ export interface FileRoutesByFullPath {
   '/dashboard/settings/billing': typeof DashboardSettingsBillingRoute
   '/dashboard/settings/business': typeof DashboardSettingsBusinessRoute
   '/dashboard/settings/qualifications': typeof DashboardSettingsQualificationsRoute
+  '/dashboard/settings/whatsapp-templates': typeof DashboardSettingsWhatsappTemplatesRoute
   '/dashboard/leads/': typeof DashboardLeadsIndexRoute
   '/dashboard/leads/$id/invoice': typeof DashboardLeadsIdInvoiceRoute
   '/dashboard/leads/$id/proposal': typeof DashboardLeadsIdProposalRoute
@@ -257,6 +265,7 @@ export interface FileRoutesByTo {
   '/dashboard/settings/billing': typeof DashboardSettingsBillingRoute
   '/dashboard/settings/business': typeof DashboardSettingsBusinessRoute
   '/dashboard/settings/qualifications': typeof DashboardSettingsQualificationsRoute
+  '/dashboard/settings/whatsapp-templates': typeof DashboardSettingsWhatsappTemplatesRoute
   '/dashboard/leads': typeof DashboardLeadsIndexRoute
   '/dashboard/leads/$id/invoice': typeof DashboardLeadsIdInvoiceRoute
   '/dashboard/leads/$id/proposal': typeof DashboardLeadsIdProposalRoute
@@ -291,6 +300,7 @@ export interface FileRoutesById {
   '/dashboard/settings/billing': typeof DashboardSettingsBillingRoute
   '/dashboard/settings/business': typeof DashboardSettingsBusinessRoute
   '/dashboard/settings/qualifications': typeof DashboardSettingsQualificationsRoute
+  '/dashboard/settings/whatsapp-templates': typeof DashboardSettingsWhatsappTemplatesRoute
   '/dashboard/leads/': typeof DashboardLeadsIndexRoute
   '/dashboard/leads/$id/invoice': typeof DashboardLeadsIdInvoiceRoute
   '/dashboard/leads/$id/proposal': typeof DashboardLeadsIdProposalRoute
@@ -326,6 +336,7 @@ export interface FileRouteTypes {
     | '/dashboard/settings/billing'
     | '/dashboard/settings/business'
     | '/dashboard/settings/qualifications'
+    | '/dashboard/settings/whatsapp-templates'
     | '/dashboard/leads/'
     | '/dashboard/leads/$id/invoice'
     | '/dashboard/leads/$id/proposal'
@@ -355,6 +366,7 @@ export interface FileRouteTypes {
     | '/dashboard/settings/billing'
     | '/dashboard/settings/business'
     | '/dashboard/settings/qualifications'
+    | '/dashboard/settings/whatsapp-templates'
     | '/dashboard/leads'
     | '/dashboard/leads/$id/invoice'
     | '/dashboard/leads/$id/proposal'
@@ -388,6 +400,7 @@ export interface FileRouteTypes {
     | '/dashboard/settings/billing'
     | '/dashboard/settings/business'
     | '/dashboard/settings/qualifications'
+    | '/dashboard/settings/whatsapp-templates'
     | '/dashboard/leads/'
     | '/dashboard/leads/$id/invoice'
     | '/dashboard/leads/$id/proposal'
@@ -605,6 +618,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DashboardSettingsQualificationsRouteImport
       parentRoute: typeof DashboardRoute
     }
+    '/dashboard/settings/whatsapp-templates': {
+      id: '/dashboard/settings/whatsapp-templates'
+      path: '/settings/whatsapp-templates'
+      fullPath: '/dashboard/settings/whatsapp-templates'
+      preLoaderRoute: typeof DashboardSettingsWhatsappTemplatesRouteImport
+      parentRoute: typeof DashboardRoute
+    }
     '/dashboard/leads/$id/': {
       id: '/dashboard/leads/$id/'
       path: '/'
@@ -676,6 +696,7 @@ interface DashboardRouteChildren {
   DashboardSettingsBillingRoute: typeof DashboardSettingsBillingRoute
   DashboardSettingsBusinessRoute: typeof DashboardSettingsBusinessRoute
   DashboardSettingsQualificationsRoute: typeof DashboardSettingsQualificationsRoute
+  DashboardSettingsWhatsappTemplatesRoute: typeof DashboardSettingsWhatsappTemplatesRoute
 }
 
 const DashboardRouteChildren: DashboardRouteChildren = {
@@ -687,6 +708,8 @@ const DashboardRouteChildren: DashboardRouteChildren = {
   DashboardSettingsBillingRoute: DashboardSettingsBillingRoute,
   DashboardSettingsBusinessRoute: DashboardSettingsBusinessRoute,
   DashboardSettingsQualificationsRoute: DashboardSettingsQualificationsRoute,
+  DashboardSettingsWhatsappTemplatesRoute:
+    DashboardSettingsWhatsappTemplatesRoute,
 }
 
 const DashboardRouteWithChildren = DashboardRoute._addFileChildren(

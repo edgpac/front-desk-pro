@@ -17,7 +17,8 @@ import {
   updateLeadContact,
   updateLeadDiagnosis,
 } from "@/lib/leads-server";
-import { sendLeadReply } from "@/lib/lead-reply-server";
+import { sendLeadReply, sendLeadReplyWithTemplate } from "@/lib/lead-reply-server";
+import { listMyWhatsAppTemplates, countTemplateVariables, type WhatsAppTemplate } from "@/lib/whatsapp-templates-server";
 import { getMyTenant } from "@/lib/tenant-server";
 import { buildSuggestedReply, lineItemsMatch } from "@/lib/reply-composer";
 import {
@@ -62,6 +63,13 @@ function LeadDetail() {
   const [savingContact, setSavingContact] = useState(false);
   const [savingDiagnosis, setSavingDiagnosis] = useState(false);
   const [sending, setSending] = useState(false);
+  // Only surfaced once sendMessage() actually hits Meta's 24h-window error —
+  // approved templates are loaded eagerly (cheap, small list) but the
+  // picker itself stays hidden until it's actually needed.
+  const [approvedTemplates, setApprovedTemplates] = useState<WhatsAppTemplate[]>([]);
+  const [showTemplatePicker, setShowTemplatePicker] = useState(false);
+  const [selectedTemplateId, setSelectedTemplateId] = useState("");
+  const [templateParams, setTemplateParams] = useState<string[]>([]);
 
   useEffect(() => {
     if (authLoading) return;
@@ -85,9 +93,10 @@ function LeadDetail() {
       return;
     }
     let active = true;
-    Promise.all([getMyLead({ data: id }), getMyTenant()])
-      .then(([realLead, realTenant]) => {
+    Promise.all([getMyLead({ data: id }), getMyTenant(), listMyWhatsAppTemplates().catch(() => [])])
+      .then(([realLead, realTenant, templates]) => {
         if (!active) return;
+        setApprovedTemplates(templates.filter((t) => t.status === "approved"));
         setLead(realLead);
         setAiSnapshot(realLead.aiLineItemsSnapshot);
         setStatus(realLead.status);
@@ -256,11 +265,44 @@ function LeadDetail() {
         setThread((t) => [...t, { role: "assistant", text: body }]);
         setManualMessage(null);
         toast.success("Sent to the customer's thread");
+      } else if (result.status === "outside_window") {
+        const first = approvedTemplates[0];
+        if (first) {
+          setSelectedTemplateId(first.id);
+          setTemplateParams(new Array(countTemplateVariables(first.bodyText)).fill(""));
+          setShowTemplatePicker(true);
+        } else {
+          toast.error(
+            "It's been more than 24 hours since this customer's last message — WhatsApp requires a pre-approved template to reach them now, and you don't have one approved yet.",
+          );
+        }
       } else {
         toast.error(result.message);
       }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Could not send message.");
+    } finally {
+      setSending(false);
+    }
+  }
+
+  async function sendTemplate() {
+    const template = approvedTemplates.find((t) => t.id === selectedTemplateId);
+    if (!template || sending) return;
+    setSending(true);
+    try {
+      const result = await sendLeadReplyWithTemplate({
+        data: { leadId: id, templateId: template.id, bodyParams: templateParams },
+      });
+      if (result.status === "sent") {
+        setThread((t) => [...t, { role: "assistant", text: template.bodyText }]);
+        setShowTemplatePicker(false);
+        toast.success("Template sent");
+      } else if (result.status === "error") {
+        toast.error(result.message);
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not send template.");
     } finally {
       setSending(false);
     }
@@ -600,6 +642,53 @@ function LeadDetail() {
                 <Send className="h-4 w-4" />
               </Button>
             </div>
+
+            {showTemplatePicker && (
+              <div className="mt-3 rounded-sm border border-border-strong bg-muted/40 p-3">
+                <p className="text-xs text-muted-foreground">
+                  It's been more than 24 hours since this customer's last message — send an approved template
+                  instead.
+                </p>
+                <select
+                  className="mt-2 h-9 w-full rounded-sm border border-border-strong bg-background px-2 text-sm"
+                  value={selectedTemplateId}
+                  onChange={(e) => {
+                    const tpl = approvedTemplates.find((t) => t.id === e.target.value);
+                    setSelectedTemplateId(e.target.value);
+                    setTemplateParams(new Array(tpl ? countTemplateVariables(tpl.bodyText) : 0).fill(""));
+                  }}
+                >
+                  {approvedTemplates.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                    </option>
+                  ))}
+                </select>
+                {templateParams.map((value, i) => (
+                  <Input
+                    key={i}
+                    className="mt-2"
+                    value={value}
+                    onChange={(e) =>
+                      setTemplateParams((params) => params.map((p, pi) => (pi === i ? e.target.value : p)))
+                    }
+                    placeholder={`Value for {{${i + 1}}}`}
+                  />
+                ))}
+                <div className="mt-2 flex gap-2">
+                  <Button
+                    type="button"
+                    onClick={() => void sendTemplate()}
+                    disabled={sending || templateParams.some((p) => !p.trim())}
+                  >
+                    {sending ? "Sending…" : "Send template"}
+                  </Button>
+                  <Button type="button" variant="ghost" onClick={() => setShowTemplatePicker(false)}>
+                    Cancel
+                  </Button>
+                </div>
+              </div>
+            )}
           </Panel>
         </div>
       </div>

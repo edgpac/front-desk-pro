@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { toast } from "sonner";
 
 import { PageHeader, Panel } from "@/components/app/DashboardShell";
@@ -304,6 +304,12 @@ function BusinessSettings() {
               Or connect automatically via Meta — no waiting on us to set it up manually.
             </span>
             <ConnectWhatsAppMeta />
+            <Link
+              to="/dashboard/settings/whatsapp-templates"
+              className="mt-3 inline-block text-xs text-muted-foreground underline hover:text-foreground"
+            >
+              Manage message templates (for reaching a customer after 24 hours of silence)
+            </Link>
           </div>
 
           <div className="sm:col-span-2">

@@ -9,6 +9,7 @@ import {
   MetaOutsideWindowError,
 } from "@/lib/meta-whatsapp-server";
 import { handleInboundWhatsAppMessage, type ChannelAdapter } from "@/lib/whatsapp-conversation-server";
+import { applyTemplateStatusUpdate } from "@/lib/whatsapp-templates-server";
 
 // Meta-specific wire protocol only — GET handshake, POST signature
 // verification, payload parsing, tenant lookup by phone_number_id.
@@ -82,6 +83,18 @@ export const Route = createFileRoute("/api/whatsapp/meta-webhook")({
         for (const entry of payload.entry ?? []) {
           for (const change of entry.changes ?? []) {
             const value = change.value;
+
+            if (change.field === "message_template_status_update") {
+              const templateId = value?.message_template_id;
+              const event = value?.event;
+              if (templateId && event) {
+                await applyTemplateStatusUpdate({ metaTemplateId: String(templateId), event, reason: value?.reason });
+              } else {
+                console.error("Meta WhatsApp webhook: message_template_status_update missing template id or event.");
+              }
+              continue;
+            }
+
             const phoneNumberId = value?.metadata?.phone_number_id;
             const messages = value?.messages ?? [];
             if (!phoneNumberId || messages.length === 0) continue;
@@ -192,6 +205,11 @@ export const Route = createFileRoute("/api/whatsapp/meta-webhook")({
 type MetaWebhookPayload = {
   entry?: {
     changes?: {
+      // "messages" (inbound text/image) or "message_template_status_update"
+      // — the only two fields this route currently reads change.field for.
+      // Anything else falls through both branches below untouched, same
+      // silent-skip-but-ack posture as an unrecognized phone_number_id.
+      field?: string;
       value?: {
         metadata?: { phone_number_id?: string };
         contacts?: { profile?: { name?: string } }[];
@@ -202,6 +220,10 @@ type MetaWebhookPayload = {
           text?: { body?: string };
           image?: { id?: string };
         }[];
+        // message_template_status_update fields only.
+        event?: string;
+        message_template_id?: string | number;
+        reason?: string;
       };
     }[];
   }[];
