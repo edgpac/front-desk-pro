@@ -57,6 +57,18 @@ export const listMyPriceSheet = createServerFn({ method: "GET" })
     return (data as PriceSheetItemRow[]).map(toRow);
   });
 
+// Server-side authority for price-sheet numbers — the dashboard form may add
+// its own client-side checks, but this is the one place that actually
+// decides what gets persisted, so it can't be skipped by calling the
+// server function directly. $0 is explicitly valid (a real, legitimate
+// price) — only negative numbers and an inverted min>max range are rejected.
+export function validatePriceSheetItem(item: { task: string; priceMin: number; priceMax: number }): string | null {
+  if (item.priceMin < 0) return `"${item.task}": minimum price can't be negative.`;
+  if (item.priceMax < 0) return `"${item.task}": maximum price can't be negative.`;
+  if (item.priceMin > item.priceMax) return `"${item.task}": minimum price can't be greater than the maximum.`;
+  return null;
+}
+
 // Full replace: the price sheet is small and edited rarely, so swapping the
 // whole set is simpler and safer than diffing inserts/updates/deletes.
 export const saveMyPriceSheet = createServerFn({ method: "POST" })
@@ -84,6 +96,11 @@ export const saveMyPriceSheet = createServerFn({ method: "POST" })
       .eq("user_id", context.userId)
       .single();
     if (tenantError) throw new Error(`Could not load your business: ${tenantError.message}`);
+
+    const validationErrors = data.items.map(validatePriceSheetItem).filter((e): e is string => e !== null);
+    if (validationErrors.length > 0) {
+      throw new Error(`Could not save price sheet: ${validationErrors.join(" ")}`);
+    }
 
     const { error: deleteError } = await context.supabase
       .from("price_sheet_items")
