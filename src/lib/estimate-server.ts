@@ -476,6 +476,10 @@ Each matched item's policy is independent — a request matching one "included" 
 
 RULES:
 1. If the photo and description together are not enough to price this confidently, respond with 1-2 short clarifying questions instead of guessing. Give each question 2-4 short tappable answer options. Only ask if the answer would actually change the price. Never ask about something the customer has already been asked (see CUSTOMER'S ANSWERS TO YOUR FOLLOW-UP QUESTIONS above, if present) — a "no"/"I don't have one"/"not sure" answer is still an answer; treat it as final and move on rather than asking the same or a reworded version of the same question again. If, after that, no further price-changing question actually remains, stop asking and price the job now using what you have. ${
+    !isFirstRound
+      ? "This is the only round of follow-up questions this customer will ever get — a second round is never permitted, no matter what is still unclear. You MUST respond with needsClarification: false now: price everything you can, and for any specific issue that's still genuinely unclear, use the negotiated/deferred-pricing treatment described elsewhere in this prompt (priceSheetItemId: null, no dollar amount stated) rather than asking again — never needsClarification: true a second time. Only outOfScope: true if the entire request can't be handled at all. "
+      : ""
+  }${
     hasPhoto && !hasDescription
       ? "No description was provided — a photo alone rarely tells you everything (what's actually needed, relevant history, what the customer wants done), so make your first clarifying question an open-ended request for the customer to describe what they need in their own words, rather than guessing from the image alone or asking a narrower multiple-choice question first. Phrase it naturally for whatever this business actually does — not every photo represents something broken (a repair job, a grooming request, an installation) — don't assume 'problem' framing where it doesn't fit."
       : hasPhoto
@@ -1099,17 +1103,38 @@ export const getQuoteEstimate = createServerFn({ method: "POST" })
       return { raw, parsed };
     }
 
+    // P1-E: server-enforced one-round clarification cap — the prompt already
+    // asks the model not to ask a second time, but a customer must never be
+    // shown a second round regardless of what the model does. answeredAlready
+    // means this call already includes at least one round's worth of
+    // answers, so a needsClarification response here is non-compliant and
+    // gets folded into the same corrective-retry path as a price-sheet
+    // validation failure, below — never returned to the caller directly.
+    const answeredAlready = Boolean(data.answers?.length);
+    function roundCapFailures(parsed: { needsClarification?: boolean }): string[] {
+      return answeredAlready && parsed.needsClarification
+        ? [
+            "You asked for clarification a second time, but this customer already used their one allowed round of follow-up questions. Respond with needsClarification: false — price everything you can, and use the negotiated/deferred-pricing treatment (priceSheetItemId: null) for anything still genuinely unclear, or outOfScope: true only if nothing about the request can be handled at all.",
+          ]
+        : [];
+    }
+
     const firstMessages = [{ role: "user", content }];
     const { raw: raw1, parsed: parsed1 } = await askClaude(firstMessages);
 
-    if (parsed1.needsClarification) {
+    if (parsed1.needsClarification && !answeredAlready) {
       return { needsClarification: true, questions: parsed1.questions ?? [] };
     }
     if (parsed1.outOfScope) {
       return { needsClarification: false, outOfScope: true };
     }
 
-    const failures1 = validateQuoteAgainstPriceSheet(parsed1, data.priceSheet, data.serviceCallFee, data.serviceCallFeeMode);
+    const failures1 = [
+      ...roundCapFailures(parsed1),
+      ...(parsed1.needsClarification
+        ? []
+        : validateQuoteAgainstPriceSheet(parsed1, data.priceSheet, data.serviceCallFee, data.serviceCallFeeMode)),
+    ];
     if (failures1.length === 0) {
       return buildQuoteResult(parsed1, data.priceSheet);
     }
@@ -1117,8 +1142,10 @@ export const getQuoteEstimate = createServerFn({ method: "POST" })
     // One corrective retry, same conversation, told exactly what was wrong
     // — not a fresh unrelated attempt. See estimate-server.ts's design doc:
     // a retry that still fails validation must never be trusted as a valid
-    // quote (that would defeat the entire point of validating at all).
-    const correction = `Your previous response was inconsistent with the tenant's price sheet:\n${failures1
+    // quote (that would defeat the entire point of validating at all). Same
+    // treatment for a round-cap violation as for a price-sheet mismatch —
+    // both are "the response can't be trusted as-is," corrected the same way.
+    const correction = `Your previous response had a problem:\n${failures1
       .map((f) => `- ${f}`)
       .join("\n")}\n\nRespond again with the corrected full JSON, in the exact same shape as before, fixing every issue listed above.`;
     const retryMessages = [
@@ -1128,14 +1155,19 @@ export const getQuoteEstimate = createServerFn({ method: "POST" })
     ];
     const { parsed: parsed2 } = await askClaude(retryMessages);
 
-    if (parsed2.needsClarification) {
+    if (parsed2.needsClarification && !answeredAlready) {
       return { needsClarification: true, questions: parsed2.questions ?? [] };
     }
     if (parsed2.outOfScope) {
       return { needsClarification: false, outOfScope: true };
     }
 
-    const failures2 = validateQuoteAgainstPriceSheet(parsed2, data.priceSheet, data.serviceCallFee, data.serviceCallFeeMode);
+    const failures2 = [
+      ...roundCapFailures(parsed2),
+      ...(parsed2.needsClarification
+        ? []
+        : validateQuoteAgainstPriceSheet(parsed2, data.priceSheet, data.serviceCallFee, data.serviceCallFeeMode)),
+    ];
     if (failures2.length > 0) {
       console.error("Quote failed validation twice, refusing to return it:", failures2);
       throw new Error("Couldn't put together a reliable estimate for that — try rephrasing, or the business will follow up manually.");
