@@ -260,6 +260,19 @@ export const updateLeadStatus = createServerFn({ method: "POST" })
     return { ok: true as const };
   });
 
+// Cascades to lead_line_items and lead_messages automatically (both
+// declared `on delete cascade` against leads.id in 0001_init.sql) — a
+// single delete here is the whole operation, nothing orphaned behind.
+export const deleteLead = createServerFn({ method: "POST" })
+  .validator((input: string) => input)
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context, data: id }) => {
+    const tenantId = await getTenantId(context.supabase, context.userId);
+    const { error } = await context.supabase.from("leads").delete().eq("tenant_id", tenantId).eq("id", id);
+    if (error) throw new Error(`Could not delete lead: ${error.message}`);
+    return { ok: true as const };
+  });
+
 export const updateLeadDiagnosis = createServerFn({ method: "POST" })
   .validator((input: { id: string; diagnosis: string }) => input)
   .middleware([requireSupabaseAuth])

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { PageHeader, Panel } from "@/components/app/DashboardShell";
@@ -8,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/use-auth";
-import { listMyLeads, exportMyLeadsCsv } from "@/lib/leads-server";
+import { listMyLeads, exportMyLeadsCsv, deleteLead } from "@/lib/leads-server";
 import { createLead } from "@/lib/public-lead-server";
 import { getMyTenant } from "@/lib/tenant-server";
 import { getMyBillingInfo } from "@/lib/stripe-server";
@@ -110,6 +111,22 @@ function LeadInbox() {
     }
   }
 
+  async function handleDelete(id: string, customerName: string) {
+    if (!window.confirm(`Delete the lead from "${customerName}"? This can't be undone.`)) return;
+    if (!user) {
+      setAllLeads((l) => l.filter((lead) => lead.id !== id));
+      return;
+    }
+    const previous = allLeads;
+    setAllLeads((l) => l.filter((lead) => lead.id !== id));
+    try {
+      await deleteLead({ data: id });
+    } catch (err) {
+      setAllLeads(previous);
+      toast.error(err instanceof Error ? err.message : "Could not delete lead.");
+    }
+  }
+
   const leads = useMemo(() => {
     return allLeads.filter((l) => filter === "all" || l.status === filter).filter((l) =>
       search.trim()
@@ -175,11 +192,11 @@ function LeadInbox() {
       <Panel>
         <ul className="-m-4 divide-y divide-border">
           {leads.map((lead) => (
-            <li key={lead.id}>
+            <li key={lead.id} className="flex items-center hover:bg-muted/40">
               <Link
                 to="/dashboard/leads/$id"
                 params={{ id: lead.id }}
-                className="grid grid-cols-[auto_1fr_auto_auto_auto] items-center gap-4 px-4 py-3 text-left hover:bg-muted/40"
+                className="grid flex-1 grid-cols-[auto_1fr_auto_auto_auto] items-center gap-4 px-4 py-3 text-left"
               >
                 <img
                   src={lead.photo}
@@ -207,6 +224,13 @@ function LeadInbox() {
                 </span>
                 <StatusPill status={lead.status} />
               </Link>
+              <button
+                onClick={() => void handleDelete(lead.id, lead.customer)}
+                aria-label={`Delete lead from ${lead.customer}`}
+                className="shrink-0 px-3 text-muted-foreground hover:text-destructive"
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
             </li>
           ))}
           {!loading && leads.length === 0 && (

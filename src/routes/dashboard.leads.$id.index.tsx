@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { ArrowLeft, Calendar, FileText, Paperclip, Plus, RefreshCw, Send, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -16,6 +16,7 @@ import {
   updateLeadStatus,
   updateLeadContact,
   updateLeadDiagnosis,
+  deleteLead,
 } from "@/lib/leads-server";
 import { sendLeadReply, sendLeadReplyWithTemplate } from "@/lib/lead-reply-server";
 import { listMyWhatsAppTemplates, countTemplateVariables, type WhatsAppTemplate } from "@/lib/whatsapp-templates-server";
@@ -42,6 +43,7 @@ const STATUS_ACTIONS: LeadStatus[] = ["quoted", "booked", "won", "lost"];
 function LeadDetail() {
   const { id } = Route.useParams();
   const { user, loading: authLoading } = useAuth();
+  const navigate = useNavigate();
 
   const [lead, setLead] = useState<Lead | null>(null);
   const [aiSnapshot, setAiSnapshot] = useState<LineItem[] | null>(null);
@@ -229,6 +231,23 @@ function LeadDetail() {
       toast.error(err instanceof Error ? err.message : "Could not save diagnosis.");
     } finally {
       setSavingDiagnosis(false);
+    }
+  }
+
+  async function handleDeleteLead() {
+    if (!lead) return;
+    if (!window.confirm(`Delete the lead from "${lead.customer}"? This can't be undone.`)) return;
+    if (!user) {
+      toast.success("Deleted (sample data — nothing real to remove)");
+      void navigate({ to: "/dashboard/leads" });
+      return;
+    }
+    try {
+      await deleteLead({ data: id });
+      toast.success("Lead deleted");
+      void navigate({ to: "/dashboard/leads" });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not delete lead.");
     }
   }
 
@@ -558,6 +577,12 @@ function LeadDetail() {
                 </Button>
               ))}
             </div>
+            <button
+              onClick={() => void handleDeleteLead()}
+              className="mt-3 inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-destructive"
+            >
+              <Trash2 className="h-3.5 w-3.5" /> Delete this lead
+            </button>
           </Panel>
 
           <Panel title="Take action">
