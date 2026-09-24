@@ -337,6 +337,7 @@ export function QuoteFlow({
             confidence: result.confidence,
             isEmergency: result.isEmergency,
             pendingNegotiatedPrice: result.hasNoPricedWork,
+            hasPartiallyDeferredWork: result.hasPartiallyDeferredWork,
             lineItems,
           },
         });
@@ -353,6 +354,7 @@ export function QuoteFlow({
             confidence: result.confidence,
             isEmergency: result.isEmergency,
             pendingNegotiatedPrice: result.hasNoPricedWork,
+            hasPartiallyDeferredWork: result.hasPartiallyDeferredWork,
             lineItems,
           },
         });
