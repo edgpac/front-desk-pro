@@ -160,8 +160,21 @@ export const Route = createFileRoute("/api/whatsapp/meta-webhook")({
                 // One bad message in a batch shouldn't drop the rest, and
                 // Meta still needs its 200 regardless — same "log and move
                 // on" posture as every other unrecoverable-per-message case
-                // in this route.
+                // in this route. But the customer must never be met with
+                // silence — same fallback-message requirement api.whatsapp
+                // .webhook.tsx (Twilio) already has for the identical
+                // failure (a getQuoteEstimate validation/retry exhaustion,
+                // live-confirmed during P1-E testing: the customer got no
+                // reply at all and had no way to know anything went wrong).
                 console.error(`Meta WhatsApp message handling failed for tenant ${tenant.id}:`, err);
+                try {
+                  await adapter.sendMessage(
+                    fromPhone,
+                    "Sorry, I couldn't put together a reliable estimate for that just now — I'll have the team follow up with you directly.",
+                  );
+                } catch (sendErr) {
+                  console.error("Also failed to send the WhatsApp fallback message:", sendErr);
+                }
               }
             }
           }
