@@ -81,7 +81,10 @@ export const listMyLeads = createServerFn({ method: "GET" })
       requested: formatRequested(row.created_at),
       channel: row.channel,
       status: row.status,
-      photo: row.photo_url ?? NO_PHOTO,
+      // || not ?? — a text-only WhatsApp lead stores photo_url as "" (see
+      // whatsapp-conversation-server.ts), which must fall back to the
+      // placeholder the same as null/undefined would.
+      photo: row.photo_url || NO_PHOTO,
       problem: row.problem,
       diagnosis: row.diagnosis,
       confidence: row.confidence ?? "Medium",
@@ -130,7 +133,7 @@ export const getMyLead = createServerFn({ method: "GET" })
       requested: formatRequested(lead.created_at),
       channel: lead.channel,
       status: lead.status,
-      photo: lead.photo_url ?? NO_PHOTO,
+      photo: lead.photo_url || NO_PHOTO,
       problem: lead.problem,
       diagnosis: lead.diagnosis,
       confidence: lead.confidence ?? "Medium",
