@@ -462,15 +462,15 @@ export function QuoteFlow({
   const canSubmit = description.trim().length > 0 && (uploadedFile || selectedSample || description.length > 10);
 
   return (
-    <div className={cn("border border-border-strong bg-card", compact && "text-sm")}>
-      <header className="flex items-center justify-between gap-3 border-b border-border-strong bg-ink px-4 py-3 text-ink-foreground">
+    <div className={cn("overflow-hidden rounded-3xl border border-neutral-200 bg-white shadow-sm", compact && "text-sm")}>
+      <header className="flex items-center justify-between gap-3 border-b border-neutral-100 bg-white px-5 py-4">
         <div>
-          <p className="label-caps text-primary">Get an estimate</p>
-          <p className="font-display text-base font-bold">{businessName}</p>
+          <p className="text-[11px] font-medium text-neutral-400">Get an estimate</p>
+          <p className="text-base font-semibold text-neutral-900">{businessName}</p>
         </div>
         {stage !== "intake" && (
           <button
-            className="inline-flex items-center gap-1.5 text-xs text-ink-muted hover:text-ink-foreground"
+            className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs text-neutral-400 hover:bg-neutral-50 hover:text-neutral-600"
             onClick={reset}
           >
             <RefreshCw className="h-3.5 w-3.5" /> Start over
@@ -480,33 +480,30 @@ export function QuoteFlow({
 
       {stage === "intake" && (
         <div className="p-5">
-          <h3 className="text-xl">What's going on?</h3>
-          <p className="mt-1.5 text-sm text-muted-foreground">
+          <h3 className="text-xl font-semibold text-neutral-900">What's going on?</h3>
+          <p className="mt-1.5 text-sm text-neutral-500">
             A photo gets you the closest number. Two sentences is plenty of description.
           </p>
 
           <div className="mt-4 grid gap-2 sm:grid-cols-3">
-            <Button
-              variant="outline"
-              className="w-full justify-start"
+            <button
+              className="flex w-full items-center justify-start rounded-2xl border border-neutral-200 px-4 py-2.5 text-sm font-medium text-neutral-700 transition-colors hover:bg-neutral-50"
               onClick={() => fileRef.current?.click()}
             >
-              <Camera className="mr-2 h-4 w-4 shrink-0" /> Take a photo
-            </Button>
-            <Button
-              variant="outline"
-              className="w-full justify-start"
+              <Camera className="mr-2 h-4 w-4 shrink-0 text-neutral-400" /> Take a photo
+            </button>
+            <button
+              className="flex w-full items-center justify-start rounded-2xl border border-neutral-200 px-4 py-2.5 text-sm font-medium text-neutral-700 transition-colors hover:bg-neutral-50"
               onClick={() => fileRef.current?.click()}
             >
-              <ImageIcon className="mr-2 h-4 w-4 shrink-0" /> Choose from gallery
-            </Button>
-            <Button
-              variant="outline"
-              className="w-full justify-start"
+              <ImageIcon className="mr-2 h-4 w-4 shrink-0 text-neutral-400" /> Choose from gallery
+            </button>
+            <button
+              className="flex w-full items-center justify-start rounded-2xl border border-neutral-200 px-4 py-2.5 text-sm font-medium text-neutral-700 transition-colors hover:bg-neutral-50"
               onClick={() => descriptionRef.current?.focus()}
             >
-              <MessageSquare className="mr-2 h-4 w-4 shrink-0" /> Skip the photo
-            </Button>
+              <MessageSquare className="mr-2 h-4 w-4 shrink-0 text-neutral-400" /> Skip the photo
+            </button>
             <input
               ref={fileRef}
               type="file"
@@ -517,8 +514,8 @@ export function QuoteFlow({
             />
           </div>
 
-          <div className="mt-6 border-t border-border pt-5">
-            <p className="label-caps text-muted-foreground">Or use one of these sample photos</p>
+          <div className="mt-6 border-t border-neutral-100 pt-5">
+            <p className="text-xs font-medium text-neutral-400">Or use one of these sample photos</p>
             <div className="mt-3 grid gap-2 sm:grid-cols-3">
               {SAMPLE_PHOTOS.map((s) => (
                 <button
@@ -529,10 +526,10 @@ export function QuoteFlow({
                     setDescription(s.problem);
                   }}
                   className={cn(
-                    "overflow-hidden border text-left transition-colors",
+                    "overflow-hidden rounded-2xl border text-left transition-colors",
                     selectedSample?.id === s.id
-                      ? "border-primary"
-                      : "border-border hover:border-border-strong",
+                      ? "border-neutral-900"
+                      : "border-neutral-200 hover:border-neutral-300",
                   )}
                 >
                   <img
@@ -541,17 +538,17 @@ export function QuoteFlow({
                     loading="lazy"
                     className="aspect-[4/3] w-full object-cover"
                   />
-                  <span className="block px-2.5 py-2 text-xs font-medium">{s.label}</span>
+                  <span className="block px-3 py-2 text-xs font-medium text-neutral-700">{s.label}</span>
                 </button>
               ))}
             </div>
             {uploadedFile && (
-              <p className="mt-3 text-xs text-muted-foreground">Attached: {uploadedFile.name}</p>
+              <p className="mt-3 text-xs text-neutral-400">Attached: {uploadedFile.name}</p>
             )}
           </div>
 
           <div className="mt-6">
-            <label htmlFor="qf-desc" className="label-caps text-muted-foreground">
+            <label htmlFor="qf-desc" className="text-xs font-medium text-neutral-400">
               Describe it
             </label>
             <Textarea
@@ -561,12 +558,12 @@ export function QuoteFlow({
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               placeholder="Water heater in the garage is dripping and there's rust underneath."
-              className="mt-2"
+              className="mt-2 rounded-2xl border-neutral-200 focus-visible:ring-neutral-300"
             />
           </div>
 
           <Button
-            className="mt-4 w-full"
+            className="mt-4 w-full rounded-full bg-neutral-900 text-white hover:bg-neutral-800"
             size="lg"
             style={accentStyle}
             disabled={!canSubmit}
@@ -574,7 +571,7 @@ export function QuoteFlow({
           >
             Get my estimate
           </Button>
-          <p className="mt-2 text-center text-xs text-muted-foreground">
+          <p className="mt-2 text-center text-xs text-neutral-400">
             No account needed. Your photo only goes to {businessName}.
           </p>
         </div>
@@ -582,15 +579,15 @@ export function QuoteFlow({
 
       {stage === "loading" && (
         <div className="flex flex-col items-center justify-center gap-3 p-12 text-center">
-          <Loader2 className="h-6 w-6 animate-spin text-primary" />
-          <p className="text-sm text-muted-foreground">Reading the photo and pricing it against the sheet…</p>
+          <Loader2 className="h-6 w-6 animate-spin text-neutral-400" />
+          <p className="text-sm text-neutral-500">Reading the photo and pricing it against the sheet…</p>
         </div>
       )}
 
       {stage === "needsReview" && (
         <div className="p-5">
-          <p className="label-caps text-accent">Let's get this priced by hand</p>
-          <p className="mt-2 text-sm text-foreground">
+          <p className="text-xs font-medium text-neutral-400">Let's get this priced by hand</p>
+          <p className="mt-2 text-sm text-neutral-700">
             This one needs a closer look before {businessName} can give you a firm number. Leave your name and
             number and the team will follow up with a price directly.
           </p>
@@ -600,7 +597,7 @@ export function QuoteFlow({
                 value={customerName}
                 onChange={(e) => setCustomerName(e.target.value)}
                 placeholder="Your name"
-                className="max-w-[200px]"
+                className="max-w-[200px] rounded-full border-neutral-200"
                 aria-label="Your name"
                 disabled={sendingLead}
               />
@@ -608,7 +605,7 @@ export function QuoteFlow({
                 value={phone}
                 onChange={(e) => setPhone(e.target.value)}
                 placeholder="(512) 555-0182"
-                className="max-w-[200px]"
+                className="max-w-[200px] rounded-full border-neutral-200"
                 aria-label="Phone number for the quote"
                 disabled={sendingLead}
               />
@@ -617,13 +614,19 @@ export function QuoteFlow({
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <Button
               size="lg"
+              className="rounded-full bg-neutral-900 text-white hover:bg-neutral-800"
               style={accentStyle}
               disabled={sendingLead || leadSent}
               onClick={() => void sendNeedsReviewRequest()}
             >
               {leadSent ? "Sent — the team will reach out" : sendingLead ? "Sending…" : "Send my request"}
             </Button>
-            <Button variant="outline" size="lg" onClick={() => setStage("intake")}>
+            <Button
+              variant="outline"
+              size="lg"
+              className="rounded-full border-neutral-200"
+              onClick={() => setStage("intake")}
+            >
               Never mind
             </Button>
           </div>
@@ -632,8 +635,8 @@ export function QuoteFlow({
 
       {stage === "outOfScope" && (
         <div className="p-5">
-          <p className="label-caps text-accent">Not on our standard price list</p>
-          <p className="mt-2 text-sm text-foreground">
+          <p className="text-xs font-medium text-neutral-400">Not on our standard price list</p>
+          <p className="mt-2 text-sm text-neutral-700">
             {businessName} doesn't have set pricing for this specific request. I can pass it along to the team
             for a custom quote — want me to do that?
           </p>
@@ -643,7 +646,7 @@ export function QuoteFlow({
                 value={customerName}
                 onChange={(e) => setCustomerName(e.target.value)}
                 placeholder="Your name"
-                className="max-w-[200px]"
+                className="max-w-[200px] rounded-full border-neutral-200"
                 aria-label="Your name"
                 disabled={sendingLead}
               />
@@ -651,7 +654,7 @@ export function QuoteFlow({
                 value={phone}
                 onChange={(e) => setPhone(e.target.value)}
                 placeholder="(512) 555-0182"
-                className="max-w-[200px]"
+                className="max-w-[200px] rounded-full border-neutral-200"
                 aria-label="Phone number for the quote"
                 disabled={sendingLead}
               />
@@ -660,13 +663,19 @@ export function QuoteFlow({
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <Button
               size="lg"
+              className="rounded-full bg-neutral-900 text-white hover:bg-neutral-800"
               style={accentStyle}
               disabled={sendingLead || leadSent}
               onClick={() => void sendFlaggedRequest()}
             >
               {leadSent ? "Sent — the team will reach out" : sendingLead ? "Sending…" : "Yes, send my request"}
             </Button>
-            <Button variant="outline" size="lg" onClick={() => setStage("intake")}>
+            <Button
+              variant="outline"
+              size="lg"
+              className="rounded-full border-neutral-200"
+              onClick={() => setStage("intake")}
+            >
               Never mind
             </Button>
           </div>
@@ -675,26 +684,26 @@ export function QuoteFlow({
 
       {stage === "clarify" && (
         <div className="p-5">
-          <p className="label-caps text-accent">Just a couple of questions</p>
-          <h3 className="mt-2 text-xl">This is what keeps the price honest.</h3>
-          <p className="mt-1.5 text-sm text-muted-foreground">
+          <p className="text-xs font-medium text-neutral-400">Just a couple of questions</p>
+          <h3 className="mt-2 text-xl font-semibold text-neutral-900">This is what keeps the price honest.</h3>
+          <p className="mt-1.5 text-sm text-neutral-500">
             The photo shows most of it. These answers decide the rest.
           </p>
 
           <div className="mt-5 space-y-5">
             {questions.map((q, i) => (
-              <div key={q.question} className="border-t border-border pt-4">
-                <p className="text-sm font-semibold text-foreground">{q.question}</p>
+              <div key={q.question} className="border-t border-neutral-100 pt-4">
+                <p className="text-sm font-medium text-neutral-900">{q.question}</p>
                 <div className="mt-2.5 flex flex-wrap gap-2">
                   {q.options.map((o) => (
                     <button
                       key={o}
                       onClick={() => setAnswers((a) => ({ ...a, [i]: o }))}
                       className={cn(
-                        "rounded-sm border px-3 py-1.5 text-sm transition-colors",
+                        "rounded-full border px-3.5 py-1.5 text-sm transition-colors",
                         answers[i] === o
-                          ? "border-primary bg-primary/10 font-semibold text-primary"
-                          : "border-border-strong hover:bg-muted",
+                          ? "border-neutral-900 bg-neutral-900 font-medium text-white"
+                          : "border-neutral-200 text-neutral-700 hover:bg-neutral-50",
                       )}
                     >
                       {o}
@@ -706,7 +715,7 @@ export function QuoteFlow({
           </div>
 
           <Button
-            className="mt-6 w-full"
+            className="mt-6 w-full rounded-full bg-neutral-900 text-white hover:bg-neutral-800"
             size="lg"
             style={accentStyle}
             disabled={Object.keys(answers).length < questions.length}
@@ -722,32 +731,34 @@ export function QuoteFlow({
       {stage === "result" && result && (
         <div className="p-5">
           {result.isEmergency && (
-            <div className="mb-4 border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            <div className="mb-4 rounded-2xl border border-red-100 bg-red-50 px-3.5 py-2.5 text-sm text-red-700">
               This sounds urgent — a real business would surface a "call now" prompt here instead of
               waiting on a booking link.
             </div>
           )}
           {result.hasNoPricedWork ? (
             <>
-              <p className="label-caps text-primary">Diagnostic fee — confirmed later</p>
-              <p className="mt-2 text-sm text-muted-foreground">
+              <p className="text-xs font-medium text-neutral-400">Diagnostic fee — confirmed later</p>
+              <p className="mt-2 text-sm text-neutral-500">
                 We can't price this without seeing it in person. A service-call/diagnostic fee applies — we'll
                 confirm the exact amount when we contact you to schedule the visit.
               </p>
             </>
           ) : (
             <>
-              <p className="label-caps text-primary">{result.isDiagnosisOnly ? "Diagnosis visit fee" : "Your estimate"}</p>
-              <p className="num mt-2 font-display text-4xl font-extrabold text-foreground">
+              <p className="text-xs font-medium text-neutral-400">
+                {result.isDiagnosisOnly ? "Diagnosis visit fee" : "Your estimate"}
+              </p>
+              <p className="num mt-2 text-4xl font-semibold tracking-tight text-neutral-900">
                 {money(result.totalLow, currency)} – {money(result.totalHigh, currency)}
               </p>
               {result.isDiagnosisOnly ? (
-                <p className="mt-1.5 text-sm text-muted-foreground">
+                <p className="mt-1.5 text-sm text-neutral-500">
                   Due for an in-person visit to see exactly what's needed. This amount applies toward the total
                   repair cost — we'll confirm the full price once we know what the fix requires.
                 </p>
               ) : (
-                <p className="mt-1.5 text-sm text-muted-foreground">
+                <p className="mt-1.5 text-sm text-neutral-500">
                   Firm once we see it in person. If it comes in under, you pay the under.
                 </p>
               )}
@@ -756,7 +767,7 @@ export function QuoteFlow({
                 // what IS priced — this makes clear it isn't the whole
                 // request, without hiding the real number or replacing it
                 // with "Price pending".
-                <p className="mt-2 border-t border-border-strong pt-2 text-sm font-semibold text-accent">
+                <p className="mt-3 rounded-2xl border border-amber-100 bg-amber-50 px-3.5 py-2.5 text-sm font-medium text-amber-800">
                   One part of this still needs an in-person look before we can price it — we'll confirm that
                   separately.
                 </p>
@@ -764,29 +775,34 @@ export function QuoteFlow({
             </>
           )}
 
-          <div className="mt-5 border-t border-border-strong pt-4">
-            <p className="label-caps text-muted-foreground">
-              What we found <span className="text-foreground/60">· {result.confidence.toLowerCase()} confidence</span>
+          <div className="mt-5 rounded-2xl border border-neutral-100 bg-neutral-50 p-4">
+            <p className="text-xs font-medium text-neutral-400">
+              What we found <span className="text-neutral-400">· {result.confidence.toLowerCase()} confidence</span>
             </p>
-            <p className="mt-2 text-sm leading-relaxed text-foreground">{result.diagnosis}</p>
+            <p className="mt-2 text-sm leading-relaxed text-neutral-700">{result.diagnosis}</p>
           </div>
 
           {!result.hasNoPricedWork && (
-            <ul className="mt-5 divide-y divide-border border-y border-border">
+            <ul className="mt-5 divide-y divide-neutral-100 overflow-hidden rounded-2xl border border-neutral-100">
               {result.lineItems.map((i) => (
-                <li key={i.description} className="flex items-start justify-between gap-4 py-3">
+                <li key={i.description} className="flex items-start justify-between gap-4 px-4 py-3">
                   <span>
-                    <span className="block text-sm font-medium text-foreground">{i.description}</span>
-                    <span className="block text-xs text-muted-foreground">{i.detail}</span>
+                    <span className="block text-sm font-medium text-neutral-900">{i.description}</span>
+                    <span className="block text-xs text-neutral-400">{i.detail}</span>
                   </span>
-                  <span className="num text-sm font-semibold text-foreground">{money(i.amount, currency)}</span>
+                  <span className="num text-sm font-semibold text-neutral-900">{money(i.amount, currency)}</span>
                 </li>
               ))}
             </ul>
           )}
 
           <div className="mt-4 flex flex-wrap gap-2">
-            <Button size="lg" style={accentStyle} asChild={Boolean(bookingLink)}>
+            <Button
+              size="lg"
+              className="rounded-full bg-neutral-900 text-white hover:bg-neutral-800"
+              style={accentStyle}
+              asChild={Boolean(bookingLink)}
+            >
               {bookingLink ? (
                 <a href={bookingLink} target="_blank" rel="noreferrer">
                   Book this now
@@ -806,7 +822,7 @@ export function QuoteFlow({
                   value={customerName}
                   onChange={(e) => setCustomerName(e.target.value)}
                   placeholder="Your name"
-                  className="max-w-[200px]"
+                  className="max-w-[200px] rounded-full border-neutral-200"
                   aria-label="Your name"
                   disabled={sendingLead}
                 />
@@ -814,7 +830,7 @@ export function QuoteFlow({
                   value={phone}
                   onChange={(e) => setPhone(e.target.value)}
                   placeholder="(512) 555-0182"
-                  className="max-w-[200px]"
+                  className="max-w-[200px] rounded-full border-neutral-200"
                   aria-label="Phone number for the quote"
                   disabled={sendingLead}
                 />
@@ -824,38 +840,59 @@ export function QuoteFlow({
               <Button
                 variant="outline"
                 size="lg"
+                className="rounded-full border-neutral-200"
                 disabled={sendingLead || leadSent}
                 onClick={() => void sendQuoteToBusiness()}
               >
                 {leadSent ? "Sent — the business will reach out" : sendingLead ? "Sending…" : "Send my request"}
               </Button>
               {!leadSent && (
-                <span className="text-xs text-muted-foreground">
+                <span className="text-xs text-neutral-400">
                   The business gets notified right away and will follow up with you directly.
                 </span>
               )}
             </div>
           </div>
 
-          <div className="mt-6 border-t border-border-strong pt-5">
-            <p className="label-caps text-muted-foreground">Ask a question about this estimate</p>
-            <div className="mt-3 space-y-3">
+          <div className="mt-6 border-t border-neutral-100 pt-5">
+            <div className="flex items-center gap-2">
+              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-orange-600 text-xs font-bold text-white">
+                J
+              </span>
+              <span className="rounded-full bg-neutral-100 px-2.5 py-1 text-xs font-semibold text-neutral-700">
+                JIR
+              </span>
+            </div>
+            <p className="mt-3 text-xs font-medium text-neutral-400">Ask a question about this estimate</p>
+            <div className="mt-3 space-y-2.5">
               {thread.map((m, i) => (
                 <div
                   key={i}
                   className={cn(
-                    "max-w-[85%] rounded-sm px-3 py-2 text-sm",
-                    m.role === "customer"
-                      ? "ml-auto bg-ink text-ink-foreground"
-                      : "bg-muted text-foreground",
+                    "flex items-end gap-2",
+                    m.role === "customer" ? "justify-end" : "justify-start",
                   )}
                 >
-                  {m.text}
+                  {m.role === "desk" && (
+                    <span className="mb-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-orange-600 text-[10px] font-bold text-white">
+                      J
+                    </span>
+                  )}
+                  <div
+                    className={cn(
+                      "max-w-[80%] px-3.5 py-2.5 text-sm leading-relaxed",
+                      m.role === "customer"
+                        ? "rounded-2xl rounded-br-md bg-blue-100 text-neutral-900"
+                        : "rounded-2xl rounded-bl-md bg-neutral-100 text-neutral-800",
+                    )}
+                  >
+                    {m.text}
+                  </div>
                 </div>
               ))}
               {askingFollowUp && (
-                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <Loader2 className="h-3 w-3 animate-spin" /> Thinking…
+                <div className="flex items-center gap-2 pl-8 text-xs text-neutral-400">
+                  <Loader2 className="h-3 w-3 animate-spin" /> JIR is thinking…
                 </div>
               )}
             </div>
@@ -869,9 +906,11 @@ export function QuoteFlow({
                 placeholder="Does that price include the part?"
                 aria-label="Your question"
                 disabled={askingFollowUp}
+                className="rounded-full border-neutral-200"
               />
               <Button
                 variant="outline"
+                className="shrink-0 rounded-full border-neutral-200"
                 disabled={!draft.trim() || askingFollowUp}
                 onClick={() => void ask()}
                 aria-label="Send question"

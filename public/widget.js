@@ -25,6 +25,11 @@
 
   var position = script.getAttribute("data-position") || "bottom-right";
   var isRight = position.indexOf("left") === -1;
+  // A host page that already has its own "Get an estimate" buttons can set
+  // this to skip our own floating trigger entirely and drive the panel via
+  // window.JIRWidget.open()/close() instead — see below. Existing embeds
+  // that don't set this keep getting the built-in button, unchanged.
+  var hideOwnButton = script.getAttribute("data-hide-button") === "true";
 
   var origin;
   try {
@@ -60,7 +65,9 @@
   button.setAttribute("aria-label", "Get an estimate");
   button.innerHTML =
     '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>';
-  root.appendChild(button);
+  if (!hideOwnButton) {
+    root.appendChild(button);
+  }
 
   var panel = document.createElement("div");
   panel.className = "jir-panel";
@@ -94,4 +101,13 @@
     else open();
   });
   closeBtn.addEventListener("click", close);
+
+  // Exposed so a host page's own buttons can open/close the panel directly —
+  // used together with data-hide-button="true" above. This runs as a plain,
+  // non-module, synchronous script, so window.JIRWidget exists as soon as
+  // this tag has executed, before the host page's own app code runs (as
+  // long as this script tag is placed before it in the document).
+  window.JIRWidget = window.JIRWidget || {};
+  window.JIRWidget.open = open;
+  window.JIRWidget.close = close;
 })();
