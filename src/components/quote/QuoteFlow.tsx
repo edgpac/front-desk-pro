@@ -461,8 +461,17 @@ export function QuoteFlow({
   const canSubmit = description.trim().length > 0 && (uploadedFile || selectedSample || description.length > 10);
 
   return (
-    <div className={cn("overflow-hidden rounded-3xl border border-neutral-200 bg-white shadow-sm", compact && "text-sm")}>
-      <header className="flex items-center justify-between gap-3 border-b border-neutral-100 bg-white px-5 py-4">
+    <div
+      className={cn(
+        "flex flex-col overflow-hidden rounded-3xl border border-neutral-200 bg-white shadow-sm",
+        // h-full only makes sense when the parent actually has a defined
+        // height to fill (the widget iframe's h-screen wrapper) — on
+        // /quote/:slug and /demo, the parent is a normal auto-height page
+        // section, where a percentage height would just collapse to 0.
+        compact && "h-full text-sm",
+      )}
+    >
+      <header className="flex shrink-0 items-center justify-between gap-3 border-b border-neutral-100 bg-white px-5 py-4">
         <div>
           <p className="text-[11px] font-medium text-neutral-400">Get an estimate</p>
           <p className="text-base font-semibold text-neutral-900">{businessName}</p>
@@ -478,7 +487,7 @@ export function QuoteFlow({
       </header>
 
       {stage === "intake" && (
-        <div className="p-5">
+        <div className={cn("flex flex-col p-5", compact && "h-full")}>
           <h3 className="text-xl font-semibold text-neutral-900">What's going on?</h3>
           <p className="mt-1.5 text-sm text-neutral-500">
             Attach a photo and describe it — the more you share, the closer the number.
@@ -539,48 +548,54 @@ export function QuoteFlow({
             </div>
           )}
 
-          <div className="mt-4 flex items-end gap-2">
-            <button
-              type="button"
-              onClick={() => fileRef.current?.click()}
-              aria-label="Attach a photo"
-              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-neutral-200 text-neutral-500 transition-colors hover:bg-neutral-50"
-            >
-              <Plus className="h-5 w-5" />
-            </button>
-            <input
-              ref={fileRef}
-              type="file"
-              accept="image/*"
-              className="hidden"
-              onChange={pickFile}
-              aria-label="Upload a photo of the problem"
-            />
-            <Input
-              id="qf-desc"
-              ref={descriptionRef}
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && canSubmit) void submitToAI([]);
-              }}
-              placeholder="Describe your issue"
-              className="h-11 flex-1 rounded-full border-neutral-200 focus-visible:ring-neutral-300"
-            />
-            <button
-              type="button"
-              disabled={!canSubmit}
-              onClick={() => void submitToAI([])}
-              aria-label="Send"
-              style={accentStyle}
-              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-neutral-900 text-white transition-colors hover:bg-neutral-800 disabled:opacity-30"
-            >
-              <Send className="h-4 w-4" />
-            </button>
+          {/* Pinned to the bottom of the panel via mt-auto, same as a real
+              chat app's compose bar — the space above is free to hold
+              sample photos/attachment chips, or nothing at all, without
+              the bar drifting up to sit right under the intro text. */}
+          <div className={cn("pt-4", compact && "mt-auto")}>
+            <div className="flex items-end gap-2">
+              <button
+                type="button"
+                onClick={() => fileRef.current?.click()}
+                aria-label="Attach a photo"
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-neutral-200 text-neutral-500 transition-colors hover:bg-neutral-50"
+              >
+                <Plus className="h-5 w-5" />
+              </button>
+              <input
+                ref={fileRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={pickFile}
+                aria-label="Upload a photo of the problem"
+              />
+              <Input
+                id="qf-desc"
+                ref={descriptionRef}
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && canSubmit) void submitToAI([]);
+                }}
+                placeholder="Describe your issue"
+                className="h-11 flex-1 rounded-full border-neutral-200 focus-visible:ring-neutral-300"
+              />
+              <button
+                type="button"
+                disabled={!canSubmit}
+                onClick={() => void submitToAI([])}
+                aria-label="Send"
+                style={accentStyle}
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-neutral-900 text-white transition-colors hover:bg-neutral-800 disabled:opacity-30"
+              >
+                <Send className="h-4 w-4" />
+              </button>
+            </div>
+            <p className="mt-2 text-center text-xs text-neutral-400">
+              No account needed. Your photo only goes to {businessName}.
+            </p>
           </div>
-          <p className="mt-2 text-center text-xs text-neutral-400">
-            No account needed. Your photo only goes to {businessName}.
-          </p>
         </div>
       )}
 
