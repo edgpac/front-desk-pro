@@ -54,6 +54,10 @@ const SAMPLE_PHOTOS: SamplePhoto[] = [
 
 type Stage = "intake" | "loading" | "clarify" | "result" | "outOfScope" | "needsReview";
 
+// Per-session cap on the "ask a question about this estimate" follow-up
+// chat — see the cost/abuse note in ask() below for why this exists.
+const MAX_FOLLOW_UP_QUESTIONS = 5;
+
 type ResultState = {
   isEmergency: boolean;
   issueType: string;
@@ -261,8 +265,28 @@ export function QuoteFlow({
   async function ask() {
     if (!result || !draft.trim()) return;
     const question = draft;
-    setThread((t) => [...t, { role: "customer", text: question }]);
     setDraft("");
+
+    // Cost/abuse guard: the underlying getFollowUpAnswer call shares a
+    // single global rate-limit budget with every other visitor's estimate
+    // request app-wide (see estimate-server.ts) — nothing here stops one
+    // visitor from asking indefinitely otherwise. Checked before the API
+    // call, not after, so a visitor past the cap never triggers another
+    // real Claude request no matter how many times they try.
+    const askedSoFar = thread.filter((m) => m.role === "customer").length;
+    if (askedSoFar >= MAX_FOLLOW_UP_QUESTIONS) {
+      setThread((t) => [
+        ...t,
+        { role: "customer", text: question },
+        {
+          role: "desk",
+          text: 'For more detail, fill out "Send my request" below and the business will follow up directly.',
+        },
+      ]);
+      return;
+    }
+
+    setThread((t) => [...t, { role: "customer", text: question }]);
     setAskingFollowUp(true);
     try {
       const answer = await getFollowUpAnswer({
