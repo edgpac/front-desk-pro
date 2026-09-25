@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { Camera, ImageIcon, Loader2, MessageSquare, RefreshCw, Send } from "lucide-react";
+import { ImageIcon, Loader2, Plus, RefreshCw, Send, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -482,27 +482,72 @@ export function QuoteFlow({
         <div className="p-5">
           <h3 className="text-xl font-semibold text-neutral-900">What's going on?</h3>
           <p className="mt-1.5 text-sm text-neutral-500">
-            A photo gets you the closest number. Two sentences is plenty of description.
+            Attach a photo and describe it — the more you share, the closer the number.
           </p>
 
-          <div className="mt-4 grid gap-2 sm:grid-cols-3">
+          {/* Sample photos are a "try it without a real problem" affordance
+              for prospective businesses exploring the product on /demo —
+              tenantSlug is unset there. A real customer on a real business's
+              widget always has an actual problem to describe, so showing
+              someone else's stock photos here would just be clutter. */}
+          {!tenantSlug && (
+            <div className="mt-5 border-t border-neutral-100 pt-5">
+              <p className="text-xs font-medium text-neutral-400">Try a sample photo</p>
+              <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                {SAMPLE_PHOTOS.map((s) => (
+                  <button
+                    key={s.id}
+                    onClick={() => {
+                      setSelectedSample(s);
+                      setUploadedFile(null);
+                      setDescription(s.problem);
+                    }}
+                    className={cn(
+                      "overflow-hidden rounded-2xl border text-left transition-colors",
+                      selectedSample?.id === s.id
+                        ? "border-neutral-900"
+                        : "border-neutral-200 hover:border-neutral-300",
+                    )}
+                  >
+                    <img
+                      src={s.img}
+                      alt={s.label}
+                      loading="lazy"
+                      className="aspect-[4/3] w-full object-cover"
+                    />
+                    <span className="block px-3 py-2 text-xs font-medium text-neutral-700">{s.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {(uploadedFile || selectedSample) && (
+            <div className="mt-4 flex w-fit items-center gap-2 rounded-full border border-neutral-200 bg-neutral-50 px-3 py-1.5 text-xs text-neutral-600">
+              <ImageIcon className="h-3.5 w-3.5 text-neutral-400" />
+              {uploadedFile ? uploadedFile.name : selectedSample?.label}
+              <button
+                type="button"
+                onClick={() => {
+                  setUploadedFile(null);
+                  setSelectedSample(null);
+                }}
+                aria-label="Remove photo"
+                className="text-neutral-400 hover:text-neutral-700"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </div>
+          )}
+
+          <div className="mt-4 flex items-end gap-2">
             <button
-              className="flex w-full items-center justify-start rounded-2xl border border-neutral-200 px-4 py-2.5 text-sm font-medium text-neutral-700 transition-colors hover:bg-neutral-50"
+              type="button"
               onClick={() => fileRef.current?.click()}
+              aria-label="Attach a photo"
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-neutral-200 text-neutral-500 transition-colors hover:bg-neutral-50"
             >
-              <Camera className="mr-2 h-4 w-4 shrink-0 text-neutral-400" /> Take a photo
-            </button>
-            <button
-              className="flex w-full items-center justify-start rounded-2xl border border-neutral-200 px-4 py-2.5 text-sm font-medium text-neutral-700 transition-colors hover:bg-neutral-50"
-              onClick={() => fileRef.current?.click()}
-            >
-              <ImageIcon className="mr-2 h-4 w-4 shrink-0 text-neutral-400" /> Choose from gallery
-            </button>
-            <button
-              className="flex w-full items-center justify-start rounded-2xl border border-neutral-200 px-4 py-2.5 text-sm font-medium text-neutral-700 transition-colors hover:bg-neutral-50"
-              onClick={() => descriptionRef.current?.focus()}
-            >
-              <MessageSquare className="mr-2 h-4 w-4 shrink-0 text-neutral-400" /> Skip the photo
+              <Plus className="h-5 w-5" />
             </button>
             <input
               ref={fileRef}
@@ -512,65 +557,32 @@ export function QuoteFlow({
               onChange={pickFile}
               aria-label="Upload a photo of the problem"
             />
-          </div>
-
-          <div className="mt-6 border-t border-neutral-100 pt-5">
-            <p className="text-xs font-medium text-neutral-400">Or use one of these sample photos</p>
-            <div className="mt-3 grid gap-2 sm:grid-cols-3">
-              {SAMPLE_PHOTOS.map((s) => (
-                <button
-                  key={s.id}
-                  onClick={() => {
-                    setSelectedSample(s);
-                    setUploadedFile(null);
-                    setDescription(s.problem);
-                  }}
-                  className={cn(
-                    "overflow-hidden rounded-2xl border text-left transition-colors",
-                    selectedSample?.id === s.id
-                      ? "border-neutral-900"
-                      : "border-neutral-200 hover:border-neutral-300",
-                  )}
-                >
-                  <img
-                    src={s.img}
-                    alt={s.label}
-                    loading="lazy"
-                    className="aspect-[4/3] w-full object-cover"
-                  />
-                  <span className="block px-3 py-2 text-xs font-medium text-neutral-700">{s.label}</span>
-                </button>
-              ))}
-            </div>
-            {uploadedFile && (
-              <p className="mt-3 text-xs text-neutral-400">Attached: {uploadedFile.name}</p>
-            )}
-          </div>
-
-          <div className="mt-6">
-            <label htmlFor="qf-desc" className="text-xs font-medium text-neutral-400">
-              Describe it
-            </label>
             <Textarea
               id="qf-desc"
               ref={descriptionRef}
-              rows={3}
+              rows={1}
               value={description}
               onChange={(e) => setDescription(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  if (canSubmit) void submitToAI([]);
+                }
+              }}
               placeholder="Water heater in the garage is dripping and there's rust underneath."
-              className="mt-2 rounded-2xl border-neutral-200 focus-visible:ring-neutral-300"
+              className="min-h-0 flex-1 resize-none rounded-3xl border-neutral-200 py-3 focus-visible:ring-neutral-300"
             />
+            <button
+              type="button"
+              disabled={!canSubmit}
+              onClick={() => void submitToAI([])}
+              aria-label="Send"
+              style={accentStyle}
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-neutral-900 text-white transition-colors hover:bg-neutral-800 disabled:opacity-30"
+            >
+              <Send className="h-4 w-4" />
+            </button>
           </div>
-
-          <Button
-            className="mt-4 w-full rounded-full bg-neutral-900 text-white hover:bg-neutral-800"
-            size="lg"
-            style={accentStyle}
-            disabled={!canSubmit}
-            onClick={() => void submitToAI([])}
-          >
-            Get my estimate
-          </Button>
           <p className="mt-2 text-center text-xs text-neutral-400">
             No account needed. Your photo only goes to {businessName}.
           </p>
