@@ -9,7 +9,6 @@ import { Input } from "@/components/ui/input";
 import { PasswordInput } from "@/components/ui/password-input";
 import { Label } from "@/components/ui/label";
 import { supabase } from "@/integrations/supabase/client";
-import { isOwnerEmail } from "@/lib/owner-gate";
 import heroMockup from "@/assets/aircraft-detailing-mockup.png";
 
 export const Route = createFileRoute("/signup")({
@@ -36,7 +35,6 @@ function Signup() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
-  const [blocked, setBlocked] = useState(false);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -48,11 +46,6 @@ function Signup() {
         options: { data: { name, phone } },
       });
       if (error) throw error;
-      if (!isOwnerEmail(data.user?.email)) {
-        if (data.session) await supabase.auth.signOut();
-        setBlocked(true);
-        return;
-      }
       if (data.session) {
         // Email confirmation is off — the user is signed in immediately.
         toast.success("Account created.");
@@ -86,13 +79,7 @@ function Signup() {
           </div>
           <h1 className="mt-10 text-3xl">Create your account.</h1>
 
-          {blocked ? (
-            <p className="mt-6 text-sm text-muted-foreground">
-              Job It Ready isn't open for new accounts yet — coming soon.
-            </p>
-          ) : (
-            <>
-              <p className="mt-2 text-sm text-muted-foreground">
+          <p className="mt-2 text-sm text-muted-foreground">
                 No card required to sign up — you'll pick a plan as you start setting things up, then
                 you're quoting off your own price sheet the same day.
               </p>
@@ -170,8 +157,6 @@ function Signup() {
                   Log in
                 </Link>
               </p>
-            </>
-          )}
         </div>
       </div>
       <div className="hidden bg-ink lg:block">

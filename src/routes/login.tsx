@@ -10,7 +10,6 @@ import { Input } from "@/components/ui/input";
 import { PasswordInput } from "@/components/ui/password-input";
 import { Label } from "@/components/ui/label";
 import { supabase, setRememberMe } from "@/integrations/supabase/client";
-import { isOwnerEmail } from "@/lib/owner-gate";
 import heroMockup from "@/assets/aircraft-detailing-mockup.png";
 
 export const Route = createFileRoute("/login")({
@@ -32,7 +31,6 @@ function Login() {
   const [password, setPassword] = useState("");
   const [remember, setRemember] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [blocked, setBlocked] = useState(false);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -42,13 +40,8 @@ function Login() {
       // fresh on every read/write, so the very session this call creates
       // already lands in the right storage.
       setRememberMe(remember);
-      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) throw error;
-      if (!isOwnerEmail(data.user?.email)) {
-        await supabase.auth.signOut();
-        setBlocked(true);
-        return;
-      }
       toast.success("Signed in.");
       navigate({ to: "/dashboard" });
     } catch (err) {
@@ -75,13 +68,7 @@ function Login() {
           </div>
           <h1 className="mt-10 text-3xl">Welcome back.</h1>
 
-          {blocked ? (
-            <p className="mt-6 text-sm text-muted-foreground">
-              Job It Ready isn't open for accounts yet — coming soon.
-            </p>
-          ) : (
-            <>
-              <p className="mt-2 text-sm text-muted-foreground">Pick up where the last job left off.</p>
+          <p className="mt-2 text-sm text-muted-foreground">Pick up where the last job left off.</p>
 
               <form className="mt-8 space-y-4" onSubmit={submit}>
                 <div>
@@ -127,8 +114,6 @@ function Login() {
                   Sign up
                 </Link>
               </p>
-            </>
-          )}
         </div>
       </div>
       <div className="hidden bg-ink lg:block">
