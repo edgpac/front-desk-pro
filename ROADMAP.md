@@ -185,8 +185,8 @@ here is new work discovered today except where marked; it's a consolidation.
 - [x] Access Verification (Tech Provider) — Cleared
 - [x] App — Published
 - [x] Real number live, proven end-to-end across multiple job types (connected manually via SQL, not yet through the real popup)
-- [ ] **Advanced Access App Review** (demo video + business justification) — not yet submitted; the one real next action
-- [ ] Meta's decision on that submission — external, calendar-time, unknown duration
+- [x] **Advanced Access App Review** (demo video + business justification) — submitted 2026-09-24 for `whatsapp_business_messaging`, `whatsapp_business_management`, and `public_profile`. Meta's own status page shows "Review in progress — most submissions are reviewed within 20 days."
+- [ ] Meta's decision on that submission — external, calendar-time, awaiting result
 - [ ] **First real test of the actual Embedded Signup popup by a genuine outside stranger** — never exercised; the one live connection bypassed it entirely via direct SQL, so `completeMetaWhatsAppSignup`'s OAuth/token-exchange code is unproven against a real outside account
 
 **Account access:**

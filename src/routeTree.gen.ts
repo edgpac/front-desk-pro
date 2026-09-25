@@ -28,6 +28,7 @@ import { Route as DashboardWidgetRouteImport } from './routes/dashboard.widget'
 import { Route as OnboardingIndexRouteImport } from './routes/onboarding.index'
 import { Route as QuoteSlugRouteImport } from './routes/quote.$slug'
 import { Route as WidgetSlugRouteImport } from './routes/widget.$slug'
+import { Route as ApiCronKeepAliveRouteImport } from './routes/api.cron.keep-alive'
 import { Route as ApiStripeWebhookRouteImport } from './routes/api.stripe.webhook'
 import { Route as ApiWhatsappMetaWebhookRouteImport } from './routes/api.whatsapp.meta-webhook'
 import { Route as ApiWhatsappWebhookRouteImport } from './routes/api.whatsapp.webhook'
@@ -137,6 +138,11 @@ const WidgetSlugRoute = WidgetSlugRouteImport.update({
   path: '/widget/$slug',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiCronKeepAliveRoute = ApiCronKeepAliveRouteImport.update({
+  id: '/api/cron/keep-alive',
+  path: '/api/cron/keep-alive',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiStripeWebhookRoute = ApiStripeWebhookRouteImport.update({
   id: '/api/stripe/webhook',
   path: '/api/stripe/webhook',
@@ -228,6 +234,7 @@ export interface FileRoutesByFullPath {
   '/widget/$slug': typeof WidgetSlugRoute
   '/dashboard/': typeof DashboardIndexRoute
   '/onboarding/': typeof OnboardingIndexRoute
+  '/api/cron/keep-alive': typeof ApiCronKeepAliveRoute
   '/api/stripe/webhook': typeof ApiStripeWebhookRoute
   '/api/whatsapp/meta-webhook': typeof ApiWhatsappMetaWebhookRoute
   '/api/whatsapp/webhook': typeof ApiWhatsappWebhookRoute
@@ -259,6 +266,7 @@ export interface FileRoutesByTo {
   '/widget/$slug': typeof WidgetSlugRoute
   '/dashboard': typeof DashboardIndexRoute
   '/onboarding': typeof OnboardingIndexRoute
+  '/api/cron/keep-alive': typeof ApiCronKeepAliveRoute
   '/api/stripe/webhook': typeof ApiStripeWebhookRoute
   '/api/whatsapp/meta-webhook': typeof ApiWhatsappMetaWebhookRoute
   '/api/whatsapp/webhook': typeof ApiWhatsappWebhookRoute
@@ -293,6 +301,7 @@ export interface FileRoutesById {
   '/widget/$slug': typeof WidgetSlugRoute
   '/dashboard/': typeof DashboardIndexRoute
   '/onboarding/': typeof OnboardingIndexRoute
+  '/api/cron/keep-alive': typeof ApiCronKeepAliveRoute
   '/api/stripe/webhook': typeof ApiStripeWebhookRoute
   '/api/whatsapp/meta-webhook': typeof ApiWhatsappMetaWebhookRoute
   '/api/whatsapp/webhook': typeof ApiWhatsappWebhookRoute
@@ -329,6 +338,7 @@ export interface FileRouteTypes {
     | '/widget/$slug'
     | '/dashboard/'
     | '/onboarding/'
+    | '/api/cron/keep-alive'
     | '/api/stripe/webhook'
     | '/api/whatsapp/meta-webhook'
     | '/api/whatsapp/webhook'
@@ -360,6 +370,7 @@ export interface FileRouteTypes {
     | '/widget/$slug'
     | '/dashboard'
     | '/onboarding'
+    | '/api/cron/keep-alive'
     | '/api/stripe/webhook'
     | '/api/whatsapp/meta-webhook'
     | '/api/whatsapp/webhook'
@@ -393,6 +404,7 @@ export interface FileRouteTypes {
     | '/widget/$slug'
     | '/dashboard/'
     | '/onboarding/'
+    | '/api/cron/keep-alive'
     | '/api/stripe/webhook'
     | '/api/whatsapp/meta-webhook'
     | '/api/whatsapp/webhook'
@@ -422,6 +434,7 @@ export interface RootRouteChildren {
   ApiMetaTestExchangeRoute: typeof ApiMetaTestExchangeRoute
   QuoteSlugRoute: typeof QuoteSlugRoute
   WidgetSlugRoute: typeof WidgetSlugRoute
+  ApiCronKeepAliveRoute: typeof ApiCronKeepAliveRoute
   ApiStripeWebhookRoute: typeof ApiStripeWebhookRoute
   ApiWhatsappMetaWebhookRoute: typeof ApiWhatsappMetaWebhookRoute
   ApiWhatsappWebhookRoute: typeof ApiWhatsappWebhookRoute
@@ -560,6 +573,13 @@ declare module '@tanstack/react-router' {
       path: '/widget/$slug'
       fullPath: '/widget/$slug'
       preLoaderRoute: typeof WidgetSlugRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/cron/keep-alive': {
+      id: '/api/cron/keep-alive'
+      path: '/api/cron/keep-alive'
+      fullPath: '/api/cron/keep-alive'
+      preLoaderRoute: typeof ApiCronKeepAliveRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/stripe/webhook': {
@@ -742,6 +762,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiMetaTestExchangeRoute: ApiMetaTestExchangeRoute,
   QuoteSlugRoute: QuoteSlugRoute,
   WidgetSlugRoute: WidgetSlugRoute,
+  ApiCronKeepAliveRoute: ApiCronKeepAliveRoute,
   ApiStripeWebhookRoute: ApiStripeWebhookRoute,
   ApiWhatsappMetaWebhookRoute: ApiWhatsappMetaWebhookRoute,
   ApiWhatsappWebhookRoute: ApiWhatsappWebhookRoute,
