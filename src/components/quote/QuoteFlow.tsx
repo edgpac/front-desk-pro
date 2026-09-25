@@ -486,6 +486,12 @@ export function QuoteFlow({
         )}
       </header>
 
+      {/* Header stays fixed; this region scrolls on its own once content
+          (e.g. several clarify questions) exceeds the widget panel's fixed
+          height — without this, the panel's own overflow-hidden (needed for
+          the rounded corners) would just clip the extra content instead of
+          making it reachable. */}
+      <div className={cn("min-h-0 flex-1", compact && "overflow-y-auto")}>
       {stage === "intake" && (
         <div className={cn("flex flex-col p-5", compact && "h-full")}>
           <h3 className="text-xl font-semibold text-neutral-900">What's going on?</h3>
@@ -943,6 +949,7 @@ export function QuoteFlow({
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }
