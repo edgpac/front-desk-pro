@@ -4,7 +4,6 @@ import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { money } from "@/lib/mock-data";
 import { cn } from "@/lib/utils";
 import { fileToCompressedBase64, urlToCompressedBase64, isSupportedImageFile, UNSUPPORTED_IMAGE_MESSAGE } from "@/lib/image-client";
@@ -120,7 +119,7 @@ export function QuoteFlow({
   // lead instead of creating new ones.
   const [clarifyingLeadId, setClarifyingLeadId] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
-  const descriptionRef = useRef<HTMLTextAreaElement>(null);
+  const descriptionRef = useRef<HTMLInputElement>(null);
 
   const accentStyle = accent ? { backgroundColor: accent, borderColor: accent } : undefined;
 
@@ -557,20 +556,16 @@ export function QuoteFlow({
               onChange={pickFile}
               aria-label="Upload a photo of the problem"
             />
-            <Textarea
+            <Input
               id="qf-desc"
               ref={descriptionRef}
-              rows={1}
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  if (canSubmit) void submitToAI([]);
-                }
+                if (e.key === "Enter" && canSubmit) void submitToAI([]);
               }}
-              placeholder="Water heater in the garage is dripping and there's rust underneath."
-              className="min-h-0 flex-1 resize-none rounded-3xl border-neutral-200 py-3 focus-visible:ring-neutral-300"
+              placeholder="Describe your issue"
+              className="h-11 flex-1 rounded-full border-neutral-200 focus-visible:ring-neutral-300"
             />
             <button
               type="button"

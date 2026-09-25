@@ -45,19 +45,19 @@ function WidgetEmbedPage() {
   }, [slug]);
 
   if (loading) {
-    return <div className="flex h-screen items-center justify-center bg-background text-sm text-muted-foreground">Loading…</div>;
+    return <div className="flex h-screen items-center justify-center bg-white text-sm text-neutral-500">Loading…</div>;
   }
 
   if (notFound || !tenant) {
     return (
-      <div className="flex h-screen items-center justify-center bg-background p-6 text-center text-sm text-muted-foreground">
+      <div className="flex h-screen items-center justify-center bg-white p-6 text-center text-sm text-neutral-500">
         This estimate service isn't available right now — please contact the business directly.
       </div>
     );
   }
 
   return (
-    <div className="h-screen overflow-y-auto bg-background p-3">
+    <div className="h-screen overflow-y-auto bg-white p-3">
       <QuoteFlow
         businessName={tenant.name}
         laborRate={tenant.laborRate}
