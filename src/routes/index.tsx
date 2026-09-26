@@ -98,7 +98,7 @@ function Landing() {
             <dl className="mt-12 grid grid-cols-3 gap-px overflow-hidden border border-border-strong bg-border-strong">
               {[
                 { k: "Photo-first", v: "Start with the job, not a form" },
-                { k: "Your pricing", v: "Estimates use your own rates" },
+                { k: "Your pricing", v: "Estimates use your rates — not guessed numbers" },
                 { k: "24/7 intake", v: "Customers don't wait for a callback" },
               ].map((s) => (
                 <div key={s.k} className="bg-card px-4 py-4">
@@ -252,7 +252,8 @@ function Landing() {
       <section className="border-b border-border-strong bg-paper">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-6 px-5 py-14">
           <div>
-            <h2 className="text-3xl">Flat monthly price. Cancel whenever.</h2>
+            <h2 className="text-3xl">Give your business a front desk.</h2>
+            <p className="mt-2 text-lg font-semibold text-foreground">Flat monthly price. Cancel whenever.</p>
             <p className="mt-2 max-w-lg text-sm text-muted-foreground">
               $19.99/mo solo, $39.99/mo for a crew. One extra booked service call covers it.
             </p>
