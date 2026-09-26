@@ -5,8 +5,6 @@ import { SiteHeader } from "@/components/site/SiteHeader";
 import { SiteFooter } from "@/components/site/SiteFooter";
 import { EstimateReel } from "@/components/site/EstimateReel";
 import { Button } from "@/components/ui/button";
-import carInteriorPhoto from "@/assets/car-detailing-interior.png";
-
 const SOFTWARE_SCHEMA = {
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
@@ -36,17 +34,16 @@ const SOFTWARE_SCHEMA = {
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "Job It Ready — quote every job before your competition calls back" },
+      { title: "Job It Ready — the front desk for trades that don't have one" },
       {
         name: "description",
         content:
-          "Customers send a photo, Job It Ready sends a priced estimate off your own price sheet, and books the job on your calendar. Built for plumbers, electricians, detailers, and any service business that quotes from a photo.",
+          "A customer sends a photo or describes the job. Job It Ready asks the right questions, prices it off your own rates, and helps turn the inquiry into a booked job. Built for plumbers, electricians, detailers, and any service business.",
       },
-      { property: "og:title", content: "Quote every job before your competition calls back" },
+      { property: "og:title", content: "The front desk for trades that don't have one" },
       {
         property: "og:description",
-        content:
-          "Photo in, priced estimate out, job booked. Job It Ready answers quote requests while you're under a sink.",
+        content: "Photo in. Priced estimate out. Job on the calendar. Job It Ready is the front desk that answers.",
       },
     ],
     scripts: [
@@ -68,16 +65,19 @@ function Landing() {
       <section className="border-b border-border-strong">
         <div className="mx-auto grid max-w-6xl grid-cols-1 lg:grid-cols-[1.05fr_0.95fr]">
           <div className="border-border-strong px-5 py-14 lg:border-r lg:py-20 lg:pr-12">
-            <p className="label-caps text-primary">For plumbers · electricians · detailers · any trade</p>
+            <p className="label-caps text-primary">
+              For plumbers · electricians · detailers · any service business
+            </p>
             <h1 className="mt-5 text-[2.6rem] leading-[1.03] text-foreground sm:text-6xl">
-              Quote the job before the next
-              <br />
-              guy calls back.
+              The front desk for trades that don't have one.
             </h1>
-            <p className="mt-6 max-w-lg text-[17px] leading-relaxed text-muted-foreground">
-              A customer takes a photo of the problem. Job It Ready reads it, prices it off{" "}
-              <span className="font-semibold text-foreground">your</span> price sheet, and books it on your
-              calendar — while you're still under somebody's sink.
+            <p className="mt-4 text-lg font-semibold text-foreground">
+              Photo in. Priced estimate out. Job on the calendar.
+            </p>
+            <p className="mt-4 max-w-lg text-[17px] leading-relaxed text-muted-foreground">
+              A customer sends a photo or describes the job. Job It Ready asks the right questions, uses{" "}
+              <span className="font-semibold text-foreground">your</span> pricing, builds the estimate, and
+              helps turn the inquiry into a booked job.
             </p>
 
             <div className="mt-8 flex flex-wrap gap-3">
@@ -97,12 +97,12 @@ function Landing() {
 
             <dl className="mt-12 grid grid-cols-3 gap-px overflow-hidden border border-border-strong bg-border-strong">
               {[
-                { k: "4 min", v: "median time to a priced estimate" },
-                { k: "3 of 4", v: "customers hire whoever answers first" },
-                { k: "0", v: "quotes typed out at 9pm" },
+                { k: "Photo-first", v: "Start with the job, not a form" },
+                { k: "Your pricing", v: "Estimates use your own rates" },
+                { k: "24/7 intake", v: "Customers don't wait for a callback" },
               ].map((s) => (
                 <div key={s.k} className="bg-card px-4 py-4">
-                  <dt className="num font-display text-2xl font-extrabold text-foreground">{s.k}</dt>
+                  <dt className="font-display text-base font-extrabold text-foreground">{s.k}</dt>
                   <dd className="mt-1 text-[11px] leading-snug text-muted-foreground">{s.v}</dd>
                 </div>
               ))}
@@ -182,26 +182,21 @@ function Landing() {
             </p>
           </div>
 
-          <div className="grid items-center gap-8 py-10 lg:grid-cols-2 lg:gap-14">
-            <div>
-              <h3 className="text-2xl sm:text-[1.75rem]">How it works</h3>
-              <p className="mt-3 max-w-lg text-[15px] leading-relaxed text-muted-foreground">
-                A photo and a couple of sentences — no forms, no account. It follows up only if the price
-                depends on it, prices the job off your own sheet, and drops a booking link in their thread
-                and your inbox.
-              </p>
-            </div>
-            <figure className="border border-border-strong bg-muted">
-              <img
-                src={carInteriorPhoto}
-                alt="Customer photo of a heavily soiled car interior needing a full detail"
-                loading="lazy"
-                width={1369}
-                height={1149}
-                className="aspect-[4/3] w-full object-cover"
-              />
-            </figure>
-          </div>
+          <ol className="grid gap-px overflow-hidden border border-border-strong bg-border-strong sm:grid-cols-5">
+            {[
+              { n: "01", t: "Customer reaches out", d: "Photo, message, or job description." },
+              { n: "02", t: "Job It Ready qualifies it", d: "AI asks what it needs to know." },
+              { n: "03", t: "Your pricing does the math", d: "Services, labor, materials, and fees." },
+              { n: "04", t: "Customer gets the estimate", d: "Clear, professional, ready to approve." },
+              { n: "05", t: "You get the job", d: "Lead, conversation, and booking." },
+            ].map((step) => (
+              <li key={step.n} className="bg-card px-5 py-6">
+                <span className="num font-display text-sm font-bold text-primary">{step.n}</span>
+                <h3 className="mt-2 text-base font-semibold text-foreground">{step.t}</h3>
+                <p className="mt-1.5 text-sm leading-snug text-muted-foreground">{step.d}</p>
+              </li>
+            ))}
+          </ol>
 
           <div className="pt-8">
             <Button asChild variant="outline">
@@ -215,9 +210,7 @@ function Landing() {
       <section className="border-b border-border-strong bg-paper">
         <div className="mx-auto max-w-6xl px-5 py-16 lg:py-20">
           <p className="label-caps text-primary">What comes with it</p>
-          <h2 className="mt-3 max-w-2xl text-3xl sm:text-4xl">
-            A lead inbox, your price sheet, and proposals that look like a real company sent them.
-          </h2>
+          <h2 className="mt-3 max-w-2xl text-3xl sm:text-4xl">Everything your front desk should be doing.</h2>
 
           <div className="mt-10 grid gap-px bg-border-strong sm:grid-cols-2">
             {[
@@ -226,24 +219,24 @@ function Landing() {
                 d: "Every request in one list: new, quoted, booked, won, lost. Open one and you see the photo, the diagnosis, and the math.",
               },
               {
-                t: "Your price sheet, extracted",
-                d: "Photograph the paper list on your dash or drop in a spreadsheet. It becomes an editable table you control.",
+                t: "Your pricing",
+                d: "Photograph your price list or drop in a spreadsheet. Estimates are built from your own rates, never guessed — and you can change any number before it goes out.",
               },
               {
-                t: "Override anything",
-                d: "Don't like a number? Change it before it goes out. Re-run the read on a bad photo. You approve every estimate.",
+                t: "AI job intake",
+                d: "Asks the questions you'd ask before pricing anything, and re-reads a bad photo instead of guessing from it.",
               },
               {
-                t: "Branded proposals",
+                t: "Branded estimates",
                 d: "One click turns an approved estimate into a PDF with your logo, line items, terms and totals.",
               },
               {
-                t: "Widget + shareable link",
-                d: "Paste one line on your site, or drop the link in your Instagram bio. Same flow both ways.",
+                t: "Customer follow-up",
+                d: "Customers ask about materials, timeline, DIY. It answers from the quote — and you can jump in yourself.",
               },
               {
-                t: "Follow-up thread",
-                d: "Customers ask about materials, timeline, DIY. It answers from your quote — and you can jump in yourself.",
+                t: "Booking link",
+                d: "Paste one line on your site, or drop the link in your Instagram bio. Same flow, straight to your calendar.",
               },
             ].map((f) => (
               <div key={f.t} className="bg-card p-6">
