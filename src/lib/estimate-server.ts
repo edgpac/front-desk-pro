@@ -36,6 +36,11 @@ export type PriceSheetItem = {
   // field existed. Never AI-inferred or AI-chosen, same discipline as
   // materialsPolicy — see buildDiagnosisSentinelId below.
   diagnosisFee: { pricingType: "flat" | "hourly"; amount: number } | null;
+  // Optional, free-text, owner-written guidance for the AI specific to this
+  // one service — see buildPrompt's OWNER NOTES rules. null means no note.
+  // Never AI-inferred, never AI-written, never extracted from an uploaded
+  // price sheet — a business writes this by hand on the dashboard.
+  aiNotes: string | null;
 };
 
 // Sentinel id for the tenant-level serviceCallFee scalar, which isn't a
@@ -158,6 +163,7 @@ export const SAMPLE_PRICE_SHEET: PriceSheetItem[] = [
     bundleable: false,
     materialsPolicy: "included",
     diagnosisFee: null,
+    aiNotes: null,
   },
   {
     id: "sample-2",
@@ -171,6 +177,7 @@ export const SAMPLE_PRICE_SHEET: PriceSheetItem[] = [
     bundleable: false,
     materialsPolicy: "included",
     diagnosisFee: null,
+    aiNotes: null,
   },
   {
     id: "sample-3",
@@ -184,6 +191,7 @@ export const SAMPLE_PRICE_SHEET: PriceSheetItem[] = [
     bundleable: false,
     materialsPolicy: "included",
     diagnosisFee: null,
+    aiNotes: null,
   },
   {
     id: "sample-4",
@@ -197,6 +205,7 @@ export const SAMPLE_PRICE_SHEET: PriceSheetItem[] = [
     bundleable: false,
     materialsPolicy: "included",
     diagnosisFee: null,
+    aiNotes: null,
   },
   {
     id: "sample-5",
@@ -210,6 +219,7 @@ export const SAMPLE_PRICE_SHEET: PriceSheetItem[] = [
     bundleable: false,
     materialsPolicy: "included",
     diagnosisFee: null,
+    aiNotes: null,
   },
   {
     id: "sample-6",
@@ -223,6 +233,7 @@ export const SAMPLE_PRICE_SHEET: PriceSheetItem[] = [
     bundleable: false,
     materialsPolicy: "included",
     diagnosisFee: null,
+    aiNotes: null,
   },
   {
     id: "sample-7",
@@ -236,6 +247,7 @@ export const SAMPLE_PRICE_SHEET: PriceSheetItem[] = [
     bundleable: true,
     materialsPolicy: "included",
     diagnosisFee: null,
+    aiNotes: null,
   },
   {
     id: "sample-8",
@@ -252,6 +264,7 @@ export const SAMPLE_PRICE_SHEET: PriceSheetItem[] = [
     // scope are known.
     materialsPolicy: "confirmed_after_inspection",
     diagnosisFee: null,
+    aiNotes: null,
   },
 ];
 
@@ -384,7 +397,8 @@ function buildPrompt(input: QuoteInput): string {
       const diagnosisTag = item.diagnosisFee
         ? ` [DIAGNOSIS FEE: ${item.diagnosisFee.pricingType === "hourly" ? `$${item.diagnosisFee.amount}/hr` : `$${item.diagnosisFee.amount}`}, id: ${buildDiagnosisSentinelId(item.id)}]`
         : "";
-      return `- [id: ${item.id}] [${item.category}] ${item.task} (matches: ${item.keywords.join(", ")}) — about ${item.hours}hr, ${price}${item.bundleable ? " [BUNDLEABLE]" : ""}${materialsTag}${diagnosisTag}`;
+      const notesTag = item.aiNotes ? ` [NOTE: ${item.aiNotes}]` : "";
+      return `- [id: ${item.id}] [${item.category}] ${item.task} (matches: ${item.keywords.join(", ")}) — about ${item.hours}hr, ${price}${item.bundleable ? " [BUNDLEABLE]" : ""}${materialsTag}${diagnosisTag}${notesTag}`;
     })
     .join("\n");
 
@@ -481,6 +495,8 @@ MATERIALS POLICY — each price-sheet item above carries a materials policy, sho
 For either non-included policy: the line item's "amount" is always exactly the row's own configured price — never the configured price plus an estimated, guessed, or customer-suggested materials figure, and never presented as though it were the complete, all-in final job cost. The ONLY dollar amounts you may ever write anywhere in your response are a price-sheet item's own configured price, the labor rate, or the service call fee — this rule already applies everywhere in this prompt, and materials policy gives you no exception to it. If the customer states what they think a part costs ("the faucet is about $80") or says they already bought it, acknowledge it in the diagnosis if relevant, but that number never becomes a business charge and never changes which policy governs the row — the row's configured policy is authoritative regardless of anything the customer says.
 
 Each matched item's policy is independent — a request matching one "included" item and one "customer_pays_receipt" item treats them completely separately; there is no single policy for the whole estimate.
+
+OWNER NOTES — some price-sheet items above carry a [NOTE: ...] tag: a specific instruction the business owner wrote for that one service, about how they personally want it handled (e.g. "always needs an in-person look, don't quote from a photo alone" or "customers usually mean X when they describe it this way"). Treat a note as an authoritative instruction for that one matched item, not a suggestion — follow it even if it means giving a diagnosis-only answer instead of an instant price, or asking a different clarifying question than you otherwise would for that kind of job. A note on one item never applies to any other item, even a similar one, and an item with no [NOTE: ...] tag gets no special treatment — never invent guidance for it based on a note you saw on a different row.
 
 RULES:
 1. If the photo and description together are not enough to price this confidently, respond with 1-2 short clarifying questions instead of guessing. Give each question 2-4 short tappable answer options. Only ask if the answer would actually change the price. Never ask about something the customer has already been asked (see CUSTOMER'S ANSWERS TO YOUR FOLLOW-UP QUESTIONS above, if present) — a "no"/"I don't have one"/"not sure" answer is still an answer; treat it as final and move on rather than asking the same or a reworded version of the same question again. If, after that, no further price-changing question actually remains, stop asking and price the job now using what you have. ${

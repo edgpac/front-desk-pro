@@ -65,6 +65,7 @@ function newRow(): PriceSheetRow {
     bundleable: false,
     materialsPolicy: "included",
     diagnosisFee: null,
+    aiNotes: null,
   };
 }
 
@@ -78,6 +79,10 @@ function PriceSheetPage() {
   const [extracting, setExtracting] = useState(false);
   const [importingUrl, setImportingUrl] = useState(false);
   const [urlValue, setUrlValue] = useState("");
+  // Row ids whose "note for the AI" field has been expanded this session —
+  // purely a UI collapse state, not persisted; a row with an existing note
+  // is always shown expanded regardless of this set (see the render below).
+  const [expandedNotes, setExpandedNotes] = useState<Set<string>>(new Set());
   const fileRef = useRef<HTMLInputElement>(null);
 
   function applyExtractedItems(extracted: ExtractedPriceSheetItem[], source: string) {
@@ -166,6 +171,7 @@ function PriceSheetPage() {
             bundleable: row.bundleable,
             materialsPolicy: row.materialsPolicy,
             diagnosisFee: row.diagnosisFee,
+            aiNotes: row.aiNotes,
           })),
         },
       });
@@ -443,6 +449,39 @@ function PriceSheetPage() {
                   </>
                 )}
               </div>
+              {row.aiNotes !== null || expandedNotes.has(row.id) ? (
+                <div className="flex items-center gap-2">
+                  <Input
+                    value={row.aiNotes ?? ""}
+                    onChange={(e) => updateRow(row.id, { aiNotes: e.target.value || null })}
+                    placeholder="e.g. Always needs an in-person look before quoting — don't estimate from a photo alone"
+                    className="text-xs"
+                    aria-label={`Note for the AI about ${row.task}`}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      updateRow(row.id, { aiNotes: null });
+                      setExpandedNotes((s) => {
+                        const next = new Set(s);
+                        next.delete(row.id);
+                        return next;
+                      });
+                    }}
+                    className="shrink-0 text-xs text-muted-foreground hover:text-destructive"
+                  >
+                    Remove note
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setExpandedNotes((s) => new Set(s).add(row.id))}
+                  className="w-fit text-xs text-muted-foreground hover:text-foreground"
+                >
+                  + Add note for the AI
+                </button>
+              )}
             </li>
           ))}
         </ul>

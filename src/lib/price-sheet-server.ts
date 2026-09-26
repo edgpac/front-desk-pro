@@ -16,6 +16,7 @@ type PriceSheetItemRow = {
   materials_policy: MaterialsPolicy;
   diagnosis_pricing_type: "flat" | "hourly" | null;
   diagnosis_fee: number | null;
+  ai_notes: string | null;
 };
 
 function toRow(item: PriceSheetItemRow): PriceSheetRow {
@@ -33,6 +34,7 @@ function toRow(item: PriceSheetItemRow): PriceSheetRow {
     diagnosisFee: item.diagnosis_pricing_type
       ? { pricingType: item.diagnosis_pricing_type, amount: item.diagnosis_fee ?? 0 }
       : null,
+    aiNotes: item.ai_notes,
   };
 }
 
@@ -49,7 +51,7 @@ export const listMyPriceSheet = createServerFn({ method: "GET" })
     const { data, error } = await context.supabase
       .from("price_sheet_items")
       .select(
-        "id, task, category, keywords, pricing_type, price_min, price_max, hours, bundleable, materials_policy, diagnosis_pricing_type, diagnosis_fee",
+        "id, task, category, keywords, pricing_type, price_min, price_max, hours, bundleable, materials_policy, diagnosis_pricing_type, diagnosis_fee, ai_notes",
       )
       .eq("tenant_id", tenant.id)
       .order("sort_order", { ascending: true });
@@ -86,6 +88,7 @@ export const saveMyPriceSheet = createServerFn({ method: "POST" })
         bundleable: boolean;
         materialsPolicy: MaterialsPolicy;
         diagnosisFee: { pricingType: "flat" | "hourly"; amount: number } | null;
+        aiNotes: string | null;
       }>;
     }) => input,
   )
@@ -124,6 +127,7 @@ export const saveMyPriceSheet = createServerFn({ method: "POST" })
         materials_policy: item.materialsPolicy,
         diagnosis_pricing_type: item.diagnosisFee?.pricingType ?? null,
         diagnosis_fee: item.diagnosisFee?.amount ?? null,
+        ai_notes: item.aiNotes,
         sort_order: index,
       })),
     );
@@ -149,6 +153,9 @@ export type ExtractedPriceSheetItem = {
   // Same reasoning again — a printed price list never states a diagnosis
   // fee; always null on extraction, the owner configures it by hand.
   diagnosisFee: { pricingType: "flat" | "hourly"; amount: number } | null;
+  // Same reasoning again — a printed price list is never an AI-usage note;
+  // always null on extraction, the owner writes it by hand afterward.
+  aiNotes: string | null;
 };
 
 const VALID_PRICING_TYPES: PricingType[] = ["flat", "hourly", "range"];
@@ -228,6 +235,7 @@ function parseExtractedItems(raw: string): ExtractedPriceSheetItem[] {
       bundleable: false,
       materialsPolicy: "included",
       diagnosisFee: null,
+      aiNotes: null,
     };
   });
 }

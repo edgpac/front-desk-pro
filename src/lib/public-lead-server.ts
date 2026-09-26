@@ -78,7 +78,7 @@ export const getTenantForQuote = createServerFn({ method: "GET" })
     const { data: items, error: itemsError } = await admin
       .from("price_sheet_items")
       .select(
-        "id, task, category, keywords, pricing_type, price_min, price_max, hours, bundleable, materials_policy, diagnosis_pricing_type, diagnosis_fee",
+        "id, task, category, keywords, pricing_type, price_min, price_max, hours, bundleable, materials_policy, diagnosis_pricing_type, diagnosis_fee, ai_notes",
       )
       .eq("tenant_id", tenant.id)
       .order("sort_order", { ascending: true });
@@ -111,6 +111,7 @@ export const getTenantForQuote = createServerFn({ method: "GET" })
               amount: item["diagnosis_fee"] as number,
             }
           : null,
+        aiNotes: item["ai_notes"] as string | null,
       })),
     };
   });
