@@ -385,14 +385,20 @@ export const finalizeLeadWithQuote = createServerFn({ method: "POST" })
 
     const { data: tenant, error: tenantError } = await admin
       .from("tenants")
-      .select("name, email, currency")
+      .select("id, name, email, currency")
       .eq("slug", data.tenantSlug)
       .single();
     if (tenantError || !tenant) {
       throw new Error(INTAKE_UNAVAILABLE_MESSAGE);
     }
 
-    const { error: updateError } = await admin
+    // Tenant-ownership check (P0 security fix): leadId is a client-supplied
+    // opaque id, and this runs on the service-role client, which bypasses
+    // RLS entirely — so the tenant_id match has to be enforced explicitly,
+    // right here, as part of the same query that performs the mutation
+    // (never a separate check-then-write, which would leave a TOCTOU gap).
+    // A leadId belonging to a different tenant simply matches zero rows.
+    const { data: updatedLead, error: updateError } = await admin
       .from("leads")
       .update({
         // Writing customer_name/phone here too (not just diagnosis/quote
@@ -415,9 +421,17 @@ export const finalizeLeadWithQuote = createServerFn({ method: "POST" })
             ? { status: "flagged", flag_type: "pending_negotiated_price", flag_reason: PENDING_NEGOTIATED_PRICE_REASON }
             : {}),
       })
-      .eq("id", data.leadId);
+      .eq("id", data.leadId)
+      .eq("tenant_id", tenant.id)
+      .select("id")
+      .maybeSingle();
     if (updateError) {
       throw new Error(`Could not update lead: ${updateError.message}`);
+    }
+    if (!updatedLead) {
+      // Same generic message as an unrecognized tenant slug — never confirm
+      // or deny that a lead with this id exists under a different tenant.
+      throw new Error(INTAKE_UNAVAILABLE_MESSAGE);
     }
 
     if (data.lineItems.length > 0) {
@@ -468,11 +482,46 @@ export const finalizeLeadWithQuote = createServerFn({ method: "POST" })
 // this just persists it. Same anonymous-write trust model as createLead/
 // finalizeLeadWithQuote above: the leadId is an opaque id the calling
 // widget session already legitimately holds, not a new security boundary.
+type SaveClarificationMessagesInput = {
+  leadId: string;
+  // Added for the P0 tenant-ownership fix below — same requirement/shape as
+  // FinalizeLeadInput.tenantSlug above, not previously required here.
+  tenantSlug: string;
+  messages: Array<{ role: "customer" | "assistant"; body: string }>;
+};
+
 export const saveClarificationMessages = createServerFn({ method: "POST" })
-  .validator((input: { leadId: string; messages: Array<{ role: "customer" | "assistant"; body: string }> }) => input)
+  .validator((input: SaveClarificationMessagesInput) => input)
   .handler(async ({ data }) => {
     if (data.messages.length === 0) return { ok: true as const };
     const admin = getAdminClient();
+
+    const { data: tenant, error: tenantError } = await admin
+      .from("tenants")
+      .select("id")
+      .eq("slug", data.tenantSlug)
+      .single();
+    if (tenantError || !tenant) {
+      throw new Error(INTAKE_UNAVAILABLE_MESSAGE);
+    }
+
+    // Tenant-ownership check (P0 security fix): lead_messages has no
+    // tenant_id column of its own (it's scoped via lead_id -> leads.tenant_id),
+    // so — unlike the single-query update pattern above — this needs an
+    // explicit pre-check before the insert, not a WHERE-clause trick.
+    const { data: lead, error: leadError } = await admin
+      .from("leads")
+      .select("id")
+      .eq("id", data.leadId)
+      .eq("tenant_id", tenant.id)
+      .maybeSingle();
+    if (leadError) {
+      throw new Error(`Could not save messages: ${leadError.message}`);
+    }
+    if (!lead) {
+      throw new Error(INTAKE_UNAVAILABLE_MESSAGE);
+    }
+
     const { error } = await admin
       .from("lead_messages")
       .insert(data.messages.map((m) => ({ lead_id: data.leadId, role: m.role, body: m.body })));
@@ -482,6 +531,9 @@ export const saveClarificationMessages = createServerFn({ method: "POST" })
 
 type FinalizeAsOutOfScopeInput = {
   leadId: string;
+  // Added for the P0 tenant-ownership fix below — same shape as
+  // FinalizeLeadInput.tenantSlug above, not previously required here.
+  tenantSlug: string;
   customerName: string;
   phone: string;
   flagReason: string;
@@ -499,7 +551,19 @@ export const finalizeLeadAsOutOfScope = createServerFn({ method: "POST" })
   .validator((input: FinalizeAsOutOfScopeInput) => input)
   .handler(async ({ data }) => {
     const admin = getAdminClient();
-    const { error } = await admin
+
+    const { data: tenant, error: tenantError } = await admin
+      .from("tenants")
+      .select("id")
+      .eq("slug", data.tenantSlug)
+      .single();
+    if (tenantError || !tenant) {
+      throw new Error(INTAKE_UNAVAILABLE_MESSAGE);
+    }
+
+    // Tenant-ownership check (P0 security fix): same atomic
+    // WHERE-clause-scoped update pattern as finalizeLeadWithQuote above.
+    const { data: updatedLead, error } = await admin
       .from("leads")
       .update({
         customer_name: data.customerName,
@@ -508,13 +572,20 @@ export const finalizeLeadAsOutOfScope = createServerFn({ method: "POST" })
         flag_type: "outside_service_scope",
         flag_reason: data.flagReason,
       })
-      .eq("id", data.leadId);
+      .eq("id", data.leadId)
+      .eq("tenant_id", tenant.id)
+      .select("id")
+      .maybeSingle();
     if (error) throw new Error(`Could not update lead: ${error.message}`);
+    if (!updatedLead) throw new Error(INTAKE_UNAVAILABLE_MESSAGE);
     return { id: data.leadId };
   });
 
 type FinalizeAsNeedsReviewInput = {
   leadId: string;
+  // Added for the P0 tenant-ownership fix below — same shape as
+  // FinalizeLeadInput.tenantSlug above, not previously required here.
+  tenantSlug: string;
   customerName: string;
   phone: string;
 };
@@ -532,7 +603,19 @@ export const finalizeLeadAsNeedsReview = createServerFn({ method: "POST" })
   .validator((input: FinalizeAsNeedsReviewInput) => input)
   .handler(async ({ data }) => {
     const admin = getAdminClient();
-    const { error } = await admin
+
+    const { data: tenant, error: tenantError } = await admin
+      .from("tenants")
+      .select("id")
+      .eq("slug", data.tenantSlug)
+      .single();
+    if (tenantError || !tenant) {
+      throw new Error(INTAKE_UNAVAILABLE_MESSAGE);
+    }
+
+    // Tenant-ownership check (P0 security fix): same atomic
+    // WHERE-clause-scoped update pattern as finalizeLeadWithQuote above.
+    const { data: updatedLead, error } = await admin
       .from("leads")
       .update({
         customer_name: data.customerName,
@@ -541,7 +624,11 @@ export const finalizeLeadAsNeedsReview = createServerFn({ method: "POST" })
         flag_type: "needs_human_review",
         flag_reason: "AI couldn't finalize this quote automatically after clarification.",
       })
-      .eq("id", data.leadId);
+      .eq("id", data.leadId)
+      .eq("tenant_id", tenant.id)
+      .select("id")
+      .maybeSingle();
     if (error) throw new Error(`Could not update lead: ${error.message}`);
+    if (!updatedLead) throw new Error(INTAKE_UNAVAILABLE_MESSAGE);
     return { id: data.leadId };
   });

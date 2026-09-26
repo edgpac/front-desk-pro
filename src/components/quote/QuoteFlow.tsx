@@ -190,6 +190,7 @@ export function QuoteFlow({
         await saveClarificationMessages({
           data: {
             leadId: id,
+            tenantSlug,
             messages: [
               { role: "customer", body: description },
               ...nextQuestions.map((q) => ({ role: "assistant" as const, body: q.question })),
@@ -200,6 +201,7 @@ export function QuoteFlow({
         await saveClarificationMessages({
           data: {
             leadId: clarifyingLeadId,
+            tenantSlug,
             messages: [
               ...newAnswersThisRound.map((a) => ({ role: "customer" as const, body: a.answer })),
               ...nextQuestions.map((q) => ({ role: "assistant" as const, body: q.question })),
@@ -436,6 +438,7 @@ export function QuoteFlow({
         await finalizeLeadAsOutOfScope({
           data: {
             leadId: clarifyingLeadId,
+            tenantSlug,
             customerName: customerName.trim(),
             phone: phone.trim(),
             flagReason: `Nothing on the price sheet covers: ${description}`,
@@ -484,7 +487,7 @@ export function QuoteFlow({
     try {
       if (clarifyingLeadId !== null) {
         await finalizeLeadAsNeedsReview({
-          data: { leadId: clarifyingLeadId, customerName: customerName.trim(), phone: phone.trim() },
+          data: { leadId: clarifyingLeadId, tenantSlug, customerName: customerName.trim(), phone: phone.trim() },
         });
       } else {
         await createFlaggedLead({
