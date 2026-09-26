@@ -52,7 +52,16 @@ const SAMPLE_PHOTOS: SamplePhoto[] = [
   },
 ];
 
-type Stage = "intake" | "loading" | "clarify" | "result" | "outOfScope" | "needsReview";
+type Stage = "intake" | "loading" | "clarify" | "result" | "outOfScope" | "needsReview" | "rateLimited";
+
+// getQuoteEstimate/getFollowUpAnswer throw these two exact messages for a
+// rate-limit rejection (shared limiter, or estimate-server.ts's
+// /demo-specific per-IP budget) — matched here so that case routes to its
+// own honest "rateLimited" stage instead of falling into "needsReview" and
+// asking for a name/phone a demo visitor has no real business leaving.
+function isRateLimitMessage(message: string): boolean {
+  return message.includes("getting a lot of traffic") || message.includes("used up today's free demo tries");
+}
 
 // Per-session cap on the "ask a question about this estimate" follow-up
 // chat — see the cost/abuse note in ask() below for why this exists.
@@ -116,6 +125,7 @@ export function QuoteFlow({
   const [phone, setPhone] = useState("");
   const [sendingLead, setSendingLead] = useState(false);
   const [leadSent, setLeadSent] = useState(false);
+  const [rateLimitMessage, setRateLimitMessage] = useState("");
   // P1-D: set the moment a clarification round is first persisted (see
   // submitToAI below). Null means either no clarification has happened yet,
   // or this is a demo/no-tenant session (tenantSlug undefined) where nothing
@@ -242,6 +252,16 @@ export function QuoteFlow({
       setResult(outcome);
       setStage("result");
     } catch (err) {
+      const message = err instanceof Error ? err.message : "";
+      if (isRateLimitMessage(message)) {
+        // A rate-limit rejection isn't a job the business needs to review —
+        // it's not a lead at all, so it must never fall into needsReview's
+        // "leave your name and number, the team will follow up" flow, which
+        // would be actively misleading here.
+        setRateLimitMessage(message);
+        setStage("rateLimited");
+        return;
+      }
       // getQuoteEstimate exhausted its retry — never a dead-end error
       // screen, since the customer hasn't been asked for contact info yet
       // at this point and "the business will follow up manually" would be
@@ -302,10 +322,16 @@ export function QuoteFlow({
         },
       });
       setThread((t) => [...t, { role: "desk", text: answer }]);
-    } catch {
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "";
       setThread((t) => [
         ...t,
-        { role: "desk", text: "Sorry, couldn't get an answer just now — try again in a moment." },
+        {
+          role: "desk",
+          text: isRateLimitMessage(message)
+            ? message
+            : "Sorry, couldn't get an answer just now — try again in a moment.",
+        },
       ]);
     } finally {
       setAskingFollowUp(false);
@@ -326,6 +352,7 @@ export function QuoteFlow({
     setPhone("");
     setLeadSent(false);
     setClarifyingLeadId(null);
+    setRateLimitMessage("");
   }
 
   async function sendQuoteToBusiness() {
@@ -633,6 +660,23 @@ export function QuoteFlow({
         <div className="flex flex-col items-center justify-center gap-3 p-12 text-center">
           <Loader2 className="h-6 w-6 animate-spin text-neutral-400" />
           <p className="text-sm text-neutral-500">Reading the photo and pricing it against the sheet…</p>
+        </div>
+      )}
+
+      {stage === "rateLimited" && (
+        <div className="p-5">
+          <p className="text-xs font-medium text-neutral-400">One moment</p>
+          <p className="mt-2 text-sm text-neutral-700">{rateLimitMessage}</p>
+          <div className="mt-4">
+            <Button
+              variant="outline"
+              size="lg"
+              className="rounded-full border-neutral-200"
+              onClick={() => setStage("intake")}
+            >
+              Start over
+            </Button>
+          </div>
         </div>
       )}
 
