@@ -255,32 +255,6 @@ function Landing() {
         </div>
       </section>
 
-      {/* WHAT THIS LOOKS LIKE IN PRACTICE */}
-      <section className="border-b border-border-strong">
-        <div className="mx-auto max-w-6xl px-5 pt-12">
-          <p className="label-caps text-primary">What this looks like in practice</p>
-          <p className="mt-2 max-w-xl text-sm text-muted-foreground">
-            These are the scenarios Job It Ready is built to handle, not customer quotes.
-          </p>
-        </div>
-        <div className="mx-auto grid max-w-6xl gap-px bg-border-strong px-0 pt-8 sm:grid-cols-2">
-          {[
-            {
-              q: "No more quoting at night. A customer's photo and answers are waiting in the morning, priced and ready to approve — two hours back, every day.",
-            },
-            {
-              q: "A customer sends a photo of a scorched outlet at 6am. She has a priced estimate by 6:20 and the job's on the calendar before the first coffee.",
-            },
-          ].map((t) => (
-            <figure key={t.q} className="bg-card px-6 py-12 sm:px-10">
-              <blockquote className="font-display text-xl leading-snug text-foreground sm:text-2xl">
-                “{t.q}”
-              </blockquote>
-            </figure>
-          ))}
-        </div>
-      </section>
-
       {/* PRICING STRIP */}
       <section className="border-b border-border-strong bg-paper">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-6 px-5 py-14">
