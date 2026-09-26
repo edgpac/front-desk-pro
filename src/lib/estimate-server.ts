@@ -1,4 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
+import { getRequest } from "@tanstack/react-start/server";
+import { createHash } from "node:crypto";
 import { getAdminClient } from "@/lib/public-lead-server";
 import { requireActiveSubscriptionForSlug } from "@/lib/entitlements-server";
 
@@ -303,6 +305,17 @@ function isSupportedImageBase64(base64: string): boolean {
   return isJpeg || isPng;
 }
 
+// Every channel's own compression (image-client.ts) never produces
+// anything close to this large (1280px longest side, 0.8 JPEG quality is
+// realistically tens to a few hundred KB) — this exists only to bound a
+// direct, hand-built call to this server function that skips the client
+// pipeline entirely. Applies to all traffic, not just /demo: a cheap,
+// universal input-boundary check, same spirit as the magic-byte check
+// above. ~2MB decoded, expressed as a base64-string-length ceiling
+// (base64 inflates size by ~4/3) so no decoding is needed to check it.
+const MAX_IMAGE_BASE64_CHARS = 2_800_000;
+export const IMAGE_TOO_LARGE_MESSAGE = "That photo is too large — try a smaller image.";
+
 // Shared placeholder for "a photo arrived with no caption text" — a single
 // exported constant instead of each caller inventing its own wording, so
 // buildPrompt can reliably detect this exact case (getQuoteEstimate's own
@@ -358,6 +371,66 @@ function withinRateLimit(): boolean {
   }
   windowCount++;
   return windowCount <= MAX_PER_WINDOW;
+}
+
+// Durable, per-IP budget for the public /demo flow specifically — separate
+// from, and in addition to, the shared in-memory limiter above. That
+// limiter is a module-scoped counter: reliable only within a single warm
+// Vercel serverless instance, not across concurrent instances in
+// production (this app's entire server bundles into one Vercel Function,
+// but a Function can and does run as multiple concurrent instances under
+// load, each with its own module scope) — so it cannot durably stop a
+// determined /demo abuser on its own, and it's shared identically with
+// real tenant/WhatsApp traffic besides. This gives /demo its own durable,
+// atomic budget in Postgres (via increment_demo_usage, migration 0017)
+// that real tenant/WhatsApp traffic never touches.
+const DEMO_WINDOW_SECONDS = 24 * 60 * 60;
+const DEMO_MAX_PER_WINDOW = 5;
+const DEMO_LIMIT_MESSAGE =
+  "You've used up today's free demo tries — sign up to try it on your own business, or come back tomorrow.";
+// Same wording as the shared limiter's message above, deliberately — a
+// demo visitor doesn't need to know which of the two limits they hit.
+const TRAFFIC_MESSAGE = "This demo is getting a lot of traffic right now — try again in a minute.";
+
+// Hashed, never the raw address — this value is only ever used as an
+// opaque rate-limit key, never logged or stored anywhere else.
+// getRequest() (from @tanstack/react-start/server) exposes the real
+// incoming Request inside a createServerFn handler, the same mechanism
+// auth-middleware.ts already uses to read the authorization header. Returns
+// null when no IP can be determined — callers must treat that as "deny",
+// never as "unlimited": an unidentifiable caller is never a trusted one.
+function getClientIpHash(): string | null {
+  const request = getRequest();
+  const forwardedFor = request?.headers?.get("x-forwarded-for");
+  const ip = forwardedFor?.split(",")[0]?.trim();
+  if (!ip) return null;
+  return createHash("sha256").update(ip).digest("hex");
+}
+
+// Only ever called when tenantSlug is absent (i.e. /demo — see call sites
+// below). `kind` separates the two independently-budgeted demo actions
+// ("quote" vs "followup") so asking a follow-up question never eats into
+// the budget for submitting a fresh photo, or vice versa. Throws (never
+// silently allows) on a missing IP, a DB error, or a genuinely exhausted
+// budget — the caller never has to remember to check a boolean correctly.
+async function enforceDemoLimit(kind: "quote" | "followup"): Promise<void> {
+  const ipHash = getClientIpHash();
+  if (!ipHash) {
+    throw new Error(TRAFFIC_MESSAGE);
+  }
+  const admin = getAdminClient();
+  const { data: count, error } = await admin.rpc("increment_demo_usage", {
+    p_ip_hash: ipHash,
+    p_kind: kind,
+    p_window_seconds: DEMO_WINDOW_SECONDS,
+  });
+  if (error) {
+    console.error("Demo rate-limit check failed:", error.message);
+    throw new Error(TRAFFIC_MESSAGE);
+  }
+  if ((count ?? 0) > DEMO_MAX_PER_WINDOW) {
+    throw new Error(DEMO_LIMIT_MESSAGE);
+  }
 }
 
 export async function callClaude(body: unknown): Promise<any> {
@@ -1097,6 +1170,13 @@ export const getQuoteEstimate = createServerFn({ method: "POST" })
     if (!withinRateLimit()) {
       throw new Error("This demo is getting a lot of traffic right now — try again in a minute.");
     }
+    // Absent tenantSlug means this is /demo (see QuoteInput.tenantSlug's own
+    // comment) — its own durable, per-IP budget, separate from and in
+    // addition to the shared limiter above. Never applies to real tenant or
+    // WhatsApp traffic, which always carry a tenantSlug.
+    if (!data.tenantSlug) {
+      await enforceDemoLimit("quote");
+    }
     if (!data.description || data.description.trim().length === 0) {
       throw new Error("Description is required.");
     }
@@ -1108,6 +1188,9 @@ export const getQuoteEstimate = createServerFn({ method: "POST" })
     }
     if (data.imageBase64 && !isSupportedImageBase64(data.imageBase64)) {
       throw new Error(UNSUPPORTED_IMAGE_MESSAGE);
+    }
+    if (data.imageBase64 && data.imageBase64.length > MAX_IMAGE_BASE64_CHARS) {
+      throw new Error(IMAGE_TOO_LARGE_MESSAGE);
     }
 
     const content: Array<Record<string, unknown>> = [{ type: "text", text: buildPrompt(data) }];
@@ -1224,6 +1307,12 @@ export const getQuoteEstimate = createServerFn({ method: "POST" })
 // to take (continue the existing job vs. start a fresh quote), it never
 // generates customer-facing text itself. Deliberately business-agnostic:
 // works the same whether the prior job was a leaking faucet or a dog groom.
+// No tenantSlug field, deliberately — this is only ever called from
+// whatsapp-conversation-server.ts, on a message already routed to a real
+// tenant's phone number. /demo (QuoteFlow.tsx) never calls this function at
+// all, so it has no "demo" case to gate here the way getQuoteEstimate/
+// getFollowUpAnswer do — nothing to fix, it was never part of the /demo
+// abuse surface. Still covered by the shared in-memory limiter below.
 export type FollowUpClassifyInput = {
   priorProblem: string;
   priorDiagnosis: string;
@@ -1299,6 +1388,13 @@ export const getFollowUpAnswer = createServerFn({ method: "POST" })
   .handler(async ({ data }): Promise<string> => {
     if (!withinRateLimit()) {
       throw new Error("This demo is getting a lot of traffic right now — try again in a minute.");
+    }
+    // Same reasoning as getQuoteEstimate above — absent tenantSlug means
+    // /demo. This is the server-side twin of QuoteFlow.tsx's client-side
+    // MAX_FOLLOW_UP_QUESTIONS=5 cap, which only limits in-memory React
+    // state and is trivially bypassed by reloading the page; this cannot be.
+    if (!data.tenantSlug) {
+      await enforceDemoLimit("followup");
     }
     if (!data.question || data.question.trim().length === 0) {
       throw new Error("Question is required.");
