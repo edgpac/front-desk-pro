@@ -99,7 +99,7 @@ export function BusinessDocument({
           <Link
             to="/dashboard/leads/$id"
             params={{ id: lead.id }}
-            className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
+            className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap text-sm text-muted-foreground hover:text-foreground"
           >
             <ArrowLeft className="h-3.5 w-3.5" /> Back to lead
           </Link>
@@ -130,7 +130,7 @@ export function BusinessDocument({
           <Link
             to="/dashboard/leads/$id"
             params={{ id: lead.id }}
-            className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
+            className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap text-sm text-muted-foreground hover:text-foreground"
           >
             <ArrowLeft className="h-3.5 w-3.5" /> Back to lead
           </Link>
@@ -156,15 +156,15 @@ export function BusinessDocument({
   return (
     <div className="bg-paper p-6 lg:p-10 print:bg-white print:p-0">
       <div className="mx-auto max-w-3xl">
-        <div className="mb-6 flex items-center justify-between print:hidden">
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-3 print:hidden">
           <Link
             to="/dashboard/leads/$id"
             params={{ id: lead.id }}
-            className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
+            className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap text-sm text-muted-foreground hover:text-foreground"
           >
             <ArrowLeft className="h-3.5 w-3.5" /> Back to lead
           </Link>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2">
             {kind === "receipt" && (
               <select
                 value={paymentMethod}
@@ -232,22 +232,22 @@ export function BusinessDocument({
             <thead>
               <tr className="border-b-2 border-ink text-left text-xs font-bold uppercase tracking-wide text-muted-foreground">
                 <th className="py-2">Description</th>
-                <th className="py-2 text-right">Qty</th>
-                <th className="py-2 text-right">Rate</th>
-                <th className="py-2 text-right">Total</th>
+                <th className="py-2 pl-3 text-right">Qty</th>
+                <th className="py-2 pl-3 text-right">Rate</th>
+                <th className="py-2 pl-3 text-right">Total</th>
               </tr>
             </thead>
             <tbody>
               {lead.lineItems.map((item) => (
                 <tr key={item.id} className="border-b border-border">
                   <td className="py-3 pr-4 font-medium text-foreground">{item.description}</td>
-                  <td className="py-3 text-right text-muted-foreground">
+                  <td className="py-3 pl-3 text-right text-muted-foreground">
                     {item.qty} {item.unit}
                   </td>
-                  <td className="py-3 text-right text-muted-foreground">
+                  <td className="py-3 pl-3 text-right text-muted-foreground">
                     {money(item.rate, tenant.currency)}
                   </td>
-                  <td className="num py-3 text-right font-semibold text-foreground">
+                  <td className="num py-3 pl-3 text-right font-semibold text-foreground">
                     {money(lineItemAmount(item), tenant.currency)}
                   </td>
                 </tr>
