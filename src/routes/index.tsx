@@ -5,8 +5,6 @@ import { SiteHeader } from "@/components/site/SiteHeader";
 import { SiteFooter } from "@/components/site/SiteFooter";
 import { EstimateReel } from "@/components/site/EstimateReel";
 import { Button } from "@/components/ui/button";
-import panelPhoto from "@/assets/electrical-panel-repair.png";
-import vanPhoto from "@/assets/work-van.png";
 import carInteriorPhoto from "@/assets/car-detailing-interior.png";
 
 const SOFTWARE_SCHEMA = {
@@ -184,58 +182,26 @@ function Landing() {
             </p>
           </div>
 
-          {[
-            {
-              n: "01",
-              t: "They send a photo and two sentences",
-              d: "Your branded quote page opens on their phone. Camera, gallery, or just type it out. No account, no forms with twelve fields.",
-              img: carInteriorPhoto,
-              alt: "Customer photo of a heavily soiled car interior needing a full detail",
-              w: 1369,
-              h: 1149,
-            },
-            {
-              n: "02",
-              t: "It asks the questions you'd ask",
-              d: "Age of the unit, is it dripping or pouring, is there access. When the photo is unclear it follows up instead of guessing — that's how the price ends up close.",
-              img: panelPhoto,
-              alt: "Electrician repairing wiring inside a breaker panel with a screwdriver",
-              w: 1447,
-              h: 1087,
-            },
-            {
-              n: "03",
-              t: "Priced off your sheet, booked on your calendar",
-              d: "Flat rates, hourly labor, ranges — whatever you actually charge. Estimate lands in their thread and in your inbox, with a booking link attached.",
-              img: vanPhoto,
-              alt: "A service van wrapped with the Job It Ready logo, tagline, and a send-photo, get-quote, book-the-job icon strip",
-              w: 1448,
-              h: 1086,
-            },
-          ].map((step, i) => (
-            <div
-              key={step.n}
-              className={`grid items-center gap-8 border-b border-border py-10 lg:grid-cols-2 lg:gap-14 ${
-                i % 2 === 1 ? "lg:[&>figure]:order-first" : ""
-              }`}
-            >
-              <div>
-                <span className="num font-display text-sm font-bold text-primary">{step.n}</span>
-                <h3 className="mt-2 text-2xl sm:text-[1.75rem]">{step.t}</h3>
-                <p className="mt-3 max-w-lg text-[15px] leading-relaxed text-muted-foreground">{step.d}</p>
-              </div>
-              <figure className="border border-border-strong bg-muted">
-                <img
-                  src={step.img}
-                  alt={step.alt}
-                  loading="lazy"
-                  width={step.w}
-                  height={step.h}
-                  className="aspect-[4/3] w-full object-cover"
-                />
-              </figure>
+          <div className="grid items-center gap-8 py-10 lg:grid-cols-2 lg:gap-14">
+            <div>
+              <h3 className="text-2xl sm:text-[1.75rem]">How it works</h3>
+              <p className="mt-3 max-w-lg text-[15px] leading-relaxed text-muted-foreground">
+                A photo and a couple of sentences — no forms, no account. It follows up only if the price
+                depends on it, prices the job off your own sheet, and drops a booking link in their thread
+                and your inbox.
+              </p>
             </div>
-          ))}
+            <figure className="border border-border-strong bg-muted">
+              <img
+                src={carInteriorPhoto}
+                alt="Customer photo of a heavily soiled car interior needing a full detail"
+                loading="lazy"
+                width={1369}
+                height={1149}
+                className="aspect-[4/3] w-full object-cover"
+              />
+            </figure>
+          </div>
 
           <div className="pt-8">
             <Button asChild variant="outline">
