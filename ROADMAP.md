@@ -2,7 +2,29 @@
 
 Legend: ✅ real and working · 🟡 built, but mocked/disconnected from a real backend · ⬜ not built yet
 
-Last updated: September 24, 2026 — Investigated whether Meta's own
+Last updated: September 25, 2026 — Shipped a per-service "notes for the
+AI" field on the price sheet (`price_sheet_items.ai_notes`, migration
+0016): a free-text field per row, threaded into the pricing prompt on
+every channel (`/quote`, `/widget`, WhatsApp), letting an owner give
+standing, plain-English guidance for one specific service (e.g. "always
+needs an in-person look before quoting — don't estimate from a photo
+alone") that the AI treats as authoritative for that row only. Chosen
+over a structured "needs measurement" checkbox specifically because this
+product serves arbitrary trades/service businesses — free text
+generalizes across all of them where a new checkbox would only fit some.
+Live-tested on Cabos Handyman's real Painting row: the AI correctly
+deferred to an in-person visit instead of guessing square footage.
+Also fixed a real mobile-only bug on the Cabos Handyman site (not a JIR
+bug): `LogoLoop.css`'s brand-carousel container had no `overflow`
+constraint, so its intentionally oversized, unclipped scroll track was
+inflating the entire page's effective mobile viewport (~4x), which pushed
+the embedded widget's floating trigger button off the actually-visible
+screen on phones/tablets while looking completely correct in every
+DOM/style/click check. Root-caused via headless Chromium mobile-emulation
+testing after two earlier, disproven hypotheses (a compositor/video
+interaction, then a different carousel component); fixed with one
+`overflow: hidden` rule, verified live on caboshandyman.com.
+Before that (September 24, 2026): Investigated whether Meta's own
 native WhatsApp AI ("Meta Business Agent") could work alongside, or
 instead of, JIR's own AI on a number — see the new note under the
 WhatsApp row in Backend. Finding: mutually exclusive by Meta's own
@@ -93,6 +115,7 @@ rename, not a re-scope.
 | `/demo` | ✅ | The one fully real, end-to-end flow: photo in, real Claude vision + pricing call out (`getQuoteEstimate`), multi-round clarification, follow-up Q&A. Needs `ANTHROPIC_API_KEY` set to actually return results. |
 | `/login` | ✅ | Real Supabase auth (`signInWithPassword`). Needs a Supabase project's URL/key in `.env` to actually authenticate — see README. |
 | `/signup` | ✅ | Real Supabase auth (`signUp`, with name/phone stored as user metadata until a real tenant table exists). Navigates to `/dashboard` (or `/login` if email confirmation is on) — not to `/onboarding/business-info`, since that still doesn't exist. |
+| `/how-it-works` (idea, not built) | ⬜ | **Deferred until production-ready** — a footer-linked, single-page (not a full docs site) explainer: the core loop (customer describes the problem → AI prices it off the tenant's own price sheet → owner gets notified, follows up, books the job), plus short plain-language coverage of the less-obvious dashboard concepts (materials policy, diagnosis fees, the per-service AI notes field). Deliberately small in scope rather than a help center, since the product is still changing fast (the notes field itself shipped 2026-09-25) and a bigger docs investment would go stale before it earns its keep. Revisit once the core feature set stabilizes. |
 
 ### Onboarding
 
