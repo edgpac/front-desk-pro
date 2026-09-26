@@ -51,7 +51,11 @@ export function SiteFooter() {
       </div>
       <div className="border-t border-white/10">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-2 px-5 py-5 text-xs text-ink-muted">
-          <p>© 2026 Job It Ready. Gets you job ready before you get to the job.</p>
+          {/* Includes the operator's legal name for Meta Business
+              Verification — real small print, not hidden, per Meta's
+              disclosure requirement and to avoid a deceptive-practice
+              (invisible-text) pattern. */}
+          <p>© 2026 Job It Ready. Operated by Edgardo P. Marrero.</p>
           <div className="flex gap-4">
             <Link to="/privacy" className="hover:text-ink-foreground">
               Privacy Policy
@@ -61,12 +65,6 @@ export function SiteFooter() {
             </Link>
           </div>
         </div>
-        {/* Meta Business Verification requires the legal business name to
-            appear on the site — kept intentionally tiny, verification only
-            checks for the text's presence, not its visual prominence. */}
-        <p className="mx-auto max-w-6xl px-5 pb-3 text-[10px] text-ink-muted/70">
-          Job It Ready is operated by Edgardo P Marrero.
-        </p>
       </div>
     </footer>
   );
