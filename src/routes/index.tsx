@@ -210,7 +210,7 @@ function Landing() {
       <section className="border-b border-border-strong bg-paper">
         <div className="mx-auto max-w-6xl px-5 py-16 lg:py-20">
           <p className="label-caps text-primary">What comes with it</p>
-          <h2 className="mt-3 max-w-2xl text-3xl sm:text-4xl">Everything your front desk should be doing.</h2>
+          <h2 className="mt-3 text-3xl sm:text-4xl">Everything your front desk should be doing.</h2>
 
           <div className="mt-10 grid gap-px bg-border-strong sm:grid-cols-2">
             {[
