@@ -1,0 +1,247 @@
+/* Phone-mockup carousel cycling real job photos + estimate cards. Its own
+   warm palette is deliberate — this is the one "alive" element in an
+   otherwise neutral marketing page, so it doesn't borrow the site's ink/
+   steel tokens. Every selector is scoped under .estimate-reel to avoid
+   colliding with the app's own Tailwind classes. */
+
+.estimate-reel {
+  --er-screen-bg: #efe8db;
+  --er-card: #ffffff;
+  --er-ink: #1c1a17;
+  --er-muted: #716b62;
+  --er-accent: #b4531f;
+  --er-line: #e9e4db;
+  --er-card-shadow: 0 14px 30px -14px rgba(28, 26, 23, 0.35);
+  --er-dynamic-bg: var(--er-screen-bg);
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 380px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #16140f;
+  padding: 32px 16px;
+}
+
+.estimate-reel .phone-stage {
+  perspective: 1400px;
+  width: min(300px, 100%);
+}
+
+.estimate-reel .phone {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 9 / 18.4;
+  background: #fdfdfc;
+  border-radius: 44px;
+  padding: 9px;
+  box-shadow:
+    inset 0 0 0 1px rgba(20, 16, 10, 0.06),
+    0 18px 30px -14px rgba(0, 0, 0, 0.45),
+    0 46px 80px -30px rgba(0, 0, 0, 0.5);
+  transform: rotateY(-9deg) rotateX(2.5deg);
+  transform-style: preserve-3d;
+}
+
+.estimate-reel .screen {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border-radius: 36px;
+  overflow: hidden;
+  background: var(--er-dynamic-bg);
+  transition: background-color 0.7s ease;
+  display: flex;
+  flex-direction: column;
+}
+
+.estimate-reel .app-header {
+  flex: 0 0 auto;
+  padding: 20px 16px 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.estimate-reel .app-header .word {
+  font-family: var(--font-display, "Manrope", sans-serif);
+  font-weight: 800;
+  font-size: 14px;
+  color: var(--er-ink);
+}
+
+.estimate-reel .app-header .word span {
+  color: var(--er-accent);
+}
+
+.estimate-reel .app-header .count {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--er-muted);
+  background: var(--er-card);
+  padding: 4px 9px;
+  border-radius: 999px;
+}
+
+.estimate-reel .track {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+}
+
+.estimate-reel .er-slide {
+  position: absolute;
+  inset: 0;
+  padding: 4px 14px 16px;
+  will-change: transform, opacity;
+}
+
+.estimate-reel .er-card {
+  position: relative;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--er-card);
+  border-radius: 22px;
+  overflow: hidden;
+  box-shadow: var(--er-card-shadow);
+}
+
+.estimate-reel .slide-photo {
+  position: relative;
+  flex: 1 1 56%;
+  overflow: hidden;
+}
+
+.estimate-reel .slide-photo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.estimate-reel .er-badge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  background: rgba(255, 255, 255, 0.94);
+  color: var(--er-ink);
+  font-size: 10px;
+  font-weight: 600;
+  padding: 5px 9px;
+  border-radius: 999px;
+  letter-spacing: 0.01em;
+}
+
+.estimate-reel .er-avatar {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  background: var(--er-accent);
+  color: #fff;
+  font-family: var(--font-display, "Manrope", sans-serif);
+  font-weight: 800;
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.estimate-reel .er-estimate {
+  flex: 1 1 44%;
+  background: var(--er-card);
+  padding: 12px 14px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-top: 1px solid var(--er-line);
+}
+
+.estimate-reel .er-eyebrow {
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--er-accent);
+}
+
+.estimate-reel .er-estimate h3 {
+  margin: 0;
+  font-family: var(--font-display, "Manrope", sans-serif);
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--er-ink);
+}
+
+.estimate-reel .er-line {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--er-muted);
+  gap: 8px;
+}
+
+.estimate-reel .er-line span:last-child {
+  font-variant-numeric: tabular-nums;
+  color: var(--er-ink);
+  font-weight: 500;
+}
+
+.estimate-reel .er-divider {
+  border-top: 1px solid var(--er-line);
+  margin: 1px 0;
+}
+
+.estimate-reel .er-total-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-top: 1px;
+}
+
+.estimate-reel .er-total-row .label {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--er-muted);
+}
+
+.estimate-reel .er-total-row .amount {
+  font-family: var(--font-display, "Manrope", sans-serif);
+  font-size: 20px;
+  font-weight: 800;
+  color: var(--er-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.estimate-reel .er-dots {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 6px;
+  z-index: 3;
+}
+
+.estimate-reel .er-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.18);
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  transition: background 0.2s ease, width 0.3s ease;
+}
+
+.estimate-reel .er-dot[aria-current="true"] {
+  background: var(--er-accent);
+  width: 16px;
+}

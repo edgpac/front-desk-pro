@@ -3,8 +3,8 @@ import { ArrowRight, ClipboardList, Clock, FileText, PhoneOff } from "lucide-rea
 
 import { SiteHeader } from "@/components/site/SiteHeader";
 import { SiteFooter } from "@/components/site/SiteFooter";
+import { EstimateReel } from "@/components/site/EstimateReel";
 import { Button } from "@/components/ui/button";
-import heroPhoto from "@/assets/dog-grooming-van.png";
 import panelPhoto from "@/assets/electrical-panel-repair.png";
 import vanPhoto from "@/assets/work-van.png";
 import carInteriorPhoto from "@/assets/car-detailing-interior.png";
@@ -111,37 +111,8 @@ function Landing() {
             </dl>
           </div>
 
-          <div className="relative min-h-[380px] bg-ink">
-            <img
-              src={heroPhoto}
-              alt="Mobile dog groomer brushing a small dog on a grooming table inside her van"
-              width={1254}
-              height={1254}
-              className="h-full w-full object-cover opacity-95"
-            />
-            <div className="absolute inset-x-4 bottom-4 border border-border-strong bg-card shadow-lift sm:inset-x-6 sm:bottom-6 sm:max-w-sm">
-              <div className="flex items-center justify-between border-b border-border px-4 py-2.5">
-                <p className="label-caps text-primary">Estimate sent 3:27 min after photo</p>
-              </div>
-              <div className="px-4 py-3 text-sm">
-                <p className="font-semibold text-foreground">Full groom — small dog</p>
-                <ul className="mt-2 space-y-1 text-muted-foreground">
-                  <li className="flex justify-between">
-                    <span>Bath, cut & styling</span> <span className="num text-foreground">$100</span>
-                  </li>
-                  <li className="flex justify-between">
-                    <span>Nail, ear & sanitary trim</span> <span className="num text-foreground">$40</span>
-                  </li>
-                  <li className="flex justify-between">
-                    <span>Labor · 1 hr @ $75</span> <span className="num text-foreground">$75</span>
-                  </li>
-                </ul>
-                <div className="mt-3 flex items-center justify-between border-t border-border-strong pt-2.5">
-                  <span className="label-caps">Total</span>
-                  <span className="num font-display text-xl font-extrabold text-foreground">$215</span>
-                </div>
-              </div>
-            </div>
+          <div className="relative min-h-[380px]">
+            <EstimateReel />
           </div>
         </div>
       </section>
