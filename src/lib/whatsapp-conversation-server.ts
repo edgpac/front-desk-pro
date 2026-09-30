@@ -233,6 +233,7 @@ export async function handleInboundWhatsAppMessage(params: {
     try {
       clarifyResult = await getQuoteEstimate({
         data: {
+          tenantSlug: tenant.slug,
           businessName: tenant.name,
           laborRate: tenant.laborRate,
           serviceCallFee: tenant.serviceCallFee,
@@ -386,6 +387,7 @@ export async function handleInboundWhatsAppMessage(params: {
 
         const answer = await getFollowUpAnswer({
           data: {
+            tenantSlug: tenant.slug,
             businessName: tenant.name,
             diagnosis: openLead.diagnosis || "",
             lineItems: lineItemsForAnswer,
@@ -487,6 +489,7 @@ export async function handleInboundWhatsAppMessage(params: {
   try {
     result = await getQuoteEstimate({
       data: {
+        tenantSlug: tenant.slug,
         businessName: tenant.name,
         laborRate: tenant.laborRate,
         serviceCallFee: tenant.serviceCallFee,
