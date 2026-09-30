@@ -497,7 +497,7 @@ export async function callClaude(body: unknown): Promise<any> {
   return response.json();
 }
 
-function buildPrompt(input: QuoteInput): string {
+export function buildPrompt(input: QuoteInput): string {
   const sheetLines = input.priceSheet
     .map((item) => {
       const price =
@@ -847,7 +847,7 @@ const INSPECTION_POLICY_INDICATORS = [
   "היקף העבודה",
 ];
 
-function validateQuoteAgainstPriceSheet(
+export function validateQuoteAgainstPriceSheet(
   parsed: { matchedServices?: unknown; lineItems?: unknown; diagnosis?: unknown },
   priceSheet: PriceSheetItem[],
   serviceCallFee: number,

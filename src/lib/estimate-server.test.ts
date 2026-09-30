@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { validateSubmittedLineItem, SERVICE_CALL_SENTINEL_ID, type PriceSheetItem } from "./estimate-server";
+import {
+  validateSubmittedLineItem,
+  validateQuoteAgainstPriceSheet,
+  buildPrompt,
+  SERVICE_CALL_SENTINEL_ID,
+  type PriceSheetItem,
+  type QuoteInput,
+} from "./estimate-server";
 
 // Covers the highest-priority gap identified in the 2026-09 security
 // audit: createLead/finalizeLeadWithQuote run on the service-role client,
@@ -179,5 +186,231 @@ describe("validateSubmittedLineItem", () => {
       "fixed",
     );
     expect(failure).not.toBeNull();
+  });
+});
+
+// The full AI-response validator — checks matchedServices/lineItems
+// internal consistency (not just individual amounts) on top of the same
+// id/amount logic validateSubmittedLineItem covers above. This is what
+// getQuoteEstimate runs Claude's own parsed JSON through before it's ever
+// returned to a customer or persisted as a lead.
+describe("validateQuoteAgainstPriceSheet", () => {
+  function base(overrides: Partial<{ matchedServices: unknown; lineItems: unknown; diagnosis: unknown }> = {}) {
+    return {
+      matchedServices: [{ customerIssue: "doorknob", priceSheetItemId: "ps-1" }],
+      lineItems: [{ description: "Doorknob", detail: "", amount: 60, priceSheetItemId: "ps-1" }],
+      diagnosis: "The doorknob is loose.",
+      ...overrides,
+    };
+  }
+
+  it("accepts a single correctly matched, correctly priced item", () => {
+    const failures = validateQuoteAgainstPriceSheet(base(), priceSheet, 89, "fixed");
+    expect(failures).toEqual([]);
+  });
+
+  it("accepts two customerIssues bundled into one lineItem for the same bundleable item", () => {
+    const failures = validateQuoteAgainstPriceSheet(
+      base({
+        matchedServices: [
+          { customerIssue: "doorknob", priceSheetItemId: "ps-1" },
+          { customerIssue: "towel bar", priceSheetItemId: "ps-1" },
+        ],
+        lineItems: [{ description: "Quick fix", detail: "", amount: 60, priceSheetItemId: "ps-1" }],
+      }),
+      priceSheet,
+      89,
+      "fixed",
+    );
+    expect(failures).toEqual([]);
+  });
+
+  it("flags a matchedServices entry with no corresponding lineItem", () => {
+    const failures = validateQuoteAgainstPriceSheet(
+      base({ lineItems: [] }),
+      priceSheet,
+      89,
+      "fixed",
+    );
+    expect(failures.some((f) => f.includes("no lineItem uses it"))).toBe(true);
+  });
+
+  it("flags a lineItem whose id was never in matchedServices", () => {
+    const failures = validateQuoteAgainstPriceSheet(
+      base({ matchedServices: [] }),
+      priceSheet,
+      89,
+      "fixed",
+    );
+    expect(failures.some((f) => f.includes("wasn't in matchedServices"))).toBe(true);
+  });
+
+  it("flags the same non-bundleable item charged twice", () => {
+    const failures = validateQuoteAgainstPriceSheet(
+      base({
+        matchedServices: [
+          { customerIssue: "clog 1", priceSheetItemId: "ps-2" },
+          { customerIssue: "clog 2", priceSheetItemId: "ps-2" },
+        ],
+        lineItems: [
+          { description: "Clog 1", detail: "", amount: 200, priceSheetItemId: "ps-2" },
+          { description: "Clog 2", detail: "", amount: 200, priceSheetItemId: "ps-2" },
+        ],
+      }),
+      priceSheet,
+      89,
+      "fixed",
+    );
+    expect(failures.some((f) => f.includes("can only ever produce one lineItem"))).toBe(true);
+  });
+
+  it("flags an unknown/invented priceSheetItemId in lineItems", () => {
+    const failures = validateQuoteAgainstPriceSheet(
+      base({
+        matchedServices: [{ customerIssue: "x", priceSheetItemId: "ps-invented" }],
+        lineItems: [{ description: "x", detail: "", amount: 100, priceSheetItemId: "ps-invented" }],
+      }),
+      priceSheet,
+      89,
+      "fixed",
+    );
+    expect(failures.some((f) => f.includes("unknown priceSheetItemId"))).toBe(true);
+  });
+
+  it("flags a forged amount on a correctly matched item", () => {
+    const failures = validateQuoteAgainstPriceSheet(
+      base({ lineItems: [{ description: "Doorknob", detail: "", amount: 9999, priceSheetItemId: "ps-1" }] }),
+      priceSheet,
+      89,
+      "fixed",
+    );
+    expect(failures.some((f) => f.includes("doesn't match the configured price"))).toBe(true);
+  });
+
+  it("rejects the service-call sentinel as a priced lineItem when the tenant's fee is negotiated", () => {
+    const failures = validateQuoteAgainstPriceSheet(
+      base({
+        matchedServices: [{ customerIssue: "diagnostic visit", priceSheetItemId: SERVICE_CALL_SENTINEL_ID }],
+        lineItems: [
+          { description: "Service call", detail: "", amount: 89, priceSheetItemId: SERVICE_CALL_SENTINEL_ID },
+        ],
+      }),
+      priceSheet,
+      89,
+      "negotiated",
+    );
+    expect(failures.some((f) => f.includes("negotiated"))).toBe(true);
+  });
+
+  it("requires credit wording when a service-call charge coexists with real matched work", () => {
+    const failures = validateQuoteAgainstPriceSheet(
+      base({
+        matchedServices: [
+          { customerIssue: "diagnostic visit", priceSheetItemId: SERVICE_CALL_SENTINEL_ID },
+          { customerIssue: "doorknob", priceSheetItemId: "ps-1" },
+        ],
+        lineItems: [
+          { description: "Service call", detail: "", amount: 89, priceSheetItemId: SERVICE_CALL_SENTINEL_ID },
+          { description: "Doorknob", detail: "", amount: 60, priceSheetItemId: "ps-1" },
+        ],
+        diagnosis: "Diagnostic visit plus a doorknob fix — no mention of how the fee relates to the repair.",
+      }),
+      priceSheet,
+      89,
+      "fixed",
+    );
+    expect(failures.some((f) => f.includes("toward the approved repair"))).toBe(true);
+  });
+
+  it("passes the same service-call + real-work case once the diagnosis states the credit wording", () => {
+    const failures = validateQuoteAgainstPriceSheet(
+      base({
+        matchedServices: [
+          { customerIssue: "diagnostic visit", priceSheetItemId: SERVICE_CALL_SENTINEL_ID },
+          { customerIssue: "doorknob", priceSheetItemId: "ps-1" },
+        ],
+        lineItems: [
+          { description: "Service call", detail: "", amount: 89, priceSheetItemId: SERVICE_CALL_SENTINEL_ID },
+          { description: "Doorknob", detail: "", amount: 60, priceSheetItemId: "ps-1" },
+        ],
+        diagnosis: "The service call fee goes toward the approved repair if you proceed with the doorknob fix.",
+      }),
+      priceSheet,
+      89,
+      "fixed",
+    );
+    expect(failures).toEqual([]);
+  });
+
+  it("requires materials-policy wording for a customer_pays_receipt item", () => {
+    const partsPriceSheet: PriceSheetItem[] = [
+      { ...priceSheet[0]!, id: "ps-parts", materialsPolicy: "customer_pays_receipt" },
+    ];
+    const failures = validateQuoteAgainstPriceSheet(
+      base({
+        matchedServices: [{ customerIssue: "doorknob", priceSheetItemId: "ps-parts" }],
+        lineItems: [{ description: "Doorknob", detail: "", amount: 60, priceSheetItemId: "ps-parts" }],
+        diagnosis: "The doorknob is loose and needs a new part.",
+      }),
+      partsPriceSheet,
+      89,
+      "fixed",
+    );
+    expect(failures.some((f) => f.includes("materials_policy"))).toBe(true);
+  });
+});
+
+describe("buildPrompt", () => {
+  function baseInput(overrides: Partial<QuoteInput> = {}): QuoteInput {
+    return {
+      businessName: "Cabos Handyman",
+      laborRate: 60,
+      serviceCallFee: 89,
+      serviceCallFeeMode: "fixed",
+      priceSheet,
+      description: "My doorknob is loose.",
+      ...overrides,
+    };
+  }
+
+  it("includes the tenant's business name and customer description", () => {
+    const prompt = buildPrompt(baseInput());
+    expect(prompt).toContain("Cabos Handyman");
+    expect(prompt).toContain("My doorknob is loose.");
+  });
+
+  it("includes every price-sheet item's id and task so Claude can reference them", () => {
+    const prompt = buildPrompt(baseInput());
+    for (const item of priceSheet) {
+      expect(prompt).toContain(item.id);
+      expect(prompt).toContain(item.task);
+    }
+  });
+
+  it("states the real service-call fee amount in fixed mode", () => {
+    const prompt = buildPrompt(baseInput({ serviceCallFee: 89, serviceCallFeeMode: "fixed" }));
+    expect(prompt).toContain("89");
+  });
+
+  it("instructs the model to never state a service-call dollar figure in negotiated mode", () => {
+    const prompt = buildPrompt(baseInput({ serviceCallFee: 89, serviceCallFeeMode: "negotiated" }));
+    // The raw number can still appear (as a "don't use this" example in the
+    // instruction itself) — what actually matters is that the model is
+    // explicitly told never to quote one, which validateQuoteAgainstPriceSheet
+    // then enforces server-side regardless of what the prompt says.
+    expect(prompt).toContain("never state or invent a dollar figure");
+  });
+
+  it("does not warn against stating a service-call amount in fixed mode", () => {
+    const prompt = buildPrompt(baseInput({ serviceCallFee: 89, serviceCallFeeMode: "fixed" }));
+    expect(prompt.includes("never state or invent a dollar figure")).toBe(false);
+  });
+
+  it("includes prior clarification answers when provided", () => {
+    const prompt = buildPrompt(
+      baseInput({ answers: [{ question: "Is there a photo?", answer: "No photo available" }] }),
+    );
+    expect(prompt).toContain("Is there a photo?");
+    expect(prompt).toContain("No photo available");
   });
 });
