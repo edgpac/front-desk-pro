@@ -2,7 +2,96 @@
 
 Legend: ✅ real and working · 🟡 built, but mocked/disconnected from a real backend · ⬜ not built yet
 
-Last updated: September 29, 2026 — Root-caused and fixed the actual Meta
+Last updated: September 29, 2026 (end of session) — Read this whole entry
+first if picking this project up cold; it's the complete state of a long
+session, most recent first.
+
+**Session summary, for a fresh context pass:**
+1. Ran a full-system architecture/security audit (frontend, backend,
+   database, integrations, infra — 5 parallel investigation passes),
+   producing a P0/P1/P2-ranked findings report. Core conclusion: the
+   architecture is sound (one real shared business workflow underneath
+   all 6 entry channels, real DB-level RLS backing tenant isolation), but
+   several concrete gaps needed fixing before real scale. Full report was
+   given directly to the user in chat, not saved to a file.
+2. **P0 fix #1, shipped**: four public server functions in
+   `public-lead-server.ts` (`finalizeLeadWithQuote`,
+   `saveClarificationMessages`, `finalizeLeadAsOutOfScope`,
+   `finalizeLeadAsNeedsReview`) used the service-role client with no check
+   that a client-supplied `leadId` actually belonged to the tenant making
+   the call — a real cross-tenant IDOR-shaped gap. Fixed by resolving the
+   tenant from `tenantSlug` and requiring `lead.tenant_id` to match before
+   any mutation. **Live-tested with a real cross-tenant attack**: created
+   a real lead under Cabos Handyman, then attempted to mutate it while
+   claiming a second real tenant (`edgarshopify`) — correctly rejected
+   with the same generic message used elsewhere, same-tenant calls still
+   worked normally. Commit `626c81c`.
+3. **Meta WhatsApp Embedded Signup — root-caused and fixed.** Full detail
+   directly below this summary and further down in the WhatsApp row. Two
+   compounding gaps (OAuth redirect URI/JS SDK domain mismatch; missing
+   `featureType` on `FB.login()`) are both fixed and deployed. Followed
+   all the way through live: disconnected Meta's Business AI from the
+   real Cabos number to clear a coexistence conflict, then confirmed the
+   flow works correctly right up to Meta's own Advanced Access permission
+   check — **the only remaining gate is that already-submitted App Review
+   (2026-09-24, ~20 days), which is external and calendar-time only.**
+   Nothing left to fix in code or Meta's dashboard config for this path.
+4. **P0 fix #2, shipped**: `whatsapp-conversation-server.ts`'s three AI
+   calls (`getQuoteEstimate` ×2, `getFollowUpAnswer` ×1) never passed
+   `tenantSlug`, even though `estimate-server.ts` decides demo-vs-tenant
+   behavior solely on whether that field is present. Real WhatsApp
+   traffic was therefore silently running through `/demo`'s 5-per-24h
+   per-IP abuse budget instead of the real subscription check — a real
+   customer's WhatsApp message could get blocked with a demo-limit
+   message for no reason. Fixed by threading `tenant.slug` through (it
+   was already in scope, already used correctly by the adjacent
+   `createLead`/`createClarifyingLead`/`finalizeLeadWithQuote` calls in
+   the same functions). Commit `184aa13`. **Not yet live-tested** — would
+   need a real WhatsApp message sent to the connected number
+   (`+52 624 159 3182`) to confirm end-to-end; reasoned/verified via code
+   only so far.
+5. **Cabos Handyman site (separate repo,
+   `~/Downloads/websites/caboshandyman`) — the homepage hero's "Schedule
+   Service" button** was still wired to the old, legacy
+   `SecureAIAssistant` ("Eddy") widget via `openAIAssistant('booking')` —
+   the last place on that page still pointing at the deprecated assistant
+   (the floating chat bubble elsewhere on the same page had already been
+   switched to Job It Ready's real widget in an earlier session). Fixed:
+   now calls `window.JIRWidget.open()` (the same embed API the floating
+   bubble already uses) and relabeled "Free Quick Estimate." Verified live
+   via Playwright, deployed, commit `df6cc421` in the caboshandyman repo.
+6. **New, not yet committed**: `/simulation` (new route) +
+   `SimulationFlow.tsx` (new component) in this repo — a fully scripted,
+   2-scenario (leaking water heater / breaker keeps tripping) walkthrough
+   of the intake→clarify→result UI. Zero real API calls
+   (`getQuoteEstimate`/`createLead` are never invoked), zero real tenant
+   data, clearly labeled "SIMULATION ONLY" on the page itself. Built so
+   future testing/demos/screenshots of this flow don't need to touch the
+   real Cabos Handyman tenant or make a real Anthropic/Supabase call.
+   Verified working locally (Playwright: picking either answer to either
+   question always lands on the same scripted result). **Awaiting the
+   user's go-ahead to commit/push** — built but not yet in git.
+7. **Still open, not yet addressed** (from the audit in point 1, not
+   urgent but real): the public `/quote/:slug` and widget endpoints
+   (`createLead`, `finalizeLeadWithQuote`) have no rate limiting (unlike
+   `/demo`, which has a durable per-IP budget) and accept
+   `lineItems`/`confidence`/`diagnosis` with no re-validation against the
+   tenant's actual price sheet — a crafted request could inject a
+   fabricated "AI quote" as if genuine. No per-tenant AI cost ceiling
+   exists (only the same leaky, per-instance, shared in-memory
+   `withinRateLimit()` counter). Zero automated tests exist anywhere in
+   the repo. Full detail in the audit already relayed to the user.
+8. **Unresolved question, blocked on an image-viewing limit in the
+   current chat**: the user reported "there's no garbage disposal
+   connected to this price sheet" — likely a missing
+   `price_sheet_items` row for Cabos Handyman (or another tenant), but
+   the screenshot showing it couldn't be viewed (this conversation hit a
+   per-request image-processing limit). Needs the user to describe it in
+   words, or a fresh conversation, to actually resolve.
+
+---
+
+Root-caused and fixed the actual Meta
 WhatsApp Embedded Signup blocker, via two separate, compounding gaps found
 and fixed live this session: (1) the Meta app's Valid OAuth Redirect URIs
 and Allowed Domains for the JavaScript SDK only listed the raw Vercel

@@ -18,6 +18,7 @@ import { Route as OnboardingRouteImport } from './routes/onboarding'
 import { Route as PricingRouteImport } from './routes/pricing'
 import { Route as PrivacyRouteImport } from './routes/privacy'
 import { Route as SignupRouteImport } from './routes/signup'
+import { Route as SimulationRouteImport } from './routes/simulation'
 import { Route as TermsRouteImport } from './routes/terms'
 import { Route as ApiMetaTestExchangeRouteImport } from './routes/api.meta-test-exchange'
 import { Route as DashboardIndexRouteImport } from './routes/dashboard.index'
@@ -86,6 +87,11 @@ const PrivacyRoute = PrivacyRouteImport.update({
 const SignupRoute = SignupRouteImport.update({
   id: '/signup',
   path: '/signup',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SimulationRoute = SimulationRouteImport.update({
+  id: '/simulation',
+  path: '/simulation',
   getParentRoute: () => rootRouteImport,
 } as any)
 const TermsRoute = TermsRouteImport.update({
@@ -224,6 +230,7 @@ export interface FileRoutesByFullPath {
   '/pricing': typeof PricingRoute
   '/privacy': typeof PrivacyRoute
   '/signup': typeof SignupRoute
+  '/simulation': typeof SimulationRoute
   '/terms': typeof TermsRoute
   '/api/meta-test-exchange': typeof ApiMetaTestExchangeRoute
   '/dashboard/analytics': typeof DashboardAnalyticsRoute
@@ -257,6 +264,7 @@ export interface FileRoutesByTo {
   '/pricing': typeof PricingRoute
   '/privacy': typeof PrivacyRoute
   '/signup': typeof SignupRoute
+  '/simulation': typeof SimulationRoute
   '/terms': typeof TermsRoute
   '/api/meta-test-exchange': typeof ApiMetaTestExchangeRoute
   '/dashboard/analytics': typeof DashboardAnalyticsRoute
@@ -291,6 +299,7 @@ export interface FileRoutesById {
   '/pricing': typeof PricingRoute
   '/privacy': typeof PrivacyRoute
   '/signup': typeof SignupRoute
+  '/simulation': typeof SimulationRoute
   '/terms': typeof TermsRoute
   '/api/meta-test-exchange': typeof ApiMetaTestExchangeRoute
   '/dashboard/analytics': typeof DashboardAnalyticsRoute
@@ -328,6 +337,7 @@ export interface FileRouteTypes {
     | '/pricing'
     | '/privacy'
     | '/signup'
+    | '/simulation'
     | '/terms'
     | '/api/meta-test-exchange'
     | '/dashboard/analytics'
@@ -361,6 +371,7 @@ export interface FileRouteTypes {
     | '/pricing'
     | '/privacy'
     | '/signup'
+    | '/simulation'
     | '/terms'
     | '/api/meta-test-exchange'
     | '/dashboard/analytics'
@@ -394,6 +405,7 @@ export interface FileRouteTypes {
     | '/pricing'
     | '/privacy'
     | '/signup'
+    | '/simulation'
     | '/terms'
     | '/api/meta-test-exchange'
     | '/dashboard/analytics'
@@ -430,6 +442,7 @@ export interface RootRouteChildren {
   PricingRoute: typeof PricingRoute
   PrivacyRoute: typeof PrivacyRoute
   SignupRoute: typeof SignupRoute
+  SimulationRoute: typeof SimulationRoute
   TermsRoute: typeof TermsRoute
   ApiMetaTestExchangeRoute: typeof ApiMetaTestExchangeRoute
   QuoteSlugRoute: typeof QuoteSlugRoute
@@ -503,6 +516,13 @@ declare module '@tanstack/react-router' {
       path: '/signup'
       fullPath: '/signup'
       preLoaderRoute: typeof SignupRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/simulation': {
+      id: '/simulation'
+      path: '/simulation'
+      fullPath: '/simulation'
+      preLoaderRoute: typeof SimulationRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/terms': {
@@ -758,6 +778,7 @@ const rootRouteChildren: RootRouteChildren = {
   PricingRoute: PricingRoute,
   PrivacyRoute: PrivacyRoute,
   SignupRoute: SignupRoute,
+  SimulationRoute: SimulationRoute,
   TermsRoute: TermsRoute,
   ApiMetaTestExchangeRoute: ApiMetaTestExchangeRoute,
   QuoteSlugRoute: QuoteSlugRoute,
