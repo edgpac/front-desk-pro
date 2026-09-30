@@ -31,7 +31,7 @@ declare global {
           config_id: string;
           response_type: "code";
           override_default_response_type: true;
-          extras?: { setup?: Record<string, unknown>; sessionInfoVersion?: string };
+          extras?: { setup?: Record<string, unknown>; sessionInfoVersion?: string; featureType?: string };
         },
       ) => void;
     };
@@ -254,7 +254,14 @@ export function ConnectWhatsAppMeta() {
         config_id: configId,
         response_type: "code",
         override_default_response_type: true,
-        extras: { setup: {}, sessionInfoVersion: "3" },
+        // featureType tells Meta's SDK to offer connecting an existing
+        // WhatsApp Business App number (coexistence) instead of only
+        // "create a brand-new number" — this call never set it before,
+        // confirmed via reading this exact object. Not yet proven to be
+        // sufficient on its own (untested against a real coexistence-
+        // eligible number as of this change), only confirmed as the one
+        // parameter this code was missing to request that capability at all.
+        extras: { setup: {}, sessionInfoVersion: "3", featureType: "whatsapp_business_app_onboarding" },
       },
     );
     setStatus("connecting");
