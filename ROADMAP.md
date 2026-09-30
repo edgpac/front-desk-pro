@@ -2,9 +2,73 @@
 
 Legend: ✅ real and working · 🟡 built, but mocked/disconnected from a real backend · ⬜ not built yet
 
-Last updated: September 29, 2026 (end of session) — Read this whole entry
-first if picking this project up cold; it's the complete state of a long
-session, most recent first.
+Last updated: September 30, 2026 — Closed out the remaining audit items
+from the Sept 29 session below, in the priority order that session ended
+on (price-sheet validation → rate limiting → AI cost ceiling → tests),
+each shipped and deployed as its own commit:
+
+1. **Price-sheet re-validation (A), shipped.** `createLead`/
+   `finalizeLeadWithQuote` (`public-lead-server.ts`) previously trusted a
+   submitted `lineItems` array with no check against the tenant's actual
+   price sheet — a crafted request could inject a fabricated "AI quote"
+   (fake prices/confidence/diagnosis) and have it persisted and emailed
+   to the business as genuine. Fixed by keeping `priceSheetItemId`/`hours`
+   on the wire (previously stripped by `QuoteFlow.tsx`/
+   `whatsapp-conversation-server.ts` before reaching this layer) and
+   adding `validateSubmittedLineItem` (`estimate-server.ts`) — a
+   standalone, single-line-item version of the same amount-checking logic
+   already used to validate the AI's own responses. **Verified three
+   ways**: 8 offline logic cases (forged/valid amounts, unknown ids); a
+   real live happy-path submission against Cabos Handyman's actual page
+   (real AI quote, real $60 price, sent successfully); a real live attack
+   replay (captured a genuine request, swapped the real $60 for a forged
+   $99999, replayed it — rejected with the same generic message the
+   legitimate request never triggered). Commit `6082d75`.
+2. **Rate limiting (B) + AI cost ceiling (C), shipped.** Neither
+   `createLead`/`createClarifyingLead`/`finalizeLeadWithQuote`/
+   `getTenantForQuote` nor real tenant/WhatsApp AI traffic had any durable
+   limit — only the same leaky, per-instance, shared-with-everyone-else
+   `withinRateLimit()` counter this file already flagged as unreliable
+   across concurrent Vercel instances. Added migration `0018` (`tenant_ip_usage`
+   + `tenant_ai_usage` tables, atomic increment-or-reset RPCs — same
+   proven shape as `0017`'s demo limiter), `enforceTenantRateLimit`
+   (15/day per tenant+IP on the write endpoints, 40/day on the read) and
+   `enforceTenantAiLimit` (300/day per tenant, wired into
+   `getQuoteEstimate`/`getFollowUpAnswer` whenever `tenantSlug` is
+   present). **Verified live**: replayed the real `getTenantForQuote`
+   request rapidly against Cabos's real page — exactly 40 succeeded, the
+   41st was blocked with the correct message, proving the mechanism at
+   its exact configured threshold. One real build-time catch along the
+   way: an exported shared `getClientIpHash` helper tripped TanStack
+   Start's import-protection check (estimate-server.ts is also imported
+   by client code), fixed by duplicating the small helper directly inside
+   `public-lead-server.ts` instead. Commit `0d787af`. **Known side
+   effect**: that live test used up today's full 40-read budget for
+   (Cabos tenant, the testing machine's IP) — same lesson as the earlier
+   demo-limiter collision, clears in 24h.
+3. **Tests (D) — started.** No test framework existed in this repo at
+   all. Installed Vitest with a deliberately minimal, separate
+   `vitest.config.ts` (no TanStack Start/Nitro/Tailwind plugins — not
+   needed for plain unit tests against server-independent functions,
+   which is all this repo has today). First real test file,
+   `estimate-server.test.ts`, covers `validateSubmittedLineItem` (13
+   cases: valid flat/range/hourly/service-call matches, forged amounts,
+   wrong hourly math, missing/unknown ids, negotiated-mode sentinel
+   rejection, non-numeric amount) — the same cases manually verified
+   before item 1 above was deployed, now a real, repeatable regression
+   test instead of a throwaway script. `bun run test` / `bun run
+   test:watch` added. Commit `286641c`. **Still open**: the rest of the
+   priority list from the Sept 29 session (tenant isolation regression
+   test, the rate-limit/cost-ceiling RPCs, `buildPrompt`/
+   `validateQuoteAgainstPriceSheet`) — not yet written.
+4. **Stripe live-mode (E) — deliberately deferred**, not forgotten. Per
+   explicit instruction: hold off until after Meta's Advanced Access App
+   Review comes back (submitted 2026-09-24, ~20 days, see the WhatsApp row
+   below) rather than working both external-approval tracks at once.
+
+Before that (September 29, 2026, end of that session) — Read this whole
+entry first if picking this project up cold; it's the complete state of
+that day's session, most recent first.
 
 **Session summary, for a fresh context pass:**
 1. Ran a full-system architecture/security audit (frontend, backend,
