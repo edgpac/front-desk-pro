@@ -69,8 +69,9 @@ session, most recent first.
    future testing/demos/screenshots of this flow don't need to touch the
    real Cabos Handyman tenant or make a real Anthropic/Supabase call.
    Verified working locally (Playwright: picking either answer to either
-   question always lands on the same scripted result). **Awaiting the
-   user's go-ahead to commit/push** — built but not yet in git.
+   question always lands on the same scripted result). **Committed and
+   pushed, commit `f03c6da`** — live at `/simulation` once that deploy
+   completed.
 7. **Still open, not yet addressed** (from the audit in point 1, not
    urgent but real): the public `/quote/:slug` and widget endpoints
    (`createLead`, `finalizeLeadWithQuote`) have no rate limiting (unlike
