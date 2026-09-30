@@ -433,6 +433,46 @@ async function enforceDemoLimit(kind: "quote" | "followup"): Promise<void> {
   }
 }
 
+// Durable per-tenant AI cost ceiling (migration 0018) — real tenant/
+// WhatsApp traffic has no durable cap today, only the same leaky,
+// per-instance, shared-with-everyone-else withinRateLimit() counter
+// above. Generous enough that no real busy trade business should ever
+// hit it in ordinary use; low enough to hard-stop a compromised/abused
+// number before it generates a surprise Anthropic bill. Fails closed —
+// same posture as enforceDemoLimit above — a DB error blocks the call
+// rather than silently allowing unlimited spend.
+const TENANT_AI_WINDOW_SECONDS = 24 * 60 * 60;
+const TENANT_AI_MAX_PER_WINDOW = 300;
+const TENANT_AI_LIMIT_MESSAGE =
+  "This business is getting an unusually high volume of requests right now — please try again shortly.";
+
+async function enforceTenantAiLimit(tenantSlug: string): Promise<void> {
+  const admin = getAdminClient();
+  const { data: tenant, error: tenantError } = await admin
+    .from("tenants")
+    .select("id")
+    .eq("slug", tenantSlug)
+    .single();
+  if (tenantError || !tenant) {
+    // Nothing to enforce against a tenant that doesn't resolve —
+    // requireActiveSubscriptionForSlug's own lookup (called alongside
+    // this) fails for the same underlying reason and produces the
+    // customer-facing error.
+    return;
+  }
+  const { data: count, error } = await admin.rpc("increment_tenant_ai_usage", {
+    p_tenant_id: tenant.id,
+    p_window_seconds: TENANT_AI_WINDOW_SECONDS,
+  });
+  if (error) {
+    console.error("Tenant AI usage check failed:", error.message);
+    throw new Error(TENANT_AI_LIMIT_MESSAGE);
+  }
+  if ((count ?? 0) > TENANT_AI_MAX_PER_WINDOW) {
+    throw new Error(TENANT_AI_LIMIT_MESSAGE);
+  }
+}
+
 export async function callClaude(body: unknown): Promise<any> {
   const apiKey = process.env["ANTHROPIC_API_KEY"];
   if (!apiKey) {
@@ -1276,6 +1316,7 @@ export const getQuoteEstimate = createServerFn({ method: "POST" })
     }
     if (data.tenantSlug) {
       await requireActiveSubscriptionForSlug(getAdminClient(), data.tenantSlug);
+      await enforceTenantAiLimit(data.tenantSlug);
     }
     if (data.imageBase64 && !isSupportedImageBase64(data.imageBase64)) {
       throw new Error(UNSUPPORTED_IMAGE_MESSAGE);
@@ -1492,6 +1533,7 @@ export const getFollowUpAnswer = createServerFn({ method: "POST" })
     }
     if (data.tenantSlug) {
       await requireActiveSubscriptionForSlug(getAdminClient(), data.tenantSlug);
+      await enforceTenantAiLimit(data.tenantSlug);
     }
 
     const itemsText = data.hasNoPricedWork

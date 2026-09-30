@@ -1,9 +1,25 @@
 import { createServerFn } from "@tanstack/react-start";
+import { getRequest } from "@tanstack/react-start/server";
 import { createClient } from "@supabase/supabase-js";
+import { createHash } from "node:crypto";
 import { sendLeadNotificationEmail } from "@/lib/notify-server";
 import { hasActiveSubscriptionForOwner } from "@/lib/entitlements-server";
 import { lineItemsTotal } from "@/lib/mock-data";
 import { validateSubmittedLineItem, type PriceSheetItem } from "@/lib/estimate-server";
+
+// Duplicated from estimate-server.ts's own private getClientIpHash rather
+// than exported and imported — estimate-server.ts is imported by client
+// code (QuoteFlow.tsx), and TanStack Start's import-protection build step
+// correctly refuses to let a server-only top-level export (this uses
+// getRequest(), a server-only API) live in a file also reachable from the
+// client bundle. This file is server-only end to end, so no such risk here.
+function getClientIpHash(): string | null {
+  const request = getRequest();
+  const forwardedFor = request?.headers?.get("x-forwarded-for");
+  const ip = forwardedFor?.split(",")[0]?.trim();
+  if (!ip) return null;
+  return createHash("sha256").update(ip).digest("hex");
+}
 
 // Every function below is anonymous/unauthenticated by design (the public
 // quote page and widget). This is the one deliberately generic error they
@@ -61,6 +77,7 @@ export const getTenantForQuote = createServerFn({ method: "GET" })
     if (tenantError || !tenant) {
       throw new Error(INTAKE_UNAVAILABLE_MESSAGE);
     }
+    await enforceTenantRateLimit(admin, tenant.id as string, "read");
 
     // Public intake (this page, the embeddable widget, and the AI/lead
     // calls below) is a subscriber-only feature — a canceled/past_due/
@@ -234,6 +251,52 @@ async function validateLineItemsAgainstPriceSheet(
   }
 }
 
+// P0 security fix (B): durable, per-(tenant, visitor IP) rate limit
+// (migration 0018's tenant_ip_usage/increment_tenant_ip_usage) — unlike
+// /demo, these public endpoints had no rate limit at all before this, so
+// a script could spam lead creation, or scrape a tenant's price sheet via
+// getTenantForQuote, with nothing stopping it. Scoped per-tenant (not
+// globally per-IP) so a script hammering one tenant's slug never
+// throttles a different tenant's real customers. Fails safe: a missing
+// IP or a DB error blocks the call rather than silently allowing
+// unlimited requests — same posture as estimate-server.ts's
+// enforceDemoLimit/enforceTenantAiLimit.
+const TENANT_RATE_WINDOW_SECONDS = 24 * 60 * 60;
+// 'quote' (createLead/createClarifyingLead/finalizeLeadWithQuote) is a
+// write with a real cost downstream (an AI call already happened, an
+// email fires) — kept tight. 'read' (getTenantForQuote) is just a price-
+// sheet fetch; looser, since a real customer's own page load calls it
+// once but a slow connection retrying or a curious visitor reloading
+// shouldn't trip it.
+const TENANT_QUOTE_MAX_PER_WINDOW = 15;
+const TENANT_READ_MAX_PER_WINDOW = 40;
+const TENANT_TRAFFIC_MESSAGE = "This business is getting a lot of requests right now — try again in a few minutes.";
+
+async function enforceTenantRateLimit(
+  admin: ReturnType<typeof getAdminClient>,
+  tenantId: string,
+  kind: "quote" | "read",
+): Promise<void> {
+  const ipHash = getClientIpHash();
+  if (!ipHash) {
+    throw new Error(TENANT_TRAFFIC_MESSAGE);
+  }
+  const { data: count, error } = await admin.rpc("increment_tenant_ip_usage", {
+    p_tenant_id: tenantId,
+    p_ip_hash: ipHash,
+    p_kind: kind,
+    p_window_seconds: TENANT_RATE_WINDOW_SECONDS,
+  });
+  if (error) {
+    console.error("Tenant rate-limit check failed:", error.message);
+    throw new Error(TENANT_TRAFFIC_MESSAGE);
+  }
+  const max = kind === "quote" ? TENANT_QUOTE_MAX_PER_WINDOW : TENANT_READ_MAX_PER_WINDOW;
+  if ((count ?? 0) > max) {
+    throw new Error(TENANT_TRAFFIC_MESSAGE);
+  }
+}
+
 // The one real trigger point this whole app was missing: a real customer
 // interaction becomes a real, persisted lead — and the business gets
 // notified immediately, the same way Cabos Handyman's real site does (an
@@ -252,6 +315,7 @@ export const createLead = createServerFn({ method: "POST" })
     if (tenantError || !tenant) {
       throw new Error(INTAKE_UNAVAILABLE_MESSAGE);
     }
+    await enforceTenantRateLimit(admin, tenant.id as string, "quote");
     if (!(await hasActiveSubscriptionForOwner(admin, tenant["user_id"] as string))) {
       throw new Error(INTAKE_UNAVAILABLE_MESSAGE);
     }
@@ -418,6 +482,7 @@ export const createClarifyingLead = createServerFn({ method: "POST" })
     if (tenantError || !tenant) {
       throw new Error("Business not found.");
     }
+    await enforceTenantRateLimit(admin, tenant.id as string, "quote");
 
     const { data: lead, error: leadError } = await admin
       .from("leads")
@@ -490,6 +555,7 @@ export const finalizeLeadWithQuote = createServerFn({ method: "POST" })
     if (tenantError || !tenant) {
       throw new Error(INTAKE_UNAVAILABLE_MESSAGE);
     }
+    await enforceTenantRateLimit(admin, tenant.id as string, "quote");
     await validateLineItemsAgainstPriceSheet(
       admin,
       tenant.id as string,
