@@ -373,6 +373,11 @@ export function QuoteFlow({
         qty: 1,
         unit: "job",
         rate: item.amount,
+        // Carried through (not dropped) so the server can independently
+        // re-verify this amount against the tenant's real price sheet —
+        // see createLead/finalizeLeadWithQuote's own validation.
+        priceSheetItemId: item.priceSheetItemId ?? null,
+        hours: item.hours,
       }));
       // P1-D: a clarifying lead already exists from an earlier round —
       // complete that same row instead of inserting a second one.

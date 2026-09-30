@@ -1085,6 +1085,97 @@ function validateQuoteAgainstPriceSheet(
   return failures;
 }
 
+// Standalone, single-line-item version of the id-lookup + amount checks
+// inside validateQuoteAgainstPriceSheet above (lines ~914-992) — exported
+// so public-lead-server.ts's createLead/finalizeLeadWithQuote can
+// independently re-verify a submitted lineItem's amount against the
+// tenant's real price sheet before persisting it. Those two functions run
+// on the service-role client and are reachable by an anonymous caller who
+// could otherwise submit any lineItems/amount combination directly,
+// bypassing getQuoteEstimate's own validation entirely. Deliberately does
+// NOT reuse the matchedServices-consistency, bundling-count, or
+// credit-wording checks above — those validate Claude's own JSON shape
+// mid-generation, which doesn't exist at all by the time a quote reaches
+// this layer; only "does this id+amount combination check out against the
+// price sheet" is re-verifiable here, and that's also the only thing that
+// actually needs re-checking (a forged amount is the concrete risk, not a
+// missing wording nuance). Returns a human-readable failure, or null if
+// the line item is valid.
+export function validateSubmittedLineItem(
+  li: { description: string; priceSheetItemId?: string | null | undefined; amount: number; hours?: number | undefined },
+  priceSheet: PriceSheetItem[],
+  serviceCallFee: number,
+  serviceCallFeeMode: "fixed" | "negotiated",
+): string | null {
+  const byId = new Map(priceSheet.map((item) => [item.id, item]));
+  const id = li.priceSheetItemId;
+  const amount = Number(li.amount);
+  if (!Number.isFinite(amount)) {
+    return `lineItem "${li.description}" has a non-numeric amount.`;
+  }
+  if (id == null) {
+    return `lineItem "${li.description}" is missing priceSheetItemId.`;
+  }
+
+  if (id === SERVICE_CALL_SENTINEL_ID) {
+    if (serviceCallFeeMode !== "fixed") {
+      return `lineItem "${li.description}" uses the service call fee, but this tenant's service call fee is negotiated (no fixed amount to verify against).`;
+    }
+    if (Math.abs(amount - serviceCallFee) > AMOUNT_TOLERANCE) {
+      return `lineItem "${li.description}" uses the service call fee but amount $${amount} doesn't match the configured service call fee $${serviceCallFee}.`;
+    }
+    return null;
+  }
+
+  const diagnosisBaseId = parseDiagnosisSentinelId(id);
+  if (diagnosisBaseId != null) {
+    const item = byId.get(diagnosisBaseId);
+    const fee = item?.diagnosisFee;
+    if (!item || !fee) {
+      return `lineItem "${li.description}" references unknown priceSheetItemId "${id}".`;
+    }
+    if (fee.pricingType === "flat") {
+      if (Math.abs(amount - fee.amount) > AMOUNT_TOLERANCE) {
+        return `lineItem "${li.description}" (${item.task} diagnosis fee, flat $${fee.amount}) has amount $${amount}, which doesn't match the configured diagnosis fee.`;
+      }
+      return null;
+    }
+    const hours = Number(li.hours);
+    if (!Number.isFinite(hours) || hours <= 0) {
+      return `lineItem "${li.description}" (${item.task} diagnosis fee, hourly $${fee.amount}/hr) is missing a valid hours value needed to verify the amount.`;
+    }
+    const expectedDiagnosis = fee.amount * hours;
+    if (Math.abs(amount - expectedDiagnosis) > Math.max(AMOUNT_TOLERANCE, expectedDiagnosis * 0.02)) {
+      return `lineItem "${li.description}" (${item.task} diagnosis fee, hourly $${fee.amount}/hr × ${hours}hr = $${expectedDiagnosis.toFixed(2)} expected) has amount $${amount}, which doesn't match rate × hours.`;
+    }
+    return null;
+  }
+
+  const item = byId.get(id);
+  if (!item) {
+    return `lineItem "${li.description}" references unknown priceSheetItemId "${id}".`;
+  }
+  if (item.pricingType === "flat") {
+    if (Math.abs(amount - item.priceMin) > AMOUNT_TOLERANCE) {
+      return `lineItem "${li.description}" (${item.task}, flat $${item.priceMin}) has amount $${amount}, which doesn't match the configured price.`;
+    }
+  } else if (item.pricingType === "range") {
+    if (amount < item.priceMin - AMOUNT_TOLERANCE || amount > item.priceMax + AMOUNT_TOLERANCE) {
+      return `lineItem "${li.description}" (${item.task}, range $${item.priceMin}-$${item.priceMax}) has amount $${amount}, outside the configured range.`;
+    }
+  } else if (item.pricingType === "hourly") {
+    const hours = Number(li.hours);
+    if (!Number.isFinite(hours) || hours <= 0) {
+      return `lineItem "${li.description}" (${item.task}, hourly $${item.priceMin}/hr) is missing a valid hours value needed to verify the amount.`;
+    }
+    const expected = item.priceMin * hours;
+    if (Math.abs(amount - expected) > Math.max(AMOUNT_TOLERANCE, expected * 0.02)) {
+      return `lineItem "${li.description}" (${item.task}, hourly $${item.priceMin}/hr × ${hours}hr = $${expected.toFixed(2)} expected) has amount $${amount}, which doesn't match rate × hours.`;
+    }
+  }
+  return null;
+}
+
 // Exported only so the P2 mixed-pricing assertion script can construct
 // inputs and verify hasPartiallyDeferredWork/hasNoPricedWork directly —
 // getQuoteEstimate itself needs network/DB access, not practical for a

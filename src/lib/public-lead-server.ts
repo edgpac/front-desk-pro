@@ -3,7 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { sendLeadNotificationEmail } from "@/lib/notify-server";
 import { hasActiveSubscriptionForOwner } from "@/lib/entitlements-server";
 import { lineItemsTotal } from "@/lib/mock-data";
-import type { PriceSheetItem } from "@/lib/estimate-server";
+import { validateSubmittedLineItem, type PriceSheetItem } from "@/lib/estimate-server";
 
 // Every function below is anonymous/unauthenticated by design (the public
 // quote page and widget). This is the one deliberately generic error they
@@ -140,7 +140,20 @@ type CreateLeadInput = {
   diagnosis: string;
   confidence: "High" | "Medium" | "Low";
   isEmergency?: boolean;
-  lineItems: Array<{ description: string; qty: number; unit: string; rate: number }>;
+  // priceSheetItemId/hours: carried through from the AI's own validated
+  // response (estimate-server.ts's LineItem) so the server can re-verify
+  // this amount against the tenant's real price sheet — see
+  // validateLineItemsAgainstPriceSheet. Optional only because some
+  // historical/edge callers may omit it; absence fails validation rather
+  // than being silently trusted.
+  lineItems: Array<{
+    description: string;
+    qty: number;
+    unit: string;
+    rate: number;
+    priceSheetItemId?: string | null | undefined;
+    hours?: number | undefined;
+  }>;
   // True only for estimate-server.ts's hasNoPricedWork — nothing was
   // actually priced (negotiated service-call mode, no other match). Must
   // never be inferred downstream from lineItems.length === 0 or total ===
@@ -155,6 +168,72 @@ type CreateLeadInput = {
   hasPartiallyDeferredWork?: boolean;
 };
 
+// P0 security fix: createLead/finalizeLeadWithQuote run on the service-role
+// client and are reachable directly by an anonymous caller — without this,
+// a crafted request could submit fabricated lineItems (invented prices,
+// confidence, diagnosis) and have it persisted and emailed to the business
+// as if it were a genuine AI-priced quote. Independently re-verifies every
+// submitted line item against the tenant's own current price sheet, using
+// the same amount-checking logic getQuoteEstimate already validates the
+// AI's response against (estimate-server.ts's validateSubmittedLineItem) —
+// never trusts a client-supplied amount on its own. A no-op when lineItems
+// is empty (the pendingNegotiatedPrice case, where nothing was priced).
+async function validateLineItemsAgainstPriceSheet(
+  admin: ReturnType<typeof getAdminClient>,
+  tenantId: string,
+  serviceCallFee: number,
+  serviceCallFeeMode: "fixed" | "negotiated",
+  lineItems: Array<{
+    description: string;
+    priceSheetItemId?: string | null | undefined;
+    rate: number;
+    hours?: number | undefined;
+  }>,
+): Promise<void> {
+  if (lineItems.length === 0) return;
+
+  const { data: rows, error } = await admin
+    .from("price_sheet_items")
+    .select(
+      "id, task, category, keywords, pricing_type, price_min, price_max, hours, bundleable, materials_policy, diagnosis_pricing_type, diagnosis_fee, ai_notes",
+    )
+    .eq("tenant_id", tenantId);
+  if (error) {
+    throw new Error(INTAKE_UNAVAILABLE_MESSAGE);
+  }
+  const priceSheet: PriceSheetItem[] = (rows ?? []).map((row) => ({
+    id: row.id,
+    task: row.task,
+    category: row.category,
+    keywords: row.keywords,
+    pricingType: row.pricing_type,
+    priceMin: row.price_min,
+    priceMax: row.price_max,
+    hours: row.hours,
+    bundleable: row.bundleable,
+    materialsPolicy: row.materials_policy,
+    diagnosisFee: row.diagnosis_pricing_type
+      ? { pricingType: row.diagnosis_pricing_type, amount: row.diagnosis_fee }
+      : null,
+    aiNotes: row.ai_notes,
+  }));
+
+  for (const li of lineItems) {
+    const failure = validateSubmittedLineItem(
+      { description: li.description, priceSheetItemId: li.priceSheetItemId, amount: li.rate, hours: li.hours },
+      priceSheet,
+      serviceCallFee,
+      serviceCallFeeMode,
+    );
+    // Never reveal the specific reason (price-sheet contents, which id
+    // mismatched) to the caller — same generic-failure posture as every
+    // other rejection in this file.
+    if (failure) {
+      throw new Error(INTAKE_UNAVAILABLE_MESSAGE);
+    }
+  }
+}
+
 // The one real trigger point this whole app was missing: a real customer
 // interaction becomes a real, persisted lead — and the business gets
 // notified immediately, the same way Cabos Handyman's real site does (an
@@ -167,7 +246,7 @@ export const createLead = createServerFn({ method: "POST" })
 
     const { data: tenant, error: tenantError } = await admin
       .from("tenants")
-      .select("id, user_id, name, email, currency")
+      .select("id, user_id, name, email, currency, service_call_fee, service_call_fee_mode")
       .eq("slug", data.tenantSlug)
       .single();
     if (tenantError || !tenant) {
@@ -176,6 +255,13 @@ export const createLead = createServerFn({ method: "POST" })
     if (!(await hasActiveSubscriptionForOwner(admin, tenant["user_id"] as string))) {
       throw new Error(INTAKE_UNAVAILABLE_MESSAGE);
     }
+    await validateLineItemsAgainstPriceSheet(
+      admin,
+      tenant.id as string,
+      tenant.service_call_fee as number,
+      tenant.service_call_fee_mode as "fixed" | "negotiated",
+      data.lineItems,
+    );
 
     const { data: lead, error: leadError } = await admin
       .from("leads")
@@ -367,7 +453,20 @@ type FinalizeLeadInput = {
   diagnosis: string;
   confidence: "High" | "Medium" | "Low";
   isEmergency?: boolean;
-  lineItems: Array<{ description: string; qty: number; unit: string; rate: number }>;
+  // priceSheetItemId/hours: carried through from the AI's own validated
+  // response (estimate-server.ts's LineItem) so the server can re-verify
+  // this amount against the tenant's real price sheet — see
+  // validateLineItemsAgainstPriceSheet. Optional only because some
+  // historical/edge callers may omit it; absence fails validation rather
+  // than being silently trusted.
+  lineItems: Array<{
+    description: string;
+    qty: number;
+    unit: string;
+    rate: number;
+    priceSheetItemId?: string | null | undefined;
+    hours?: number | undefined;
+  }>;
   // Same meaning/authority as CreateLeadInput.pendingNegotiatedPrice above.
   pendingNegotiatedPrice?: boolean;
   // Same meaning/authority as CreateLeadInput.hasPartiallyDeferredWork above.
@@ -385,12 +484,19 @@ export const finalizeLeadWithQuote = createServerFn({ method: "POST" })
 
     const { data: tenant, error: tenantError } = await admin
       .from("tenants")
-      .select("id, name, email, currency")
+      .select("id, name, email, currency, service_call_fee, service_call_fee_mode")
       .eq("slug", data.tenantSlug)
       .single();
     if (tenantError || !tenant) {
       throw new Error(INTAKE_UNAVAILABLE_MESSAGE);
     }
+    await validateLineItemsAgainstPriceSheet(
+      admin,
+      tenant.id as string,
+      tenant.service_call_fee as number,
+      tenant.service_call_fee_mode as "fixed" | "negotiated",
+      data.lineItems,
+    );
 
     // Tenant-ownership check (P0 security fix): leadId is a client-supplied
     // opaque id, and this runs on the service-role client, which bypasses

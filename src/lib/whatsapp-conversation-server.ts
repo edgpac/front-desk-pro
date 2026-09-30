@@ -311,6 +311,8 @@ export async function handleInboundWhatsAppMessage(params: {
       qty: 1,
       unit: "job",
       rate: item.amount,
+      priceSheetItemId: item.priceSheetItemId ?? null,
+      hours: item.hours,
     }));
 
     await finalizeLeadWithQuote({
@@ -570,6 +572,8 @@ export async function handleInboundWhatsAppMessage(params: {
     qty: 1,
     unit: "job",
     rate: item.amount,
+    priceSheetItemId: item.priceSheetItemId ?? null,
+    hours: item.hours,
   }));
 
   await createLead({
