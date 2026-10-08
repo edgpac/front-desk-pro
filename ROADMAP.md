@@ -2,7 +2,27 @@
 
 Legend: ✅ real and working · 🟡 built, but mocked/disconnected from a real backend · ⬜ not built yet
 
-Last updated: September 30, 2026 — Closed out the remaining audit items
+Last updated: October 8, 2026 — **Meta Advanced Access approved.** The
+App Review submission (`whatsapp_business_messaging`,
+`whatsapp_business_management`, `public_profile`) was submitted 2026-09-24
+and came back approved on 2026-10-06, confirmed directly in Meta's
+dashboard ("Submission approved — our review is complete and your
+requests and app settings were approved," all three permissions showing
+"Approved"). **This was the single external blocker identified throughout
+the entire 2026-09-29/30 foundation audit below** — every code/config
+item on our side was already confirmed done and live-tested; this was the
+last gate, and it's now clear. Standard Access previously only let
+Embedded Signup work for accounts already admin/tester on this Meta app
+— with Advanced Access, a genuinely unrelated third party should now be
+able to complete Embedded Signup and connect their own number for real.
+**Not yet done**: an actual live test of Embedded Signup by a genuine
+outside stranger (still never exercised, per the audit below) — this is
+now unblocked and is the natural next verification step, not yet run.
+Also now unblocked per earlier explicit instruction: Stripe live-mode
+work, which was deliberately deferred until this exact approval came
+through.
+
+Before that (September 30, 2026): Closed out the remaining audit items
 from the Sept 29 session below, in the priority order that session ended
 on (price-sheet validation → rate limiting → AI cost ceiling → tests),
 each shipped and deployed as its own commit:
