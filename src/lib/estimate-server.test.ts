@@ -3,6 +3,8 @@ import {
   validateSubmittedLineItem,
   validateQuoteAgainstPriceSheet,
   buildPrompt,
+  extractDollarAmounts,
+  findUnexpectedAmounts,
   SERVICE_CALL_SENTINEL_ID,
   type PriceSheetItem,
   type QuoteInput,
@@ -412,5 +414,54 @@ describe("buildPrompt", () => {
     );
     expect(prompt).toContain("Is there a photo?");
     expect(prompt).toContain("No photo available");
+  });
+});
+
+// Audit finding, 2026-10-10: getFollowUpAnswer's reply was entirely free
+// text with no server-side check against the real quote amounts — unlike
+// validateQuoteAgainstPriceSheet's rigorous enforcement for the quote
+// itself. These two functions close that gap; covers the extraction regex
+// and the real/unexpected-amount comparison independently of the AI call.
+describe("extractDollarAmounts", () => {
+  it("extracts a single whole-dollar amount", () => {
+    expect(extractDollarAmounts("That'll be $120 total.")).toEqual([120]);
+  });
+
+  it("extracts multiple amounts in one string", () => {
+    expect(extractDollarAmounts("The faucet is $120 and the service call is $60.")).toEqual([120, 60]);
+  });
+
+  it("extracts amounts with cents", () => {
+    expect(extractDollarAmounts("Total comes to $45.50.")).toEqual([45.5]);
+  });
+
+  it("extracts amounts with thousands separators", () => {
+    expect(extractDollarAmounts("That job runs about $1,250.")).toEqual([1250]);
+  });
+
+  it("returns an empty array when no dollar figure is mentioned", () => {
+    expect(extractDollarAmounts("The business will confirm that with you directly.")).toEqual([]);
+  });
+});
+
+describe("findUnexpectedAmounts", () => {
+  it("returns nothing when every mentioned amount is allowed", () => {
+    expect(findUnexpectedAmounts("The faucet is $120 and the total is $180.", [120, 60, 180])).toEqual([]);
+  });
+
+  it("flags a dollar figure that doesn't match any real amount", () => {
+    expect(findUnexpectedAmounts("That'll run about $95.", [120, 60, 180])).toEqual([95]);
+  });
+
+  it("flags every mention when nothing is priced yet (hasNoPricedWork)", () => {
+    expect(findUnexpectedAmounts("It's usually around $150 for that.", [])).toEqual([150]);
+  });
+
+  it("allows an amount within floating-point tolerance of a real one", () => {
+    expect(findUnexpectedAmounts("Total: $180.00", [179.995])).toEqual([]);
+  });
+
+  it("returns nothing when the answer states no dollar figure at all", () => {
+    expect(findUnexpectedAmounts("The business will confirm the price when they're in touch.", [120])).toEqual([]);
   });
 });

@@ -2,7 +2,49 @@
 
 Legend: ✅ real and working · 🟡 built, but mocked/disconnected from a real backend · ⬜ not built yet
 
-Last updated: October 10, 2026 (later same day) — **Bot was inviting photo
+Last updated: October 10, 2026 (later same day) — **Price-sheet-fidelity
+audit, requested directly after the out-of-scope fix below, to check
+whether similar gaps existed elsewhere.** Read through
+`getQuoteEstimate`'s full validation path and `getFollowUpAnswer`
+end to end, specifically looking for any place an AI response could state
+a dollar figure without being checked against the tenant's real
+configured data.
+
+**Confirmed solid, no gap**: the priced-quote path
+(`validateQuoteAgainstPriceSheet`) is genuinely rigorous — every id must
+trace to a real price-sheet row, every amount is checked exactly (flat),
+within range (range), or as rate×hours (hourly/diagnosis fee), matched
+services and line items must agree, duplicate/double-charges are blocked,
+and a response that fails validation gets one corrective retry with the
+exact failure explained; if the retry also fails, the system refuses to
+return anything rather than risk showing an unvalidated number. The
+`outOfScope` path is structurally safe too — no line items are ever read
+from it regardless of what the model includes.
+
+**Real gap found and fixed**: `getFollowUpAnswer` — answers a customer's
+follow-up question *after* a quote already exists ("what's the total?",
+"does this include the part?") — was entirely free text with **zero
+server-side validation**, unlike the quote path. The prompt told the model
+to "stay consistent with the estimate," but nothing programmatically
+checked that. Fixed with the same invariant
+`validateQuoteAgainstPriceSheet` already enforces, applied to free text:
+`extractDollarAmounts`/`findUnexpectedAmounts` pull every "$&lt;number&gt;"
+the reply mentions and require each one to exactly match a real line-item
+amount or their sum (or nothing at all, when `hasNoPricedWork`) — same
+one-corrective-retry-then-refuse shape as the quote path, falling back to
+a safe generic reply ("the business will follow up with specifics") rather
+than ever surfacing a hallucinated number. 10 new tests added (47 total,
+all passing), `tsc`/build clean, deployed.
+
+**Noted, not fixed — low priority**: the `needsClarification` question
+text itself is never validated for a premature price mention, the way the
+final quote and now the follow-up answer are. Structurally unlikely (the
+model has no pricing basis to draw from at that stage), but not explicitly
+prevented either — worth a similar guard eventually, not urgent.
+
+---
+
+Before that, same day: **Bot was inviting photo
 uploads for requests it had already identified as outside the business's
 services — fixed.** Found via real live traffic: a family member's "car is
 due for a carwash" reminder (sent to Cabos Handyman's business number,
