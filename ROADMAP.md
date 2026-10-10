@@ -2,7 +2,49 @@
 
 Legend: ✅ real and working · 🟡 built, but mocked/disconnected from a real backend · ⬜ not built yet
 
-Last updated: October 10, 2026 (later same day) — **Meta `error_subcode=36008`
+Last updated: October 10, 2026 (later same day) — **Coexistence blind spot
+found via real live traffic and fixed.** The bot and the business owner's
+own WhatsApp Business App both receive the same inbound messages on a
+connected number, but the bot had no way to know a human already
+personally replied — it only checked for its own bot-created lead in the
+last 48h. A customer the owner was already texting directly (no bot lead,
+since the owner handled it personally) still got the canned "Thanks for
+reaching out..." greeting injected into the middle of a real conversation
+— confirmed live on Cabos Handyman's actual number. Fixed using Meta's
+dedicated mechanism for this, `smb_message_echoes` (confirmed against
+Meta's own developer docs): a new `whatsapp_human_takeovers` table
+(`0020_whatsapp_human_takeovers.sql`) records the most recent echo per
+(tenant, customer phone); `api.whatsapp.meta-webhook.tsx` now parses that
+field and checks it before letting the bot auto-reply, deferring to the
+human for 48h (matching the existing conversation-window convention) if
+one is found. Required two manual steps beyond the code, both done:
+migration applied (verified via `information_schema`), and
+`smb_message_echoes` subscribed in the Meta App Dashboard's webhook-fields
+list (Use cases → Customize → Connect on WhatsApp → Step 2 → Configure
+Webhooks) — Meta doesn't send this field by default even once the code
+can parse it. `tsc`/build clean, deployed. **Not yet live-tested**: the
+actual suppression behavior (a real human reply followed by a real
+customer message, confirming the bot stays quiet) — the subscription
+was just enabled, worth verifying on the next real conversation.
+
+**Backlog idea, not needed for launch**: multi-recipient lead notifications
+for subscribers with a team, not just the one phone number/owner. WhatsApp
+Business/Cloud API has no way to pipe customer conversations into a group
+chat — messaging is always 1:1 between a customer and the one connected
+business number, and Cloud API can't send business-initiated messages to a
+group either. The real equivalent: extend the existing
+`sendLeadNotificationEmail` pattern (already fires on every new lead) to
+reach multiple team members — additional email recipients, or an
+individual WhatsApp message to each team member's own number via the
+already-built `sendWhatsAppMessageMeta`, reusing the same pipeline rather
+than inventing a new one. Low effort, nothing architecturally hard — just
+not something to build ahead of a real subscriber actually asking for it,
+since the core single-owner loop (customer → AI quote → owner notified →
+owner follows up) already works end to end without it.
+
+---
+
+Before that, same day: **Meta `error_subcode=36008`
 root-caused and actually fixed this time.** The "confirmed fixed" redirect_uri
 capture mechanism from earlier (a `window.open()` intercept in
 `ConnectWhatsAppMeta.tsx` echoing back the SDK popup's dynamic

@@ -608,6 +608,40 @@ export async function wasMessageAlreadyProcessed(messageId: string): Promise<boo
   throw new Error(`Could not record processed message id: ${error.message}`);
 }
 
+// Coexistence human-takeover tracking (0020_whatsapp_human_takeovers.sql).
+// recordHumanTakeover is called for every smb_message_echoes entry — the
+// business owner sending a message via the connected WhatsApp Business App
+// itself. hasRecentHumanTakeover is checked before the bot would otherwise
+// auto-reply to a customer; a recent echo means a human is already
+// personally handling this conversation, so the bot defers rather than
+// injecting its canned reply into the middle of it. 48h matches the
+// existing "open lead" conversation window this codebase already uses
+// elsewhere (whatsapp-conversation-server.ts), for the same reason: that's
+// the window already established as "the same conversation."
+const HUMAN_TAKEOVER_WINDOW_MS = 48 * 60 * 60 * 1000;
+
+export async function recordHumanTakeover(tenantId: string, phone: string): Promise<void> {
+  const admin = getAdminClient();
+  const { error } = await admin
+    .from("whatsapp_human_takeovers")
+    .upsert({ tenant_id: tenantId, phone, last_echo_at: new Date().toISOString() }, { onConflict: "tenant_id,phone" });
+  if (error) {
+    console.error("Could not record WhatsApp human takeover:", error.message);
+  }
+}
+
+export async function hasRecentHumanTakeover(tenantId: string, phone: string): Promise<boolean> {
+  const admin = getAdminClient();
+  const { data } = await admin
+    .from("whatsapp_human_takeovers")
+    .select("last_echo_at")
+    .eq("tenant_id", tenantId)
+    .eq("phone", phone)
+    .maybeSingle();
+  if (!data?.last_echo_at) return false;
+  return Date.now() - new Date(data.last_echo_at as string).getTime() < HUMAN_TAKEOVER_WINDOW_MS;
+}
+
 export type MyWhatsAppConnection = {
   status: "creating" | "offline" | "verifying" | "online" | "failed" | "disconnected";
   displayPhoneNumber: string | null;

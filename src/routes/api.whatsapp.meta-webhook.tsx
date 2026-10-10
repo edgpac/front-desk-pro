@@ -6,6 +6,8 @@ import {
   fetchMetaMediaAsBase64,
   markConnectionFailed,
   wasMessageAlreadyProcessed,
+  recordHumanTakeover,
+  hasRecentHumanTakeover,
   MetaOutsideWindowError,
 } from "@/lib/meta-whatsapp-server";
 import { handleInboundWhatsAppMessage, type ChannelAdapter } from "@/lib/whatsapp-conversation-server";
@@ -95,6 +97,26 @@ export const Route = createFileRoute("/api/whatsapp/meta-webhook")({
               continue;
             }
 
+            // Coexistence: the business owner sent this via their own
+            // connected WhatsApp Business App, not through Job It Ready.
+            // Recorded so the bot can defer to an actively-human-handled
+            // conversation instead of interrupting it — see
+            // hasRecentHumanTakeover below. Requires smb_message_echoes to
+            // actually be subscribed in the Meta App Dashboard; silently
+            // delivers nothing if it isn't, same as any unsubscribed field.
+            if (change.field === "smb_message_echoes") {
+              const echoPhoneNumberId = value?.metadata?.phone_number_id;
+              const echoes = value?.message_echoes ?? [];
+              if (!echoPhoneNumberId || echoes.length === 0) continue;
+              const echoConnection = await resolveActiveMetaConnection(echoPhoneNumberId);
+              if (!echoConnection) continue;
+              for (const echo of echoes) {
+                if (!echo.to) continue;
+                await recordHumanTakeover(echoConnection.tenant.id, `+${echo.to}`);
+              }
+              continue;
+            }
+
             const phoneNumberId = value?.metadata?.phone_number_id;
             const messages = value?.messages ?? [];
             if (!phoneNumberId || messages.length === 0) continue;
@@ -159,6 +181,20 @@ export const Route = createFileRoute("/api/whatsapp/meta-webhook")({
               const body = message.type === "text" ? (message.text?.body ?? "").trim() : "";
               const mediaRef = message.type === "image" ? message.image?.id : undefined;
 
+              // Coexistence: the business owner is already personally
+              // texting this customer (a smb_message_echoes event landed
+              // for this phone recently) — defer to them rather than
+              // injecting the bot's canned reply into their real
+              // conversation. The customer's message is still real and
+              // visible to the owner in their own WhatsApp Business App;
+              // this only suppresses Job It Ready's own automated reply.
+              if (await hasRecentHumanTakeover(tenant.id, fromPhone)) {
+                console.log(
+                  `Meta WhatsApp message ${message.id} from ${fromPhone}: recent human takeover, bot deferring.`,
+                );
+                continue;
+              }
+
               try {
                 await handleInboundWhatsAppMessage({
                   tenant,
@@ -205,10 +241,11 @@ export const Route = createFileRoute("/api/whatsapp/meta-webhook")({
 type MetaWebhookPayload = {
   entry?: {
     changes?: {
-      // "messages" (inbound text/image) or "message_template_status_update"
-      // — the only two fields this route currently reads change.field for.
-      // Anything else falls through both branches below untouched, same
-      // silent-skip-but-ack posture as an unrecognized phone_number_id.
+      // "messages" (inbound text/image), "smb_message_echoes" (the owner's
+      // own WhatsApp Business App sends), or "message_template_status_update"
+      // — the only three fields this route currently reads change.field
+      // for. Anything else falls through every branch below untouched,
+      // same silent-skip-but-ack posture as an unrecognized phone_number_id.
       field?: string;
       value?: {
         metadata?: { phone_number_id?: string };
@@ -220,6 +257,10 @@ type MetaWebhookPayload = {
           text?: { body?: string };
           image?: { id?: string };
         }[];
+        // smb_message_echoes field only — confirmed against Meta's own
+        // developer docs (developers.facebook.com/documentation/business-
+        // messaging/whatsapp/embedded-signup/onboarding-business-app-users/).
+        message_echoes?: { to?: string; id?: string; type?: string }[];
         // message_template_status_update fields only.
         event?: string;
         message_template_id?: string | number;
