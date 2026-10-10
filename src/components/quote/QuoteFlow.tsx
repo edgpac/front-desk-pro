@@ -741,8 +741,8 @@ export function QuoteFlow({
         <div className="p-5">
           <p className="text-xs font-medium text-neutral-400">Not on our standard price list</p>
           <p className="mt-2 text-sm text-neutral-700">
-            {businessName} doesn't have set pricing for this specific request. I can pass it along to the team
-            for a custom quote — want me to do that?
+            {businessName} doesn't have set pricing for this specific request. I'll pass it along to our team —
+            want me to do that?
           </p>
           {!leadSent && (
             <div className="mt-4 flex flex-wrap gap-2">

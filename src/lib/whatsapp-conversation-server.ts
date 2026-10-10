@@ -338,7 +338,7 @@ export async function handleInboundWhatsAppMessage(params: {
     }
 
     if (clarifyResult.outOfScope) {
-      const passAlongMessage = "I can pass your request along to the team for a custom quote — want me to do that?";
+      const passAlongMessage = "I'll pass your message along to our team — want me to do that?";
       await admin
         .from("leads")
         .update({
@@ -630,7 +630,7 @@ async function handleFreshQuote(params: {
 
   if (result.outOfScope) {
     const openingProblem = body || NO_DESCRIPTION_PLACEHOLDER;
-    const passAlongMessage = "I can pass your request along to the team for a custom quote — want me to do that?";
+    const passAlongMessage = "I'll pass your message along to our team — want me to do that?";
     const { id: leadId } = await createFlaggedLead({
       data: {
         tenantSlug: tenant.slug,
