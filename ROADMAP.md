@@ -2,7 +2,33 @@
 
 Legend: ✅ real and working · 🟡 built, but mocked/disconnected from a real backend · ⬜ not built yet
 
-Last updated: October 10, 2026 (later same day) — **Coexistence blind spot
+Last updated: October 10, 2026 (later same day) — **Bot was inviting photo
+uploads for requests it had already identified as outside the business's
+services — fixed.** Found via real live traffic: a family member's "car is
+due for a carwash" reminder (sent to Cabos Handyman's business number,
+unrelated to the business) got a reply explicitly stating "A car wash
+isn't something Cabos Handyman typically handles" — and then asked for a
+photo of the car anyway. Root cause: `buildPrompt`'s rule ordering
+(`estimate-server.ts`) had the clarifying-question/photo-request logic
+(old Rule 1) run before the out-of-scope check (old Rule 2) — so a request
+already identifiable as a clear non-match still went through "no photo?
+ask for one" first. Fixed by making the out-of-scope check Rule 1,
+explicit that it must fire immediately (skipping clarification/photo
+requests entirely) when the request is already clearly unrelated to
+everything on the price sheet, with clarification reserved only for
+requests that plausibly match something the business does but need more
+detail. Flagged as a real concern, not just an odd reply: soliciting
+photo uploads from anyone who messages the number, successful match or
+not, is unnecessary surface area worth closing regardless of how the
+message arrived. All 37 existing Vitest tests still pass (none needed
+changes — this was a behavior gap, not a tested contract), `tsc`/build
+clean, deployed. **Live-verified**: replayed the exact failing scenario
+against Cabos Handyman's real page — now returns `outOfScope: true`
+immediately, no clarifying question, no photo request.
+
+---
+
+Before that, same day: **Coexistence blind spot
 found via real live traffic and fixed.** The bot and the business owner's
 own WhatsApp Business App both receive the same inbound messages on a
 connected number, but the bot had no way to know a human already
