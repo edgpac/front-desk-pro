@@ -2,6 +2,16 @@ import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { WhatsAppSetupGuideContent } from "@/components/app/WhatsAppSetupGuide";
 import {
   completeMetaWhatsAppSignup,
   disconnectMetaWhatsApp,
@@ -74,6 +84,12 @@ export function ConnectWhatsAppMeta() {
   const [connection, setConnection] = useState<MyWhatsAppConnection | null>(null);
   const [loadingConnection, setLoadingConnection] = useState(true);
   const [disconnecting, setDisconnecting] = useState(false);
+  // Gate: handleConnect (the real FB.login() trigger) is never called
+  // directly from the button below — only from "Continue" in this dialog,
+  // once guideAcknowledged is checked. Resets on close so skipping past it
+  // once doesn't carry over to a later attempt (e.g. after a disconnect).
+  const [showGuideDialog, setShowGuideDialog] = useState(false);
+  const [guideAcknowledged, setGuideAcknowledged] = useState(false);
   const sdkLoadTriggered = useRef(false);
   const capturedWabaId = useRef<string | null>(null);
   const capturedPhoneNumberId = useRef<string | null>(null);
@@ -277,35 +293,14 @@ export function ConnectWhatsAppMeta() {
 
   return (
     <div>
-      {/* Pre-flight guidance, not Meta's own UI — Meta's popup is a
-          cross-origin iframe we can't modify or skip steps in. This exists
-          because the real flow (live-verified end to end 2026-10-10) has
-          several moments a first-time subscriber would otherwise have to
-          guess through: unfamiliar "Business Portfolio" terminology, a
-          greyed-out option that looks broken but isn't, and a verification
-          wait after finishing that isn't instant messaging access. */}
-      <div className="mb-3 rounded-sm border border-border-strong bg-muted px-4 py-3 text-xs text-muted-foreground">
-        <p className="font-medium text-foreground">What to expect</p>
-        <ol className="mt-1.5 list-decimal space-y-1 pl-4">
-          <li>You'll log into Facebook and confirm your existing WhatsApp Business account.</li>
-          <li>
-            You'll be asked which Business Portfolio to share access with. If "Job It Ready" appears
-            greyed out, that's expected — it's not a bug, it's just not yours to pick. Choose
-            <span className="font-medium text-foreground"> "Create a Business portfolio"</span> instead
-            and fill in your business name, email, country, and website.
-          </li>
-          <li>Confirm your WhatsApp Business account name and time zone.</li>
-          <li>Review the permissions Meta lists, then confirm.</li>
-          <li>
-            After finishing, Meta may need to verify your new Business Portfolio before messages can
-            actually send or receive — you'll get an email when that's done, usually within a day.
-          </li>
-        </ol>
-      </div>
+      <p className="mb-2 text-xs text-muted-foreground">
+        Takes a few minutes and involves a few Meta screens — we'll walk you through what to expect
+        first.
+      </p>
       <Button
         type="button"
         variant="outline"
-        onClick={handleConnect}
+        onClick={() => setShowGuideDialog(true)}
         disabled={
           status === "loading-sdk" || status === "connecting" || loadingConnection || !appId || !configId
         }
@@ -315,6 +310,54 @@ export function ConnectWhatsAppMeta() {
       {status === "error" && errorMessage && (
         <p className="mt-2 text-xs text-destructive">{errorMessage}</p>
       )}
+
+      {/* Required gate, not Meta's own UI — Meta's popup is a cross-origin
+          iframe we can't modify or skip steps in. This exists because the
+          real flow (live-verified end to end 2026-10-10) has several
+          moments a first-time subscriber would otherwise have to guess
+          through: unfamiliar "Business Portfolio" terminology, a greyed-out
+          option that looks broken but isn't, and a verification wait after
+          finishing that isn't instant messaging access. handleConnect (the
+          real FB.login() trigger) is only ever called from "Continue"
+          below, never from the button above directly. */}
+      <Dialog
+        open={showGuideDialog}
+        onOpenChange={(open) => {
+          setShowGuideDialog(open);
+          if (!open) setGuideAcknowledged(false);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Before you connect</DialogTitle>
+            <DialogDescription>
+              Meta's own screens aren't ours to change — here's exactly what you'll see.
+            </DialogDescription>
+          </DialogHeader>
+          <WhatsAppSetupGuideContent />
+          <label className="flex items-start gap-2 text-sm">
+            <Checkbox
+              checked={guideAcknowledged}
+              onCheckedChange={(value) => setGuideAcknowledged(value === true)}
+              className="mt-0.5"
+            />
+            I've read this and understand what to expect.
+          </label>
+          <DialogFooter>
+            <Button
+              type="button"
+              disabled={!guideAcknowledged}
+              onClick={() => {
+                setShowGuideDialog(false);
+                setGuideAcknowledged(false);
+                handleConnect();
+              }}
+            >
+              Continue to Meta
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

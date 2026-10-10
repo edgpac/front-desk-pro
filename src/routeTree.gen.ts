@@ -25,6 +25,7 @@ import { Route as DashboardIndexRouteImport } from './routes/dashboard.index'
 import { Route as DashboardAnalyticsRouteImport } from './routes/dashboard.analytics'
 import { Route as DashboardLeadsRouteImport } from './routes/dashboard.leads'
 import { Route as DashboardPriceSheetRouteImport } from './routes/dashboard.price-sheet'
+import { Route as DashboardWhatsappGuideRouteImport } from './routes/dashboard.whatsapp-guide'
 import { Route as DashboardWidgetRouteImport } from './routes/dashboard.widget'
 import { Route as OnboardingIndexRouteImport } from './routes/onboarding.index'
 import { Route as QuoteSlugRouteImport } from './routes/quote.$slug'
@@ -122,6 +123,11 @@ const DashboardLeadsRoute = DashboardLeadsRouteImport.update({
 const DashboardPriceSheetRoute = DashboardPriceSheetRouteImport.update({
   id: '/price-sheet',
   path: '/price-sheet',
+  getParentRoute: () => DashboardRoute,
+} as any)
+const DashboardWhatsappGuideRoute = DashboardWhatsappGuideRouteImport.update({
+  id: '/whatsapp-guide',
+  path: '/whatsapp-guide',
   getParentRoute: () => DashboardRoute,
 } as any)
 const DashboardWidgetRoute = DashboardWidgetRouteImport.update({
@@ -236,6 +242,7 @@ export interface FileRoutesByFullPath {
   '/dashboard/analytics': typeof DashboardAnalyticsRoute
   '/dashboard/leads': typeof DashboardLeadsRouteWithChildren
   '/dashboard/price-sheet': typeof DashboardPriceSheetRoute
+  '/dashboard/whatsapp-guide': typeof DashboardWhatsappGuideRoute
   '/dashboard/widget': typeof DashboardWidgetRoute
   '/quote/$slug': typeof QuoteSlugRoute
   '/widget/$slug': typeof WidgetSlugRoute
@@ -269,6 +276,7 @@ export interface FileRoutesByTo {
   '/api/meta-test-exchange': typeof ApiMetaTestExchangeRoute
   '/dashboard/analytics': typeof DashboardAnalyticsRoute
   '/dashboard/price-sheet': typeof DashboardPriceSheetRoute
+  '/dashboard/whatsapp-guide': typeof DashboardWhatsappGuideRoute
   '/dashboard/widget': typeof DashboardWidgetRoute
   '/quote/$slug': typeof QuoteSlugRoute
   '/widget/$slug': typeof WidgetSlugRoute
@@ -305,6 +313,7 @@ export interface FileRoutesById {
   '/dashboard/analytics': typeof DashboardAnalyticsRoute
   '/dashboard/leads': typeof DashboardLeadsRouteWithChildren
   '/dashboard/price-sheet': typeof DashboardPriceSheetRoute
+  '/dashboard/whatsapp-guide': typeof DashboardWhatsappGuideRoute
   '/dashboard/widget': typeof DashboardWidgetRoute
   '/quote/$slug': typeof QuoteSlugRoute
   '/widget/$slug': typeof WidgetSlugRoute
@@ -343,6 +352,7 @@ export interface FileRouteTypes {
     | '/dashboard/analytics'
     | '/dashboard/leads'
     | '/dashboard/price-sheet'
+    | '/dashboard/whatsapp-guide'
     | '/dashboard/widget'
     | '/quote/$slug'
     | '/widget/$slug'
@@ -376,6 +386,7 @@ export interface FileRouteTypes {
     | '/api/meta-test-exchange'
     | '/dashboard/analytics'
     | '/dashboard/price-sheet'
+    | '/dashboard/whatsapp-guide'
     | '/dashboard/widget'
     | '/quote/$slug'
     | '/widget/$slug'
@@ -411,6 +422,7 @@ export interface FileRouteTypes {
     | '/dashboard/analytics'
     | '/dashboard/leads'
     | '/dashboard/price-sheet'
+    | '/dashboard/whatsapp-guide'
     | '/dashboard/widget'
     | '/quote/$slug'
     | '/widget/$slug'
@@ -565,6 +577,13 @@ declare module '@tanstack/react-router' {
       path: '/price-sheet'
       fullPath: '/dashboard/price-sheet'
       preLoaderRoute: typeof DashboardPriceSheetRouteImport
+      parentRoute: typeof DashboardRoute
+    }
+    '/dashboard/whatsapp-guide': {
+      id: '/dashboard/whatsapp-guide'
+      path: '/whatsapp-guide'
+      fullPath: '/dashboard/whatsapp-guide'
+      preLoaderRoute: typeof DashboardWhatsappGuideRouteImport
       parentRoute: typeof DashboardRoute
     }
     '/dashboard/widget': {
@@ -731,6 +750,7 @@ interface DashboardRouteChildren {
   DashboardAnalyticsRoute: typeof DashboardAnalyticsRoute
   DashboardLeadsRoute: typeof DashboardLeadsRouteWithChildren
   DashboardPriceSheetRoute: typeof DashboardPriceSheetRoute
+  DashboardWhatsappGuideRoute: typeof DashboardWhatsappGuideRoute
   DashboardWidgetRoute: typeof DashboardWidgetRoute
   DashboardIndexRoute: typeof DashboardIndexRoute
   DashboardSettingsBillingRoute: typeof DashboardSettingsBillingRoute
@@ -743,6 +763,7 @@ const DashboardRouteChildren: DashboardRouteChildren = {
   DashboardAnalyticsRoute: DashboardAnalyticsRoute,
   DashboardLeadsRoute: DashboardLeadsRouteWithChildren,
   DashboardPriceSheetRoute: DashboardPriceSheetRoute,
+  DashboardWhatsappGuideRoute: DashboardWhatsappGuideRoute,
   DashboardWidgetRoute: DashboardWidgetRoute,
   DashboardIndexRoute: DashboardIndexRoute,
   DashboardSettingsBillingRoute: DashboardSettingsBillingRoute,
