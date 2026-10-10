@@ -81,21 +81,31 @@ async function metaErrorCode(response: Response): Promise<number | undefined> {
   }
 }
 
-// redirect_uri is required, not optional: Meta binds the authorization
-// code to the exact redirect_uri the SDK's popup used when it opened (a
-// dynamic https://staticxx.facebook.com/x/connect/xd_arbiter/... URL,
-// unique per attempt, captured client-side — see ConnectWhatsAppMeta.tsx's
-// window.open() interception). Confirmed via live A/B testing: omitting
-// it, or sending the app's own registered domain, both fail with
-// error_subcode=36008 ("redirect_uri isn't identical to the one used in
-// the OAuth dialog"); sending the exact captured value succeeds.
-async function exchangeCodeForToken(code: string, redirectUri: string): Promise<string> {
+// redirect_uri is omitted entirely — reopened and re-settled 2026-10-10.
+// The original "confirmed fixed" claim here (send the SDK popup's exact
+// dynamic xd_arbiter redirect_uri, captured via a window.open() intercept
+// in ConnectWhatsAppMeta.tsx) was re-tested live against the real,
+// multi-screen Business-Portfolio-creation flow and failed with
+// error_subcode=36008 three separate times, with a verified-clean, correct
+// capture each time (ruled out: capture bugs, overwrite from a second
+// popup, wrong Business Portfolio path). The "static registered domain
+// also fails" half of the original claim turned out to have been tested
+// against a stale, no-longer-registered domain
+// (front-desk-pro-ten.vercel.app, not www.jobitready.com) — re-tested
+// against the actually-registered https://www.jobitready.com/dashboard/
+// settings/business and it ALSO failed with the identical error. Omitting
+// redirect_uri entirely — the one combination the original claim said
+// fails outright — was re-tested clean via public/meta-test.html and
+// succeeded, issuing a real access token for a real WABA/phone number.
+// Whatever was true when the original claim was written no longer holds
+// (API version, app config, and Advanced Access status have all changed
+// since) — this is the current, live-reverified behavior.
+async function exchangeCodeForToken(code: string): Promise<string> {
   const { appId, appSecret, apiVersion } = getMetaCredentials();
   const url = new URL(graphUrl(apiVersion, "/oauth/access_token"));
   url.searchParams.set("client_id", appId);
   url.searchParams.set("client_secret", appSecret);
   url.searchParams.set("code", code);
-  url.searchParams.set("redirect_uri", redirectUri);
 
   const response = await fetch(url.toString());
   if (!response.ok) {
@@ -108,42 +118,52 @@ async function exchangeCodeForToken(code: string, redirectUri: string): Promise<
   return json.access_token;
 }
 
-// The WABA is identified by the client, captured from Meta's own
-// WA_EMBEDDED_SIGNUP postMessage event fired inside the popup during the
-// actual WABA/phone-number selection step (see ConnectWhatsAppMeta.tsx) —
-// not discovered from the token via debug_token.granular_scopes, which
-// never reflected a WABA-scoped grant for this app's configuration despite
-// the configuration itself being set up correctly. The client-supplied
-// phone_number_id is never trusted on its own: this asks Meta's own API,
-// using the just-exchanged token, which WABA that specific phone number
-// actually belongs to. If the token has no access to it, this call fails;
-// if it does, the WABA id it returns is checked against whatever the
-// client also reported, so a mismatched/forged client value is caught
-// rather than silently written.
+// The WABA and phone number are both identified by the client, captured
+// from Meta's own WA_EMBEDDED_SIGNUP postMessage event fired inside the
+// popup during the actual WABA/phone-number selection step (see
+// ConnectWhatsAppMeta.tsx) — not discovered from the token via
+// debug_token.granular_scopes, which never reflected a WABA-scoped grant
+// for this app's configuration despite the configuration itself being set
+// up correctly. Neither client-supplied id is trusted on its own: this
+// asks Meta's own API, using the just-exchanged token, which phone numbers
+// the client-reported WABA actually owns, and requires the client-reported
+// phone_number_id to be one of them — a mismatched/forged client value is
+// caught rather than silently written.
+//
+// Re-settled 2026-10-10: the original version of this check queried
+// `/{phone_number_id}?fields=...,whatsapp_business_account` — the reverse
+// direction — and failed with "(#100) Tried accessing nonexisting field
+// (whatsapp_business_account)" the first time it was ever exercised against
+// a real token (the redirect_uri fix above was the only thing blocking
+// reaching this stage before). `whatsapp_business_account` was never a
+// valid field on the phone-number node; the documented shape is the other
+// way round (confirmed against this repo's own Stage 2B validation
+// runbook, written before this bug was ever hit): GET
+// /{waba_id}/phone_numbers returns {data: [{id, display_phone_number,
+// ...}]}.
 async function validatePhoneNumberAccess(
+  wabaId: string,
   phoneNumberId: string,
   accessToken: string,
-): Promise<{ wabaId: string; displayPhoneNumber: string }> {
+): Promise<{ displayPhoneNumber: string }> {
   const { apiVersion } = getMetaCredentials();
-  const url = new URL(graphUrl(apiVersion, `/${phoneNumberId}`));
-  url.searchParams.set("fields", "display_phone_number,whatsapp_business_account");
+  const url = new URL(graphUrl(apiVersion, `/${wabaId}/phone_numbers`));
   url.searchParams.set("access_token", accessToken);
 
   const response = await fetch(url.toString());
   if (!response.ok) {
     throw new Error(
-      `Could not verify this phone number with the granted token (${response.status}): ${await describeMetaError(response)}`,
+      `Could not verify this WhatsApp Business Account's phone numbers with the granted token (${response.status}): ${await describeMetaError(response)}`,
     );
   }
-  const json = (await response.json()) as {
-    display_phone_number?: string;
-    whatsapp_business_account?: { id?: string };
-  };
-  const wabaId = json.whatsapp_business_account?.id;
-  if (!wabaId || !json.display_phone_number) {
-    throw new Error("Could not verify which WhatsApp Business Account this phone number belongs to.");
+  const json = (await response.json()) as { data?: Array<{ id?: string; display_phone_number?: string }> };
+  const match = (json.data ?? []).find((entry) => entry.id === phoneNumberId);
+  if (!match?.display_phone_number) {
+    throw new Error(
+      "The phone number reported by the sign-in popup wasn't found under the selected WhatsApp Business Account.",
+    );
   }
-  return { wabaId, displayPhoneNumber: json.display_phone_number };
+  return { displayPhoneNumber: match.display_phone_number };
 }
 
 async function subscribeAppToWaba(wabaId: string, accessToken: string): Promise<void> {
@@ -163,17 +183,13 @@ async function subscribeAppToWaba(wabaId: string, accessToken: string): Promise<
 
 export const completeMetaWhatsAppSignup = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .validator((input: { code: string; redirectUri: string; wabaId: string; phoneNumberId: string }) => input)
+  .validator((input: { code: string; wabaId: string; phoneNumberId: string }) => input)
   .handler(async ({ context, data }): Promise<MetaSignupResult> => {
     const code = data.code?.trim();
-    const redirectUri = data.redirectUri?.trim();
     const clientWabaId = data.wabaId?.trim();
     const clientPhoneNumberId = data.phoneNumberId?.trim();
     if (!code) {
       return { status: "error", message: "Missing signup code." };
-    }
-    if (!redirectUri) {
-      return { status: "error", message: "Missing redirect information from the sign-in popup. Please try again." };
     }
     if (!clientWabaId || !clientPhoneNumberId) {
       return {
@@ -228,17 +244,12 @@ export const completeMetaWhatsAppSignup = createServerFn({ method: "POST" })
     let phoneNumberId: string;
     let displayPhoneNumber: string;
     try {
-      accessToken = await exchangeCodeForToken(code, redirectUri);
+      accessToken = await exchangeCodeForToken(code);
       console.log(`[Meta WhatsApp] ${stage} ✓`);
 
       stage = "validatePhoneNumberAccess";
-      const verified = await validatePhoneNumberAccess(clientPhoneNumberId, accessToken);
-      if (verified.wabaId !== clientWabaId) {
-        throw new Error(
-          "The WhatsApp Business Account reported by the sign-in popup didn't match Meta's own records for this phone number.",
-        );
-      }
-      wabaId = verified.wabaId;
+      const verified = await validatePhoneNumberAccess(clientWabaId, clientPhoneNumberId, accessToken);
+      wabaId = clientWabaId;
       phoneNumberId = clientPhoneNumberId;
       displayPhoneNumber = verified.displayPhoneNumber;
       console.log(`[Meta WhatsApp] ${stage} ✓ waba_id=${wabaId} phone_number_id=${phoneNumberId}`);

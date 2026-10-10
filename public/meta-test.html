@@ -48,8 +48,8 @@
 <label for="redirectUri">redirect_uri to send at exchange time (this run only)</label>
 <select id="redirectUri">
   <option value="">(none — matches current production behavior)</option>
-  <option value="https://front-desk-pro-ten.vercel.app/">https://front-desk-pro-ten.vercel.app/ (domain root)</option>
-  <option value="https://front-desk-pro-ten.vercel.app/dashboard/settings/business">https://front-desk-pro-ten.vercel.app/dashboard/settings/business (registered path)</option>
+  <option value="https://www.jobitready.com/">https://www.jobitready.com/ (registered, domain root)</option>
+  <option value="https://www.jobitready.com/dashboard/settings/business">https://www.jobitready.com/dashboard/settings/business (registered, exact page path)</option>
   <option value="__captured__">Auto-captured (the exact real value Meta's SDK uses for THIS run — no typing needed)</option>
   <option value="__custom__">Custom (type below)</option>
 </select>
@@ -216,7 +216,10 @@
         config_id: configId,
         response_type: "code",
         override_default_response_type: true,
-        extras: { setup: {}, sessionInfoVersion: "3" },
+        // Matches production's ConnectWhatsAppMeta.tsx exactly — tested
+        // without this flag before, included now so this diagnostic run is
+        // representative of the real flow being debugged (2026-10-10).
+        extras: { setup: {}, sessionInfoVersion: "3", featureType: "whatsapp_business_app_onboarding" },
       },
     );
   }

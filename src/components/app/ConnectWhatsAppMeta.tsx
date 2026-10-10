@@ -9,17 +9,16 @@ import {
   type MyWhatsAppConnection,
 } from "@/lib/meta-whatsapp-server";
 
-// Meta Embedded Signup — Stage 2B only. This component's entire job is:
-// load Meta's JS SDK, trigger FB.login() with the Embedded Signup
-// configuration, get back a short-lived authorization code, and hand that
-// code to completeMetaWhatsAppSignup. It never sees a WABA id, phone
-// number id, or access token — those are resolved and stored server-side.
+// Meta Embedded Signup — Stage 2B. This component's entire job is: load
+// Meta's JS SDK, trigger FB.login() with the Embedded Signup configuration,
+// get back a short-lived authorization code, and hand that code to
+// completeMetaWhatsAppSignup. It never sees a WABA id, phone number id, or
+// access token — those are resolved and stored server-side.
 //
-// NOTE: cannot be exercised end-to-end without a real Meta Developer App
-// (VITE_META_APP_ID/VITE_META_CONFIG_ID) — the FB SDK load and FB.login()
-// call below follow Meta's currently-documented Embedded Signup pattern,
-// but should be confirmed against a real popup flow during Stage 2B's own
-// live verification.
+// Live-verified end to end 2026-10-10: a real coexistence connection
+// (Cabos Handyman's existing WhatsApp Business App number) completed
+// successfully, and a real inbound WhatsApp message through it round-
+// tripped through the full AI pricing pipeline and delivered a reply.
 
 declare global {
   interface Window {
@@ -76,7 +75,6 @@ export function ConnectWhatsAppMeta() {
   const [loadingConnection, setLoadingConnection] = useState(true);
   const [disconnecting, setDisconnecting] = useState(false);
   const sdkLoadTriggered = useRef(false);
-  const capturedRedirectUri = useRef<string | null>(null);
   const capturedWabaId = useRef<string | null>(null);
   const capturedPhoneNumberId = useRef<string | null>(null);
 
@@ -135,36 +133,6 @@ export function ConnectWhatsAppMeta() {
   }, [appId]);
 
   useEffect(() => {
-    // Meta binds the authorization code FB.login() returns to the exact
-    // redirect_uri its popup used to open — a dynamic
-    // https://staticxx.facebook.com/x/connect/xd_arbiter/... URL, unique
-    // per attempt, that Meta's own JS SDK generates internally and never
-    // exposes through the FB.login() callback's response object. The
-    // server-side exchange fails with error_subcode=36008 ("redirect_uri
-    // isn't identical") unless this exact value is echoed back — confirmed
-    // via live A/B testing against an isolated diagnostic page. FB.login()
-    // opens this popup via window.open(), so intercepting that call here is
-    // the only way to observe the real value; the popup itself still opens
-    // normally, this only reads the URL passed to it.
-    const nativeOpen = window.open;
-    window.open = function (url?: string | URL, target?: string, features?: string) {
-      if (typeof url === "string" && url.includes("facebook.com") && url.includes("dialog/oauth")) {
-        try {
-          const redirectUri = new URL(url).searchParams.get("redirect_uri");
-          if (redirectUri) capturedRedirectUri.current = redirectUri;
-        } catch {
-          // Malformed URL from the SDK — leave capturedRedirectUri as-is;
-          // handleConnect's own check below catches a missing value.
-        }
-      }
-      return nativeOpen.call(window, url, target, features);
-    };
-    return () => {
-      window.open = nativeOpen;
-    };
-  }, []);
-
-  useEffect(() => {
     // Meta's Embedded Signup popup posts a WA_EMBEDDED_SIGNUP message back
     // to this window as the WABA/phone-number flow completes, carrying the
     // real waba_id/phone_number_id it granted — enabled by
@@ -207,7 +175,6 @@ export function ConnectWhatsAppMeta() {
     }
 
     // reset before this attempt's popup opens
-    capturedRedirectUri.current = null;
     capturedWabaId.current = null;
     capturedPhoneNumberId.current = null;
     window.FB.login(
@@ -217,10 +184,9 @@ export function ConnectWhatsAppMeta() {
           setStatus("idle");
           return; // user closed the popup or cancelled — not an error to surface
         }
-        const redirectUri = capturedRedirectUri.current;
         const wabaId = capturedWabaId.current;
         const phoneNumberId = capturedPhoneNumberId.current;
-        if (!redirectUri || !wabaId || !phoneNumberId) {
+        if (!wabaId || !phoneNumberId) {
           setStatus("error");
           setErrorMessage(
             "Couldn't complete the WhatsApp connection — no WhatsApp Business Account was selected. Please try again.",
@@ -229,7 +195,7 @@ export function ConnectWhatsAppMeta() {
         }
         void (async () => {
           try {
-            const result = await completeMetaWhatsAppSignup({ data: { code, redirectUri, wabaId, phoneNumberId } });
+            const result = await completeMetaWhatsAppSignup({ data: { code, wabaId, phoneNumberId } });
             if (result.status === "connected") {
               setStatus("connected");
               setDisplayPhoneNumber(result.displayPhoneNumber);
@@ -311,6 +277,31 @@ export function ConnectWhatsAppMeta() {
 
   return (
     <div>
+      {/* Pre-flight guidance, not Meta's own UI — Meta's popup is a
+          cross-origin iframe we can't modify or skip steps in. This exists
+          because the real flow (live-verified end to end 2026-10-10) has
+          several moments a first-time subscriber would otherwise have to
+          guess through: unfamiliar "Business Portfolio" terminology, a
+          greyed-out option that looks broken but isn't, and a verification
+          wait after finishing that isn't instant messaging access. */}
+      <div className="mb-3 rounded-sm border border-border-strong bg-muted px-4 py-3 text-xs text-muted-foreground">
+        <p className="font-medium text-foreground">What to expect</p>
+        <ol className="mt-1.5 list-decimal space-y-1 pl-4">
+          <li>You'll log into Facebook and confirm your existing WhatsApp Business account.</li>
+          <li>
+            You'll be asked which Business Portfolio to share access with. If "Job It Ready" appears
+            greyed out, that's expected — it's not a bug, it's just not yours to pick. Choose
+            <span className="font-medium text-foreground"> "Create a Business portfolio"</span> instead
+            and fill in your business name, email, country, and website.
+          </li>
+          <li>Confirm your WhatsApp Business account name and time zone.</li>
+          <li>Review the permissions Meta lists, then confirm.</li>
+          <li>
+            After finishing, Meta may need to verify your new Business Portfolio before messages can
+            actually send or receive — you'll get an email when that's done, usually within a day.
+          </li>
+        </ol>
+      </div>
       <Button
         type="button"
         variant="outline"
