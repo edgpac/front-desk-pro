@@ -28,10 +28,14 @@ const links = [
   { to: "/dashboard/leads", label: "Lead inbox", icon: Inbox, exact: false },
   { to: "/dashboard/price-sheet", label: "Price sheet", icon: Tags, exact: false },
   { to: "/dashboard/widget", label: "Widget & link", icon: Code2, exact: false },
-  { to: "/dashboard/whatsapp-guide", label: "WhatsApp setup", icon: MessageCircle, exact: true },
   { to: "/dashboard/analytics", label: "Analytics", icon: BarChart3, exact: false },
   { to: "/dashboard/settings/business", label: "Settings", icon: Settings, exact: false },
   { to: "/dashboard/settings/billing", label: "Billing", icon: CreditCard, exact: true },
+  // Deliberately last and styled apart from the rest (red, not the muted
+  // sidebar tone) — placed at the bottom of a settings-shaped list on
+  // purpose, but colored so it doesn't just blend into that position. The
+  // goal is "noticed," not "buried."
+  { to: "/dashboard/whatsapp-guide", label: "WhatsApp setup", icon: MessageCircle, exact: true, emphasize: true },
 ] as const;
 
 function NavList({ onNavigate }: { onNavigate?: () => void }) {
@@ -39,8 +43,9 @@ function NavList({ onNavigate }: { onNavigate?: () => void }) {
 
   return (
     <nav className="flex flex-col gap-[2px]">
-      {links.map(({ to, label, icon: Icon, exact }) => {
+      {links.map(({ to, label, icon: Icon, exact, ...rest }) => {
         const active = exact ? pathname === to : pathname.startsWith(to);
+        const emphasize = "emphasize" in rest && rest.emphasize;
         return (
           <Link
             key={label}
@@ -48,12 +53,14 @@ function NavList({ onNavigate }: { onNavigate?: () => void }) {
             onClick={onNavigate}
             className={cn(
               "flex items-center gap-3 rounded-sm px-3 py-2 text-sm font-medium transition-colors",
-              active
-                ? "bg-sidebar-accent text-sidebar-foreground"
-                : "text-ink-muted hover:bg-sidebar-accent/60 hover:text-sidebar-foreground",
+              emphasize
+                ? "text-destructive hover:bg-destructive/10"
+                : active
+                  ? "bg-sidebar-accent text-sidebar-foreground"
+                  : "text-ink-muted hover:bg-sidebar-accent/60 hover:text-sidebar-foreground",
             )}
           >
-            <Icon className={cn("h-4 w-4", active && "text-primary")} />
+            <Icon className={cn("h-4 w-4", emphasize ? "text-destructive" : active && "text-primary")} />
             {label}
           </Link>
         );
