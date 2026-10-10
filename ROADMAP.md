@@ -2,7 +2,221 @@
 
 Legend: ✅ real and working · 🟡 built, but mocked/disconnected from a real backend · ⬜ not built yet
 
-Last updated: October 8, 2026 — **Meta Advanced Access approved.** The
+Last updated: October 10, 2026 (later same day) — **Meta `error_subcode=36008`
+root-caused and actually fixed this time.** The "confirmed fixed" redirect_uri
+capture mechanism from earlier (a `window.open()` intercept in
+`ConnectWhatsAppMeta.tsx` echoing back the SDK popup's dynamic
+`xd_arbiter` URL) turned out not to hold under the real, full multi-screen
+flow — three separate live attempts through "Create a Business portfolio"
+all failed with the identical error, despite verified-clean, correct
+captures each time (no overwrite, no second popup, byte-identical value
+sent). Checked the Meta app's actual "Valid OAuth Redirect URIs" setting —
+only `https://www.jobitready.com/` and
+`https://www.jobitready.com/dashboard/settings/business` are registered,
+with Strict Mode on; the dynamic xd_arbiter value was never on that list
+and couldn't be. Tried the registered static path instead — also failed,
+identical error. Re-tested the isolated diagnostic page
+(`public/meta-test.html`, updated — its hardcoded redirect_uri options
+were pointing at a stale `front-desk-pro-ten.vercel.app` domain, not
+`www.jobitready.com`, so the original "static domain also fails" half of
+the old claim was never actually tested against the real domain) and found
+the real answer: **omitting `redirect_uri` from the token exchange entirely
+succeeds** — confirmed via a clean, fresh run that issued a real access
+token for a real WABA (`1532358708174818`) and phone number
+(`1296658093533412`) under the Cabos Handyman business portfolio. Whatever
+was true when the original fix was written and "confirmed" no longer
+holds — API version, app config, and Advanced Access status have all
+changed since. `exchangeCodeForToken` (`meta-whatsapp-server.ts`) no longer
+sends `redirect_uri` at all; `ConnectWhatsAppMeta.tsx`'s entire
+`window.open()`-interception mechanism (the capture ref, the override, the
+diagnostic logging) is removed as dead code. `tsc`/build clean, deployed.
+**Second bug found immediately after, via the real dashboard test**: past
+the redirect_uri fix, `validatePhoneNumberAccess` failed with `(#100) Tried
+accessing nonexisting field (whatsapp_business_account)` — it queried
+`/{phone_number_id}?fields=...,whatsapp_business_account`, but that field
+was never valid in that direction. Fixed by querying the documented shape
+instead (confirmed against this file's own Stage 2B validation runbook,
+written before this bug was ever hit): `GET /{waba_id}/phone_numbers` →
+`{data: [{id, display_phone_number, ...}]}`, matching the client-reported
+`phone_number_id` against that list. Same security property preserved —
+the client-reported WABA/phone pairing is still verified against Meta's
+own data with the just-exchanged token, not trusted outright. `tsc`/build
+clean, deployed. **Confirmed live**: retried through the real production
+dashboard — Business Settings now shows **"WhatsApp connected —
++52 1 612 169 8328"** with a working Disconnect button. This is the first
+time Embedded Signup has ever completed successfully end-to-end, for a
+genuine coexistence connection (Cabos Handyman's existing WhatsApp Business
+App number) onto a newly-created Business Portfolio. The `whatsapp_connections`
+row write (`status: 'online'`, real `waba_id`/`meta_phone_number_id`/
+`display_phone_number`) is implied by the UI correctly reading it back on
+reload — not yet independently confirmed via a direct SQL check, worth
+doing once for full certainty.
+
+**What this does NOT yet prove**: that inbound/outbound messaging actually
+works on this connection (Stage 2C/2D — webhook routing, sending) — this
+session only exercised Stage 2B (the signup/connect flow itself). The
+webhook route (`api.whatsapp.meta-webhook.tsx`) and Meta's webhook
+subscription were built earlier but never live-tested against a real
+inbound message on a real, successfully-connected number until now that
+one exists. **Coexistence confirmed**: the test message also arrived on Cabos
+Handyman's own phone via the original WhatsApp Business App, alongside Job
+It Ready's reply — the one capability Twilio couldn't offer, now proven
+live. **Added a "what to expect" pre-flight guide** to
+`ConnectWhatsAppMeta.tsx` — a static panel above the Connect button,
+written from the exact friction points hit live this session (unfamiliar
+"Business Portfolio" terminology, "Job It Ready" appearing greyed out on
+the asset-selection screen — expected, not a bug — and the post-finish
+business-verification wait before messaging actually activates). This
+doesn't and can't modify Meta's own popup screens (cross-origin, outside
+our control) — it's our own explanatory content so a real subscriber isn't
+guessing through steps we've now mapped firsthand. `tsc`/build clean,
+deployed.
+
+**Confirmed live, full round trip**: sent a real WhatsApp message
+("Hello how much for kitchen faucet replacement") to +52 1 612 169 8328.
+The AI asked a clarifying question (photo request), correctly handled "No I
+do not have a photo handy" by proceeding without one, and replied with a
+real, sensible quote ($120, ~1.5 hours labor) — delivered and confirmed
+read (double-checkmarks) over WhatsApp. This is the first-ever full,
+genuine proof the entire Meta WhatsApp arc works end to end: webhook
+routing (2C) correctly found the tenant by `phone_number_id`, the shared
+`handleInboundWhatsAppMessage`/`getQuoteEstimate` pipeline ran identically
+to the already-proven Twilio/widget channels, the new atomic lead-write
+RPCs committed correctly, and outbound sending via Meta's adapter (2D)
+delivered successfully. **This closes out Stage 2B/2C/2D's live
+verification** — the one thing genuinely still open is Stage 2F's
+specific coexistence check (confirming the original WhatsApp Business App
+still receives one-to-one messages on this same number simultaneously) and
+the 24-hour-window template fallback path, neither of which this
+particular test exercised.
+
+---
+
+Before that, same day: **Closed the three lower-severity foundation
+gaps flagged earlier (duplicate-lead race, non-transactional lead writes,
+missing image validation on one upload path) before resuming the Meta
+WhatsApp debugging below.** All three shipped and deployed:
+
+1. **Price-sheet photo upload missing HEIC/image-format validation,
+   fixed.** `extractPriceSheetFromImage` (`price-sheet-server.ts`) never had
+   the same magic-byte JPEG/PNG check `getQuoteEstimate` already enforces —
+   a HEIC (or any other unsupported format) photo would reach Claude's
+   vision API directly. Added the same signature-based check (duplicated,
+   not imported, matching the existing `getClientIpHash` precedent — this
+   file is reachable by client code, and estimate-server.ts's version isn't
+   exported for exactly that import-protection reason) plus the matching
+   client-side `isSupportedImageFile` check (reused directly from
+   `image-client.ts`, already exported and client-safe) on the
+   price-sheet dashboard's upload handler, for fast UX feedback before the
+   server round-trip.
+2. **`createLead`/`finalizeLeadWithQuote` non-transactional lead+line-items
+   writes, fixed.** Each did the `leads` write and the `lead_line_items`
+   write as two separate requests — if the second failed after the first
+   committed, the customer saw an error while the business was left with a
+   real lead already in their inbox showing zero line items. Fixed by
+   moving both writes into one `SECURITY DEFINER` function each
+   (`create_lead_with_line_items`/`update_lead_with_line_items`,
+   `0019_lead_write_atomicity.sql`) — same proven shape as 0017/0018's
+   rate-limit RPCs, commit or roll back together.
+3. **WhatsApp duplicate-lead race, mitigated.**
+   `handleInboundWhatsAppMessage`'s "find or create a lead" logic read for
+   an open lead, then later created a new one if none was found — a
+   classic check-then-act race, realistic because the AI round-trip
+   between the read and the eventual write takes several seconds, long
+   enough for an impatient customer's second message to also read "no open
+   lead" and create a duplicate. A plain unique constraint can't express
+   "only one *open* lead within a rolling 48h window," so this uses a
+   short-lived advisory claim instead (`whatsapp_lead_claims` table +
+   `claim_whatsapp_lead_slot`/`release_whatsapp_lead_slot`,
+   same migration): the branch that creates a brand-new lead was extracted
+   into `handleFreshQuote` and wrapped in claim-acquire/release; a request
+   that can't acquire the claim polls briefly (up to 3s) for the other
+   request's lead to appear and appends to it instead of creating a
+   duplicate, falling through to today's unguarded behavior only if that
+   bound is exceeded (never worse than before this fix).
+
+Migration `0019_lead_write_atomicity.sql` reviewed and applied via the
+Supabase SQL Editor, all 4 functions + the new table verified present via
+`information_schema` queries before deploy. `tsc`/build clean, deployed.
+
+**Live-tested, confirmed working**: two real Playwright-driven submissions
+against Cabos Handyman's live `/quote/tiktok-eddy6six-cabos` page ("kitchen
+sink faucet leaking," "toilet clogged"), both going through a clarification
+round and finalizing — `finalizeLeadWithQuote` returned real lead
+ids/totals (`3b0a4e57-...`/$120, `36d24741-...`/$60) with zero console
+errors and zero failed requests, proving `update_lead_with_line_items`
+commits the lead update and its line items together in production.
+**Not covered by this test, flagged honestly**: `create_lead_with_line_items`
+(both runs happened to hit a clarification round first, never the direct
+no-clarification path — structurally identical RPC, not independently
+live-proven) and the WhatsApp duplicate-lead claim mechanism (item 1 —
+untestable via the quote page, which never goes through
+`handleInboundWhatsAppMessage`; would need two genuinely near-simultaneous
+real WhatsApp messages to verify live).
+
+---
+
+Before that, October 8, 2026 (later same day) — **First real live Embedded
+Signup attempt since Advanced Access approval — in progress, paused
+mid-flow.** Walked a genuine attempt through the full popup, screen by
+screen, for the first time since the approval below came through:
+selecting "Job It Ready" as the target Business Portfolio turned out to be
+correctly disabled (it's the app-owning account, not a customer-side
+portfolio — selecting it would blur exactly the Cabos/JIR separation
+[[project_cabos_jir_separation]] requires), so proceeded with "Create a
+Business portfolio" instead, named "Cabos Handyman," filled in its
+business-info form (name/email/country/website/captcha), confirmed the
+WhatsApp Business account name + Mazatlán timezone, reviewed/confirmed the
+three requested permissions, and reached the final "Your account is
+connected to Job It Ready" / "Finish" screen — which itself surfaced a new,
+not-yet-resolved requirement: **Meta says this specific business
+portfolio still needs its own verification before messaging can begin**
+("You'll receive an email when this is complete") — separate from the
+app-level Advanced Access approval below. Not yet confirmed whether that
+email has arrived.
+
+**Then hit the exact "confirmed fixed, don't revisit" error again**
+(`error_subcode=36008`, redirect_uri mismatch) when `completeMetaWhatsAppSignup`
+tried to exchange the code — see the WhatsApp row's "Confirmed fixed"
+line, now reopened. Strong working hypothesis, not yet confirmed: the
+original A/B test that validated the `window.open()`-intercept fix never
+exercised the "Create a Business portfolio" sub-step (today's attempt was
+the first time through it) — that sub-step likely opens its own
+`facebook.com`/`dialog/oauth`-matching popup, silently overwriting the
+captured `redirectUri` with a value Meta never actually bound the issued
+code to. Rather than blind-patch code marked "don't revisit," added
+TEMPORARY diagnostic logging to `ConnectWhatsAppMeta.tsx`'s `window.open()`
+intercept (logs every matching call, and explicitly flags when a second
+call overwrites an earlier captured `redirectUri`) and deployed.
+**Immediate next step, not yet done**: retry the full Embedded Signup flow
+(Business Portfolio creation included) with the browser DevTools console
+open, and report back everything logged under `[Meta WhatsApp SDK]` —
+especially any `redirect_uri OVERWRITTEN` line — before touching the
+capture logic itself.
+
+**Unrelated blocker hit and fixed during this same deploy**: Vercel
+refused the deploy outright over `CVE-2026-102989`, a known XSS
+vulnerability in the pinned `@tanstack/react-start@1.168.32`. Fixed
+properly (not bypassed via the dangerous-deploy env var Vercel's error
+offered): upgraded to `1.168.60`, which required also bumping
+`@tanstack/react-router` (`1.170.18` → `1.170.41`) and
+`@tanstack/router-plugin` (`1.168.23` → `1.168.42`) so everything
+dedupes back onto one copy of `@tanstack/router-core` — two transient
+copies otherwise broke the `server.handlers` type on every raw-HTTP route
+(`api.cron.keep-alive.tsx`, `api.meta-test-exchange.tsx`,
+`api.stripe.webhook.tsx`, `api.whatsapp.meta-webhook.tsx`,
+`api.whatsapp.webhook.tsx`). Also fixed one genuine type change from the
+new `router-core`: `ErrorComponentProps.error` is now `unknown` instead of
+`Error`; `__root.tsx`'s `ErrorComponent` widened to match (it only ever
+passes `error` straight to `console.error`, no behavior change). `tsc`/
+build clean, deployed successfully. **Not yet investigated**: `npm audit`
+still reports 5 high-severity vulnerabilities unrelated to this specific
+CVE — out of scope for this fix, which only targeted the one blocking
+deploy.
+
+---
+
+Before that, same day: **Meta Advanced Access approved.** The
 App Review submission (`whatsapp_business_messaging`,
 `whatsapp_business_management`, `public_profile`) was submitted 2026-09-24
 and came back approved on 2026-10-06, confirmed directly in Meta's
@@ -371,7 +585,7 @@ not.
 | | | **Decision (2026-09-19): Twilio's Tech Provider self-serve path above is dropped, not pursued.** Meta is the primary and now-only self-serve WhatsApp channel going forward — Meta's own onboarding (Embedded Signup, Advanced Access) is the one real self-serve path being built out; Twilio's separate ~3-4 week Tech Provider approval process is not being started. The existing Twilio webhook (`api.whatsapp.webhook.tsx`) stays as-is for any tenant manually concierge-connected to it already — nothing is being ripped out — but no further Twilio self-serve engineering (per-tenant subaccounts, sender registration/polling, the dual-channel `whatsapp_connections` design above) is planned. |
 | Meta WhatsApp Embedded Signup (`ConnectWhatsAppMeta.tsx`, `meta-whatsapp-server.ts`) | 🟡 core pipeline ✅ live and proven; self-serve for a genuine stranger still blocked on Advanced Access | **Superseded below (2026-09-15 to -19): the app got Published and a real number is live and working end-to-end — this row's original "blocked" framing was about the popup never reaching the WABA screens, which is no longer the state of things.** Left in place for history; read down to the bottom entries for where this actually stands. |
 | | | **Where this actually stands as of 2026-09-08, for picking back up cold:** |
-| | | **Confirmed fixed, don't revisit:** Meta's `/oauth/access_token` exchange requires the exact, SDK-internal `redirect_uri` the popup used to open — a dynamic `xd_arbiter` URL never exposed through `FB.login()`'s callback. Fixed by capturing it via a `window.open()` intercept in `ConnectWhatsAppMeta.tsx` and threading it through to the server exchange. Confirmed via live A/B testing — token exchange no longer fails with `error_subcode=36008`. |
+| | | **Superseded 2026-10-10 — see the top-of-file entry.** The `window.open()`-intercept approach described below (capturing the SDK's dynamic `xd_arbiter` redirect_uri and echoing it back) is **removed**, not just reopened — live-reverified to fail consistently under the real multi-screen flow, along with the registered static-domain alternative. The actual, now-confirmed-working fix is simpler: omit `redirect_uri` from the token exchange entirely. Original (stale) text, kept for history: Meta's `/oauth/access_token` exchange requires the exact, SDK-internal `redirect_uri` the popup used to open — a dynamic `xd_arbiter` URL never exposed through `FB.login()`'s callback. Fixed by capturing it via a `window.open()` intercept in `ConnectWhatsAppMeta.tsx` and threading it through to the server exchange. Confirmed via live A/B testing — token exchange no longer fails with `error_subcode=36008`. |
 | | | **Implemented and deployed, not yet exercised (blocked below, not broken):** `resolveWabaId`'s old approach (Meta's `debug_token`/`granular_scopes`) never returned a WABA-scoped grant and was replaced entirely — `ConnectWhatsAppMeta.tsx` now listens for Meta's `WA_EMBEDDED_SIGNUP` `postMessage` event (fired from inside the popup once the WABA/phone-number flow actually completes) and sends the captured `waba_id`/`phone_number_id` to the server alongside the OAuth code. `meta-whatsapp-server.ts`'s `validatePhoneNumberAccess` never trusts those client-supplied ids on their own — it queries Meta directly for the phone number using the just-exchanged token and cross-checks the WABA id Meta returns against what the client reported. This code is correct and ready; it simply has never been exercised for real, because — |
 | | | **The actual blocker, root-caused this session:** the popup never once reached the real WABA/phone-number screens for *any* attempt, regardless of `sessionInfoVersion`, account role, or configuration correctness — it kept resolving to a bare "Continue as Casita Armonìa" consent shortcut instead. Ruled out along the way: the Embedded Signup Configuration itself (`1794429681690457` — confirmed correctly set up: Login variation "WhatsApp Embedded Signup", System-user access token, WhatsApp accounts asset type, both `whatsapp_business_management`/`whatsapp_business_messaging` permissions present); the test account's role (Casita Armonìa is Administrator); revoking access under Facebook's "Apps and Websites" settings; `auth_type: "reauthenticate"` on `FB.login()` (only forces a password re-entry, doesn't reset granted permissions — tried, reverted same session). **The real cause**: the app was never enrolled as a Meta **Tech Provider** — confirmed directly in Meta's own dashboard (My Apps → Use cases → Connect on WhatsApp → Customize → Become a Partner → Become Tech Provider), which showed "0 of 2 steps complete," and whose own copy states hosting an embedded signup flow is specifically a Tech Provider capability. |
 | | | **In progress, external, pure calendar-time wait**: Independent Tech Provider onboarding was started 2026-09-08. Step 1, Business Verification (business type Sole Proprietorship, business name = owner's legal name, alternative/trade name "Job It Ready", website `https://www.jobitready.com`), is submitted and shows **"In review"** — this is the actual current blocking state, nothing to do but wait for Meta's decision (typically a few business days, sometimes longer). Step 2's two sub-tasks, "Review your app settings" and "Record video documentation," are **not clickable right now** — confirmed evidence that Meta gates App Review's sub-steps behind Business Verification actually being *approved*, not just submitted. |
