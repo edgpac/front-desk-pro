@@ -17,6 +17,57 @@ import {
 import { sendFollowUpNotificationEmail } from "@/lib/notify-server";
 import { lineItemAmount, money } from "@/lib/mock-data";
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Duplicate-lead race mitigation (0019_lead_write_atomicity.sql). The
+// "no open lead found" read below and the eventual lead-creation write are
+// separated by an AI round-trip (several seconds) — long enough for a
+// second, near-simultaneous message from the same customer to also read
+// "no open lead" and create a second one. claimLeadSlot/releaseLeadSlot
+// wrap only the branch that actually creates a brand-new lead; a caller
+// that can't acquire the claim (another request is already handling this
+// phone's first message) polls briefly for that lead to appear via
+// findRecentLeadId, rather than racing to create a duplicate. If nothing
+// appears within the bound, it proceeds exactly as before this fix — never
+// worse than the pre-fix behavior, just no longer better-than-average-case
+// racy for the common, fast-response case.
+async function claimLeadSlot(admin: ReturnType<typeof getAdminClient>, tenantId: string, phone: string): Promise<boolean> {
+  const { data, error } = await admin.rpc("claim_whatsapp_lead_slot", { p_tenant_id: tenantId, p_phone: phone });
+  if (error) {
+    console.error("claim_whatsapp_lead_slot failed, proceeding without the claim:", error.message);
+    return true; // fail open — never block a real conversation over a lock-table hiccup
+  }
+  return Boolean(data);
+}
+
+async function releaseLeadSlot(admin: ReturnType<typeof getAdminClient>, tenantId: string, phone: string): Promise<void> {
+  const { error } = await admin.rpc("release_whatsapp_lead_slot", { p_tenant_id: tenantId, p_phone: phone });
+  if (error) {
+    // Not fatal — p_stale_seconds on the claim RPC bounds how long a
+    // leaked claim can block a later, genuinely new conversation.
+    console.error("release_whatsapp_lead_slot failed:", error.message);
+  }
+}
+
+async function findRecentLeadId(
+  admin: ReturnType<typeof getAdminClient>,
+  tenantId: string,
+  phone: string,
+): Promise<string | null> {
+  const { data } = await admin
+    .from("leads")
+    .select("id")
+    .eq("tenant_id", tenantId)
+    .eq("phone", phone)
+    .gte("created_at", new Date(Date.now() - 2 * 60 * 1000).toISOString())
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  return (data?.id as string | undefined) ?? null;
+}
+
 // Mirrors QuoteFlow.tsx's rendering of the same field — a pure diagnosis
 // visit (nothing else matched yet) needs to say so plainly rather than
 // presenting the visit fee as if it were a completed job price. Any other
@@ -450,6 +501,42 @@ export async function handleInboundWhatsAppMessage(params: {
     );
     return;
   }
+
+  // Duplicate-lead race guard (see claimLeadSlot's own comment above): every
+  // path from here on creates a brand-new lead, so the claim covers the
+  // whole block, released in `finally` regardless of which branch returns.
+  const claimed = await claimLeadSlot(admin, tenant.id, fromPhone);
+  if (!claimed) {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      await sleep(750);
+      const existingId = await findRecentLeadId(admin, tenant.id, fromPhone);
+      if (existingId) {
+        await admin.from("lead_messages").insert({ lead_id: existingId, role: "customer", body });
+        return;
+      }
+    }
+    // Nothing appeared within the bound (the other request is taking
+    // unusually long) — proceed without the claim rather than block this
+    // customer's message indefinitely. No worse than before this fix.
+  }
+  try {
+    await handleFreshQuote({ tenant, fromPhone, body, mediaRef, profileName, channel, adapter, admin });
+  } finally {
+    if (claimed) await releaseLeadSlot(admin, tenant.id, fromPhone);
+  }
+}
+
+async function handleFreshQuote(params: {
+  tenant: InboundWhatsAppTenant;
+  fromPhone: string;
+  body: string;
+  mediaRef: string | undefined;
+  profileName: string | undefined;
+  channel: "WhatsApp";
+  adapter: ChannelAdapter;
+  admin: ReturnType<typeof getAdminClient>;
+}): Promise<void> {
+  const { tenant, fromPhone, body, mediaRef, profileName, channel, adapter, admin } = params;
 
   const { data: priceSheetRows } = await admin
     .from("price_sheet_items")

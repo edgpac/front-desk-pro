@@ -3,6 +3,36 @@ import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { callClaude } from "@/lib/estimate-server";
 import type { MaterialsPolicy, PriceSheetRow, PricingType } from "@/lib/mock-data";
 
+// Same server-side enforcement as estimate-server.ts's isSupportedImageBase64
+// (not imported from there — exporting it previously broke TanStack Start's
+// import-protection check since estimate-server.ts is also imported by
+// client code; duplicating this small, pure, signature-only check is the
+// established fix for that, see getClientIpHash in public-lead-server.ts).
+// This upload path (price-sheet photo extraction) never had this check at
+// all — client-side validation alone (dashboard.price-sheet.tsx) isn't
+// sufficient, since this is a public server function reachable directly.
+export const UNSUPPORTED_IMAGE_MESSAGE = "Please upload a JPG or PNG photo. HEIC photos aren't supported.";
+
+function isSupportedImageBase64(base64: string): boolean {
+  let bytes: Buffer;
+  try {
+    bytes = Buffer.from(base64.slice(0, 24), "base64");
+  } catch {
+    return false;
+  }
+  const isJpeg = bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  const isPng =
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47 &&
+    bytes[4] === 0x0d &&
+    bytes[5] === 0x0a &&
+    bytes[6] === 0x1a &&
+    bytes[7] === 0x0a;
+  return isJpeg || isPng;
+}
+
 type PriceSheetItemRow = {
   id: string;
   task: string;
@@ -168,6 +198,10 @@ export const extractPriceSheetFromImage = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .validator((input: { imageBase64: string; imageMediaType: string }) => input)
   .handler(async ({ data }): Promise<ExtractedPriceSheetItem[]> => {
+    if (!isSupportedImageBase64(data.imageBase64)) {
+      throw new Error(UNSUPPORTED_IMAGE_MESSAGE);
+    }
+
     const prompt = `This image shows a price list or menu of services for a trades/service business.
 
 Extract every distinct service and its price into a JSON array. For each one, determine:

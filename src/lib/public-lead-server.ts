@@ -327,52 +327,48 @@ export const createLead = createServerFn({ method: "POST" })
       data.lineItems,
     );
 
-    const { data: lead, error: leadError } = await admin
-      .from("leads")
-      .insert({
-        tenant_id: tenant.id,
-        customer_name: data.customerName,
-        phone: data.phone,
-        address: data.address,
-        channel: data.channel,
-        photo_url: data.photoUrl ?? null,
-        problem: data.problem,
-        diagnosis: data.diagnosis,
-        confidence: data.confidence,
-        ai_line_items_snapshot: data.lineItems,
-        // P2: mutually exclusive by construction (hasPartiallyDeferredWork
-        // requires real line items, pendingNegotiatedPrice requires zero) —
-        // checked in this order regardless, so a future caller that somehow
-        // set both can never produce the wrong, more-alarming
-        // pending_negotiated_price state for a lead that actually has a
-        // real, priced portion.
-        ...(data.hasPartiallyDeferredWork
-          ? { status: "flagged", flag_type: "partially_priced", flag_reason: PARTIALLY_PRICED_REASON }
-          : data.pendingNegotiatedPrice
-            ? { status: "flagged", flag_type: "pending_negotiated_price", flag_reason: PENDING_NEGOTIATED_PRICE_REASON }
-            : {}),
-      })
-      .select("id")
-      .single();
-    if (leadError || !lead) {
+    // P2: mutually exclusive by construction (hasPartiallyDeferredWork
+    // requires real line items, pendingNegotiatedPrice requires zero) —
+    // checked in this order regardless, so a future caller that somehow set
+    // both can never produce the wrong, more-alarming
+    // pending_negotiated_price state for a lead that actually has a real,
+    // priced portion.
+    const flagFields = data.hasPartiallyDeferredWork
+      ? { status: "flagged", flagType: "partially_priced", flagReason: PARTIALLY_PRICED_REASON }
+      : data.pendingNegotiatedPrice
+        ? { status: "flagged", flagType: "pending_negotiated_price", flagReason: PENDING_NEGOTIATED_PRICE_REASON }
+        : { status: null, flagType: null, flagReason: null };
+
+    // Atomic: both the lead row and its line items commit or roll back
+    // together (0019_lead_write_atomicity.sql) — previously two separate
+    // requests, which could leave a committed lead with no line items if
+    // the second one failed.
+    const { data: leadId, error: leadError } = await admin.rpc("create_lead_with_line_items", {
+      p_tenant_id: tenant.id,
+      p_customer_name: data.customerName,
+      p_phone: data.phone,
+      p_address: data.address,
+      p_channel: data.channel,
+      p_photo_url: data.photoUrl ?? null,
+      p_problem: data.problem,
+      p_diagnosis: data.diagnosis,
+      p_confidence: data.confidence,
+      p_ai_line_items_snapshot: data.lineItems,
+      p_status: flagFields.status,
+      p_flag_type: flagFields.flagType,
+      p_flag_reason: flagFields.flagReason,
+      p_line_items: data.lineItems.map((item, index) => ({
+        description: item.description,
+        qty: item.qty,
+        unit: item.unit,
+        rate: item.rate,
+        sort_order: index,
+      })),
+    });
+    if (leadError || !leadId) {
       throw new Error(`Could not save lead: ${leadError?.message ?? "unknown error"}`);
     }
-
-    if (data.lineItems.length > 0) {
-      const { error: itemsError } = await admin.from("lead_line_items").insert(
-        data.lineItems.map((item, index) => ({
-          lead_id: lead.id,
-          description: item.description,
-          qty: item.qty,
-          unit: item.unit,
-          rate: item.rate,
-          sort_order: index,
-        })),
-      );
-      if (itemsError) {
-        throw new Error(`Could not save line items: ${itemsError.message}`);
-      }
-    }
+    const lead = { id: leadId as string };
 
     const total = lineItemsTotal(data.lineItems);
 
@@ -569,57 +565,57 @@ export const finalizeLeadWithQuote = createServerFn({ method: "POST" })
     // RLS entirely — so the tenant_id match has to be enforced explicitly,
     // right here, as part of the same query that performs the mutation
     // (never a separate check-then-write, which would leave a TOCTOU gap).
-    // A leadId belonging to a different tenant simply matches zero rows.
-    const { data: updatedLead, error: updateError } = await admin
-      .from("leads")
-      .update({
-        // Writing customer_name/phone here too (not just diagnosis/quote
-        // fields) is required for the widget (P1-D): unlike WhatsApp, which
-        // already has a real phone/profile name the moment
-        // createClarifyingLead runs, the widget only collects contact info
-        // at the very end of the flow, after any clarification rounds — so
-        // the row created earlier still has empty placeholders that need
-        // to be filled in here. A no-op for WhatsApp, which already wrote
-        // the same values at createClarifyingLead time.
-        customer_name: data.customerName,
-        phone: data.phone,
-        diagnosis: data.diagnosis,
-        confidence: data.confidence,
-        ai_line_items_snapshot: data.lineItems,
-        // P2: same priority ordering as createLead above.
-        ...(data.hasPartiallyDeferredWork
-          ? { status: "flagged", flag_type: "partially_priced", flag_reason: PARTIALLY_PRICED_REASON }
-          : data.pendingNegotiatedPrice
-            ? { status: "flagged", flag_type: "pending_negotiated_price", flag_reason: PENDING_NEGOTIATED_PRICE_REASON }
-            : {}),
-      })
-      .eq("id", data.leadId)
-      .eq("tenant_id", tenant.id)
-      .select("id")
-      .maybeSingle();
+    // A leadId belonging to a different tenant simply matches zero rows —
+    // update_lead_with_line_items returns null in that case.
+    //
+    // P2: same priority ordering as createLead above. Passing status: null
+    // means "leave status/flag_type/flag_reason untouched" (matching the
+    // original conditional-spread behavior) — see the RPC's own comment in
+    // 0019_lead_write_atomicity.sql.
+    const flagFields = data.hasPartiallyDeferredWork
+      ? { status: "flagged", flagType: "partially_priced", flagReason: PARTIALLY_PRICED_REASON }
+      : data.pendingNegotiatedPrice
+        ? { status: "flagged", flagType: "pending_negotiated_price", flagReason: PENDING_NEGOTIATED_PRICE_REASON }
+        : { status: null, flagType: null, flagReason: null };
+
+    // Atomic: the lead update and its line-item inserts commit or roll back
+    // together (0019_lead_write_atomicity.sql) — previously two separate
+    // requests, which could leave a lead marked "quoted" with no visible
+    // line items if the second one failed.
+    const { data: updatedLeadId, error: updateError } = await admin.rpc("update_lead_with_line_items", {
+      p_lead_id: data.leadId,
+      p_tenant_id: tenant.id,
+      // Writing customer_name/phone here too (not just diagnosis/quote
+      // fields) is required for the widget (P1-D): unlike WhatsApp, which
+      // already has a real phone/profile name the moment
+      // createClarifyingLead runs, the widget only collects contact info at
+      // the very end of the flow, after any clarification rounds — so the
+      // row created earlier still has empty placeholders that need to be
+      // filled in here. A no-op for WhatsApp, which already wrote the same
+      // values at createClarifyingLead time.
+      p_customer_name: data.customerName,
+      p_phone: data.phone,
+      p_diagnosis: data.diagnosis,
+      p_confidence: data.confidence,
+      p_ai_line_items_snapshot: data.lineItems,
+      p_status: flagFields.status,
+      p_flag_type: flagFields.flagType,
+      p_flag_reason: flagFields.flagReason,
+      p_line_items: data.lineItems.map((item, index) => ({
+        description: item.description,
+        qty: item.qty,
+        unit: item.unit,
+        rate: item.rate,
+        sort_order: index,
+      })),
+    });
     if (updateError) {
       throw new Error(`Could not update lead: ${updateError.message}`);
     }
-    if (!updatedLead) {
+    if (!updatedLeadId) {
       // Same generic message as an unrecognized tenant slug — never confirm
       // or deny that a lead with this id exists under a different tenant.
       throw new Error(INTAKE_UNAVAILABLE_MESSAGE);
-    }
-
-    if (data.lineItems.length > 0) {
-      const { error: itemsError } = await admin.from("lead_line_items").insert(
-        data.lineItems.map((item, index) => ({
-          lead_id: data.leadId,
-          description: item.description,
-          qty: item.qty,
-          unit: item.unit,
-          rate: item.rate,
-          sort_order: index,
-        })),
-      );
-      if (itemsError) {
-        throw new Error(`Could not save line items: ${itemsError.message}`);
-      }
     }
 
     const total = lineItemsTotal(data.lineItems);

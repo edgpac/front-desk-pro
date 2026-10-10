@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useAuth } from "@/lib/use-auth";
 import { getMyTenant } from "@/lib/tenant-server";
+import { isSupportedImageFile, UNSUPPORTED_IMAGE_MESSAGE } from "@/lib/image-client";
 import {
   listMyPriceSheet,
   saveMyPriceSheet,
@@ -192,6 +193,10 @@ function PriceSheetPage() {
     if (!file) return;
     if (!user) {
       toast.info("Sign up to upload your own price sheet.");
+      return;
+    }
+    if (!(await isSupportedImageFile(file))) {
+      toast.error(UNSUPPORTED_IMAGE_MESSAGE);
       return;
     }
     setExtracting(true);
