@@ -423,6 +423,7 @@ export const createFlaggedLead = createServerFn({ method: "POST" })
     if (tenantError || !tenant) {
       throw new Error(INTAKE_UNAVAILABLE_MESSAGE);
     }
+    await enforceTenantRateLimit(admin, tenant.id as string, "quote");
     if (!(await hasActiveSubscriptionForOwner(admin, tenant["user_id"] as string))) {
       throw new Error(INTAKE_UNAVAILABLE_MESSAGE);
     }
@@ -666,10 +667,14 @@ export const saveClarificationMessages = createServerFn({ method: "POST" })
 
     const { data: tenant, error: tenantError } = await admin
       .from("tenants")
-      .select("id")
+      .select("id, user_id")
       .eq("slug", data.tenantSlug)
       .single();
     if (tenantError || !tenant) {
+      throw new Error(INTAKE_UNAVAILABLE_MESSAGE);
+    }
+    await enforceTenantRateLimit(admin, tenant.id as string, "quote");
+    if (!(await hasActiveSubscriptionForOwner(admin, tenant["user_id"] as string))) {
       throw new Error(INTAKE_UNAVAILABLE_MESSAGE);
     }
 
@@ -722,10 +727,14 @@ export const finalizeLeadAsOutOfScope = createServerFn({ method: "POST" })
 
     const { data: tenant, error: tenantError } = await admin
       .from("tenants")
-      .select("id")
+      .select("id, user_id")
       .eq("slug", data.tenantSlug)
       .single();
     if (tenantError || !tenant) {
+      throw new Error(INTAKE_UNAVAILABLE_MESSAGE);
+    }
+    await enforceTenantRateLimit(admin, tenant.id as string, "quote");
+    if (!(await hasActiveSubscriptionForOwner(admin, tenant["user_id"] as string))) {
       throw new Error(INTAKE_UNAVAILABLE_MESSAGE);
     }
 
@@ -774,10 +783,14 @@ export const finalizeLeadAsNeedsReview = createServerFn({ method: "POST" })
 
     const { data: tenant, error: tenantError } = await admin
       .from("tenants")
-      .select("id")
+      .select("id, user_id")
       .eq("slug", data.tenantSlug)
       .single();
     if (tenantError || !tenant) {
+      throw new Error(INTAKE_UNAVAILABLE_MESSAGE);
+    }
+    await enforceTenantRateLimit(admin, tenant.id as string, "quote");
+    if (!(await hasActiveSubscriptionForOwner(admin, tenant["user_id"] as string))) {
       throw new Error(INTAKE_UNAVAILABLE_MESSAGE);
     }
 

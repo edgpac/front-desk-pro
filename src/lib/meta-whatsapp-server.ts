@@ -12,10 +12,10 @@ import { sendConnectionFailedNotificationEmail } from "@/lib/notify-server";
 // is imported by whatsapp-conversation-server.ts or api.whatsapp.webhook.tsx
 // — the two channels stay fully independent.
 
-// Exported (along with graphUrl and describeMetaError below) only so the
-// TEMPORARY diagnostic route (src/routes/api.meta-test-exchange.tsx) can
-// build its own redirect_uri experiment without duplicating credential
-// handling. No logic in any of these three functions has changed.
+// Exported (along with graphUrl and describeMetaError below) because
+// whatsapp-templates-server.ts also needs direct Graph API access
+// (listing/creating/deleting message templates) without duplicating
+// credential handling.
 export function getMetaCredentials() {
   const appId = process.env["VITE_META_APP_ID"];
   const appSecret = process.env["META_APP_SECRET"];
@@ -181,6 +181,12 @@ async function subscribeAppToWaba(wabaId: string, accessToken: string): Promise<
   }
 }
 
+// Generic, customer/tenant-facing — never Meta's raw error text (stage
+// name, HTTP status, error_subcode, fbtrace_id). That detail is useful for
+// debugging but is an internal implementation leak if shown to a real
+// business owner; it stays in the server-side console.error calls below.
+const SIGNUP_FAILED_MESSAGE = "Couldn't connect WhatsApp right now. Please try again in a moment.";
+
 export const completeMetaWhatsAppSignup = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .validator((input: { code: string; wabaId: string; phoneNumberId: string }) => input)
@@ -232,12 +238,9 @@ export const completeMetaWhatsAppSignup = createServerFn({ method: "POST" })
       };
     }
 
-    // TEMPORARY diagnostic instrumentation for live Embedded Signup
-    // debugging — stage tracking + verbose [Meta WhatsApp] log lines, and
-    // (below) returning the detailed error to the client instead of a
-    // generic message. Revert once the redirect_uri/FedCM investigation is
-    // resolved: a real customer should never see raw Meta error text.
-    console.log(`[Meta WhatsApp] START tenant=${tenantId}`);
+    // Stage tracking exists purely to make the server-side log line useful
+    // (which step failed) — the stage name and Meta error detail are never
+    // sent back to the client; a tenant only ever sees SIGNUP_FAILED_MESSAGE.
     let stage = "exchangeCodeForToken";
     let accessToken: string;
     let wabaId: string;
@@ -245,24 +248,21 @@ export const completeMetaWhatsAppSignup = createServerFn({ method: "POST" })
     let displayPhoneNumber: string;
     try {
       accessToken = await exchangeCodeForToken(code);
-      console.log(`[Meta WhatsApp] ${stage} ✓`);
 
       stage = "validatePhoneNumberAccess";
       const verified = await validatePhoneNumberAccess(clientWabaId, clientPhoneNumberId, accessToken);
       wabaId = clientWabaId;
       phoneNumberId = clientPhoneNumberId;
       displayPhoneNumber = verified.displayPhoneNumber;
-      console.log(`[Meta WhatsApp] ${stage} ✓ waba_id=${wabaId} phone_number_id=${phoneNumberId}`);
     } catch (err) {
       // Nothing written yet, nothing called on Meta's subscription state —
       // genuinely no partial state at this point, local or external.
+      // Detail (no token/code/secret — describeMetaError only ever extracts
+      // message/type/code/error_subcode/fbtrace_id) is logged server-side
+      // only; the client gets a generic message, never Meta's raw error text.
       const detail = err instanceof Error ? err.message : String(err);
       console.error(`[Meta WhatsApp] ${stage} FAILED for tenant ${tenantId}: ${detail}`);
-      // TEMPORARY: surfacing the real stage + Meta error detail to the
-      // client for live debugging. No token/code/secret is ever in this
-      // string — describeMetaError only ever extracts message/type/code/
-      // error_subcode/fbtrace_id. Revert to a generic message afterward.
-      return { status: "error", message: `[${stage}] ${detail}` };
+      return { status: "error", message: SIGNUP_FAILED_MESSAGE };
     }
 
     // Insert the local row BEFORE calling Meta's subscribed_apps — this is
@@ -303,10 +303,8 @@ export const completeMetaWhatsAppSignup = createServerFn({ method: "POST" })
         .update({ status: "failed", error_reason: `Connected to Meta but webhook subscription failed: ${reason}` })
         .eq("id", connectionRow.id);
       console.error(`[Meta WhatsApp] subscribeAppToWaba FAILED for tenant ${tenantId}: ${reason}`);
-      // TEMPORARY: see note above.
-      return { status: "error", message: `[subscribeAppToWaba] ${reason}` };
+      return { status: "error", message: SIGNUP_FAILED_MESSAGE };
     }
-    console.log(`[Meta WhatsApp] subscribeAppToWaba ✓`);
 
     const { error: updateError } = await admin
       .from("whatsapp_connections")

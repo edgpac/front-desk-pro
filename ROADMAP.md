@@ -2,6 +2,62 @@
 
 Legend: ✅ real and working · 🟡 built, but mocked/disconnected from a real backend · ⬜ not built yet
 
+Last updated: October 12, 2026 — **Auth/authorization audit, three fixes
+shipped.** Full read-only audit of sign-in auth and authorization
+(Supabase Auth flow, `requireSupabaseAuth` coverage, tenant-scoping on
+every server function, RLS across all migrations, the two public
+unauthenticated routes, subscription-gate enforcement, webhook signature
+checks). Overall posture confirmed solid — RLS correctly applied
+everywhere, tenant isolation consistently enforced, no secrets leak
+client-side, webhook signatures all verify with constant-time comparison.
+Three real gaps found and fixed:
+
+1. **Deleted `api.meta-test-exchange.tsx` and `public/meta-test.html`** —
+   the live diagnostic route built to debug the redirect_uri bug
+   (resolved 2026-09-29/10-10), left deployed afterward despite its own
+   code comment saying to delete it. Unauthenticated, spent the real
+   `META_APP_SECRET` on a real Meta OAuth exchange for any caller.
+   `getMetaCredentials`/`graphUrl`/`describeMetaError` stay exported —
+   confirmed genuinely used by `whatsapp-templates-server.ts`, not
+   test-only as the old comment claimed.
+2. **Added `hasActiveSubscriptionForOwner`/`enforceTenantRateLimit` to
+   `createFlaggedLead`, `saveClarificationMessages`,
+   `finalizeLeadAsOutOfScope`, `finalizeLeadAsNeedsReview`**
+   (`public-lead-server.ts`) — these are independently callable by anyone
+   who knows a tenant's slug and a lead id, and previously stayed
+   reachable for a canceled/unsubscribed tenant with no spam throttle,
+   even though `createLead` already gated on both. `createClarifyingLead`
+   and `finalizeLeadWithQuote` have the same subscription-check gap (the
+   audit flagged both) but were deliberately left out of this pass — not
+   requested, kept the fix narrowly scoped.
+3. **`completeMetaWhatsAppSignup` no longer returns Meta's raw error text
+   to tenants** (`meta-whatsapp-server.ts`) — the verbose
+   `[stage] detail`/`[subscribeAppToWaba] reason` messages were explicitly
+   temporary instrumentation for the redirect_uri investigation, never
+   reverted. Now returns one generic `SIGNUP_FAILED_MESSAGE`; the detailed
+   stage/error stays in server-side `console.error` only.
+
+`tsc`/build clean, existing 47-test suite still passing. No Supabase-
+mocking test infrastructure exists in this codebase (both existing test
+files cover pure functions only) — building one to unit-test these four
+admin-client-backed server functions would be a disproportionate addition
+for this scope, so verification here is tsc/build/existing-suite plus a
+live post-deploy check that the deleted route 404s, not new automated
+tests.
+
+**Noted, not fixed — explicitly deferred, same audit**: `saveLeadLineItems`
+(`leads-server.ts`) relies on RLS alone for tenant isolation instead of
+the explicit `tenant_id` check every sibling function in that file uses —
+not currently exploitable, but one risky refactor (swapping in the admin
+client, which other files in this codebase do use elsewhere) away from a
+real cross-tenant write with no defense left. No password-reset flow
+exists at all. No login rate-limiting/lockout beyond Supabase's own
+defaults. `npm audit` shows 4 known high-severity advisories
+(nodemailer/js-yaml/nanoid/source-map-js), already noted as deferred
+before this audit.
+
+---
+
 Last updated: October 10, 2026 (later same day) — **Price-sheet-fidelity
 audit, requested directly after the out-of-scope fix below, to check
 whether similar gaps existed elsewhere.** Read through

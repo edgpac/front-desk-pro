@@ -20,7 +20,6 @@ import { Route as PrivacyRouteImport } from './routes/privacy'
 import { Route as SignupRouteImport } from './routes/signup'
 import { Route as SimulationRouteImport } from './routes/simulation'
 import { Route as TermsRouteImport } from './routes/terms'
-import { Route as ApiMetaTestExchangeRouteImport } from './routes/api.meta-test-exchange'
 import { Route as DashboardIndexRouteImport } from './routes/dashboard.index'
 import { Route as DashboardAnalyticsRouteImport } from './routes/dashboard.analytics'
 import { Route as DashboardLeadsRouteImport } from './routes/dashboard.leads'
@@ -98,11 +97,6 @@ const SimulationRoute = SimulationRouteImport.update({
 const TermsRoute = TermsRouteImport.update({
   id: '/terms',
   path: '/terms',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiMetaTestExchangeRoute = ApiMetaTestExchangeRouteImport.update({
-  id: '/api/meta-test-exchange',
-  path: '/api/meta-test-exchange',
   getParentRoute: () => rootRouteImport,
 } as any)
 const DashboardIndexRoute = DashboardIndexRouteImport.update({
@@ -238,7 +232,6 @@ export interface FileRoutesByFullPath {
   '/signup': typeof SignupRoute
   '/simulation': typeof SimulationRoute
   '/terms': typeof TermsRoute
-  '/api/meta-test-exchange': typeof ApiMetaTestExchangeRoute
   '/dashboard/analytics': typeof DashboardAnalyticsRoute
   '/dashboard/leads': typeof DashboardLeadsRouteWithChildren
   '/dashboard/price-sheet': typeof DashboardPriceSheetRoute
@@ -273,7 +266,6 @@ export interface FileRoutesByTo {
   '/signup': typeof SignupRoute
   '/simulation': typeof SimulationRoute
   '/terms': typeof TermsRoute
-  '/api/meta-test-exchange': typeof ApiMetaTestExchangeRoute
   '/dashboard/analytics': typeof DashboardAnalyticsRoute
   '/dashboard/price-sheet': typeof DashboardPriceSheetRoute
   '/dashboard/whatsapp-guide': typeof DashboardWhatsappGuideRoute
@@ -309,7 +301,6 @@ export interface FileRoutesById {
   '/signup': typeof SignupRoute
   '/simulation': typeof SimulationRoute
   '/terms': typeof TermsRoute
-  '/api/meta-test-exchange': typeof ApiMetaTestExchangeRoute
   '/dashboard/analytics': typeof DashboardAnalyticsRoute
   '/dashboard/leads': typeof DashboardLeadsRouteWithChildren
   '/dashboard/price-sheet': typeof DashboardPriceSheetRoute
@@ -348,7 +339,6 @@ export interface FileRouteTypes {
     | '/signup'
     | '/simulation'
     | '/terms'
-    | '/api/meta-test-exchange'
     | '/dashboard/analytics'
     | '/dashboard/leads'
     | '/dashboard/price-sheet'
@@ -383,7 +373,6 @@ export interface FileRouteTypes {
     | '/signup'
     | '/simulation'
     | '/terms'
-    | '/api/meta-test-exchange'
     | '/dashboard/analytics'
     | '/dashboard/price-sheet'
     | '/dashboard/whatsapp-guide'
@@ -418,7 +407,6 @@ export interface FileRouteTypes {
     | '/signup'
     | '/simulation'
     | '/terms'
-    | '/api/meta-test-exchange'
     | '/dashboard/analytics'
     | '/dashboard/leads'
     | '/dashboard/price-sheet'
@@ -456,7 +444,6 @@ export interface RootRouteChildren {
   SignupRoute: typeof SignupRoute
   SimulationRoute: typeof SimulationRoute
   TermsRoute: typeof TermsRoute
-  ApiMetaTestExchangeRoute: typeof ApiMetaTestExchangeRoute
   QuoteSlugRoute: typeof QuoteSlugRoute
   WidgetSlugRoute: typeof WidgetSlugRoute
   ApiCronKeepAliveRoute: typeof ApiCronKeepAliveRoute
@@ -542,13 +529,6 @@ declare module '@tanstack/react-router' {
       path: '/terms'
       fullPath: '/terms'
       preLoaderRoute: typeof TermsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/meta-test-exchange': {
-      id: '/api/meta-test-exchange'
-      path: '/api/meta-test-exchange'
-      fullPath: '/api/meta-test-exchange'
-      preLoaderRoute: typeof ApiMetaTestExchangeRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/dashboard/': {
@@ -801,7 +781,6 @@ const rootRouteChildren: RootRouteChildren = {
   SignupRoute: SignupRoute,
   SimulationRoute: SimulationRoute,
   TermsRoute: TermsRoute,
-  ApiMetaTestExchangeRoute: ApiMetaTestExchangeRoute,
   QuoteSlugRoute: QuoteSlugRoute,
   WidgetSlugRoute: WidgetSlugRoute,
   ApiCronKeepAliveRoute: ApiCronKeepAliveRoute,
