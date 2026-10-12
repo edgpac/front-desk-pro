@@ -310,7 +310,24 @@ export const saveLeadLineItems = createServerFn({ method: "POST" })
   )
   .middleware([requireSupabaseAuth])
   .handler(async ({ context, data }) => {
-    await getTenantId(context.supabase, context.userId); // confirms this user has a tenant at all
+    const tenantId = await getTenantId(context.supabase, context.userId);
+
+    // Ownership check (defense-in-depth, independent of RLS): lead_line_items
+    // has no tenant_id column of its own, so this can't be a query-level
+    // .eq() on the delete/insert below — same gate-then-mutate shape as
+    // sendLeadReply/saveClarificationMessages use for the identical reason.
+    // RLS already blocks a cross-tenant write here (context.supabase is the
+    // session-scoped client, not the admin client), but this check doesn't
+    // depend on RLS at all, so it still holds if that ever changes.
+    const { data: leadRow, error: leadError } = await context.supabase
+      .from("leads")
+      .select("id")
+      .eq("tenant_id", tenantId)
+      .eq("id", data.leadId)
+      .single();
+    if (leadError || !leadRow) {
+      throw new Error("Lead not found.");
+    }
 
     const { error: deleteError } = await context.supabase
       .from("lead_line_items")
