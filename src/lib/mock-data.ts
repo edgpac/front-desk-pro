@@ -273,7 +273,12 @@ export type PriceSheetRow = {
 
 export function formatPrice(row: Pick<PriceSheetRow, "pricingType" | "priceMin" | "priceMax">, currency = "USD") {
   if (row.pricingType === "hourly") return `${money(row.priceMin, currency)}/hr`;
-  if (row.pricingType === "range" || row.priceMin !== row.priceMax) {
+  // Trust pricingType alone — a "flat" row always displays as a single price,
+  // even if priceMax still holds a stale value from when it was last "range"
+  // (switching the dropdown away from "range" doesn't clear priceMax, so a
+  // leftover priceMin !== priceMax must never override what the owner
+  // actually selected).
+  if (row.pricingType === "range") {
     return `${money(row.priceMin, currency)}–${money(row.priceMax, currency)}`;
   }
   return money(row.priceMin, currency);

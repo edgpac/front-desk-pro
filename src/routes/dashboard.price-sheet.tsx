@@ -310,7 +310,15 @@ function PriceSheetPage() {
                 />
                 <select
                   value={row.pricingType}
-                  onChange={(e) => updateRow(row.id, { pricingType: e.target.value as PricingType })}
+                  onChange={(e) => {
+                    const pricingType = e.target.value as PricingType;
+                    // Leaving "range": clear the stale priceMax back to
+                    // priceMin rather than leaving it sitting unused in the
+                    // data — formatPrice() already ignores it once the type
+                    // isn't "range", but keeping the underlying row clean
+                    // avoids it resurfacing if the type gets flipped back.
+                    updateRow(row.id, pricingType === "range" ? { pricingType } : { pricingType, priceMax: row.priceMin });
+                  }}
                   className="h-10 rounded-sm border border-border-strong bg-background px-2 text-sm"
                   aria-label="Pricing type"
                 >
