@@ -2,7 +2,6 @@ import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { createClient } from "@supabase/supabase-js";
 import { createHash } from "node:crypto";
-import { sendLeadNotificationEmail } from "@/lib/notify-server";
 import { hasActiveSubscriptionForOwner } from "@/lib/entitlements-server";
 import { lineItemsTotal } from "@/lib/mock-data";
 import { validateSubmittedLineItem, type PriceSheetItem } from "@/lib/estimate-server";
@@ -374,23 +373,39 @@ export const createLead = createServerFn({ method: "POST" })
 
     // Notify, but never let a broken inbox block the lead from being saved —
     // same fire-and-forget-with-logging shape as the proven Cabos pattern.
-    void sendLeadNotificationEmail({
-      tenant: { name: tenant.name, email: tenant.email, currency: tenant.currency },
-      lead: {
-        customer: data.customerName,
-        phone: data.phone,
-        address: data.address,
-        channel: data.channel,
-        problem: data.problem,
-        diagnosis: data.diagnosis,
-        confidence: data.confidence,
-        ...(data.isEmergency !== undefined ? { isEmergency: data.isEmergency } : {}),
-        ...(data.pendingNegotiatedPrice !== undefined ? { pendingNegotiatedPrice: data.pendingNegotiatedPrice } : {}),
-        ...(data.hasPartiallyDeferredWork !== undefined ? { hasPartiallyDeferredWork: data.hasPartiallyDeferredWork } : {}),
-      },
-      lineItems: data.lineItems.map((item, index) => ({ id: String(index), ...item })),
-      total,
-    });
+    //
+    // Dynamic import, not a top-level static one: this file is imported
+    // directly by client components (QuoteFlow.tsx, dashboard.leads.index.tsx)
+    // for their server-function RPC stubs. A static `import ... from
+    // "@/lib/notify-server"` at the top of this file pulls nodemailer's whole
+    // module graph (node:os/node:stream) into the dev-server's client bundle
+    // too, even though sendLeadNotificationEmail only ever runs inside this
+    // server function — production is unaffected (the build-time compiler
+    // already splits server-function bodies out of the client bundle
+    // correctly), but `vite dev` serves modules more literally and doesn't
+    // do that same split, causing a real "Class extends value undefined"
+    // crash on any client page that so much as imports this file. Scoping
+    // the import to only this call site keeps it out of the dev client
+    // bundle entirely.
+    void import("@/lib/notify-server").then(({ sendLeadNotificationEmail }) =>
+      sendLeadNotificationEmail({
+        tenant: { name: tenant.name, email: tenant.email, currency: tenant.currency },
+        lead: {
+          customer: data.customerName,
+          phone: data.phone,
+          address: data.address,
+          channel: data.channel,
+          problem: data.problem,
+          diagnosis: data.diagnosis,
+          confidence: data.confidence,
+          ...(data.isEmergency !== undefined ? { isEmergency: data.isEmergency } : {}),
+          ...(data.pendingNegotiatedPrice !== undefined ? { pendingNegotiatedPrice: data.pendingNegotiatedPrice } : {}),
+          ...(data.hasPartiallyDeferredWork !== undefined ? { hasPartiallyDeferredWork: data.hasPartiallyDeferredWork } : {}),
+        },
+        lineItems: data.lineItems.map((item, index) => ({ id: String(index), ...item })),
+        total,
+      }),
+    );
 
     return { id: lead.id as string };
   });
@@ -621,23 +636,26 @@ export const finalizeLeadWithQuote = createServerFn({ method: "POST" })
 
     const total = lineItemsTotal(data.lineItems);
 
-    void sendLeadNotificationEmail({
-      tenant: { name: tenant.name, email: tenant.email, currency: tenant.currency },
-      lead: {
-        customer: data.customerName,
-        phone: data.phone,
-        address: "",
-        channel: data.channel,
-        problem: data.problem,
-        diagnosis: data.diagnosis,
-        confidence: data.confidence,
-        ...(data.isEmergency !== undefined ? { isEmergency: data.isEmergency } : {}),
-        ...(data.pendingNegotiatedPrice !== undefined ? { pendingNegotiatedPrice: data.pendingNegotiatedPrice } : {}),
-        ...(data.hasPartiallyDeferredWork !== undefined ? { hasPartiallyDeferredWork: data.hasPartiallyDeferredWork } : {}),
-      },
-      lineItems: data.lineItems.map((item, index) => ({ id: String(index), ...item })),
-      total,
-    });
+    // Dynamic import — see the matching comment in createLead above for why.
+    void import("@/lib/notify-server").then(({ sendLeadNotificationEmail }) =>
+      sendLeadNotificationEmail({
+        tenant: { name: tenant.name, email: tenant.email, currency: tenant.currency },
+        lead: {
+          customer: data.customerName,
+          phone: data.phone,
+          address: "",
+          channel: data.channel,
+          problem: data.problem,
+          diagnosis: data.diagnosis,
+          confidence: data.confidence,
+          ...(data.isEmergency !== undefined ? { isEmergency: data.isEmergency } : {}),
+          ...(data.pendingNegotiatedPrice !== undefined ? { pendingNegotiatedPrice: data.pendingNegotiatedPrice } : {}),
+          ...(data.hasPartiallyDeferredWork !== undefined ? { hasPartiallyDeferredWork: data.hasPartiallyDeferredWork } : {}),
+        },
+        lineItems: data.lineItems.map((item, index) => ({ id: String(index), ...item })),
+        total,
+      }),
+    );
 
     return { id: data.leadId, total };
   });

@@ -3,7 +3,6 @@ import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { getAdminClient } from "@/lib/public-lead-server";
 import type { InboundWhatsAppTenant } from "@/lib/whatsapp-conversation-server";
-import { sendConnectionFailedNotificationEmail } from "@/lib/notify-server";
 
 // Meta WhatsApp Cloud API — Stage 2B: Embedded Signup + OAuth/token
 // exchange only. No webhook, no inbound/outbound messaging, no templates —
@@ -585,6 +584,18 @@ export async function markConnectionFailed(connectionId: string, reason: string)
   if (before && before["status"] !== "failed") {
     const tenantRow = before["tenants"] as unknown as { name: string; email: string } | null;
     if (tenantRow?.email) {
+      // Dynamic import, not a top-level static one: this file is imported
+      // directly by client components (ConnectWhatsAppMeta.tsx,
+      // WhatsAppStatusLight.tsx) for their server-function RPC stubs. A
+      // static import of notify-server.ts here pulls nodemailer's whole
+      // module graph (node:os/node:stream) into the dev-server's client
+      // bundle too, even though this only ever runs inside this server
+      // function — production is unaffected (the build-time compiler
+      // already splits server-function bodies out of the client bundle),
+      // but `vite dev` serves modules more literally and doesn't do that
+      // same split, causing a real "Class extends value undefined" crash on
+      // any client page that so much as imports this file.
+      const { sendConnectionFailedNotificationEmail } = await import("@/lib/notify-server");
       await sendConnectionFailedNotificationEmail({ tenant: tenantRow, reason });
     }
   }
