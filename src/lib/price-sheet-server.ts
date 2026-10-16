@@ -357,16 +357,31 @@ export const extractPriceSheetFromUrl = createServerFn({ method: "POST" })
 
     let html: string;
     try {
+      // redirect: "manual" — isSafePublicUrl only validated this URL's own
+      // hostname; letting fetch auto-follow a redirect would let a URL that
+      // passes the check 302 to an internal/private address and bypass the
+      // guard entirely (an authenticated tenant could host the redirect
+      // themselves). Treat any redirect as a hard failure rather than
+      // re-validating and following it — this importer has no real need to
+      // support redirecting pages.
       const response = await fetch(data.url, {
         signal: AbortSignal.timeout(10_000),
         headers: { "user-agent": "Mozilla/5.0 (compatible; JobItReadyBot/1.0)" },
+        redirect: "manual",
       });
+      if (response.type === "opaqueredirect" || (response.status >= 300 && response.status < 400)) {
+        throw new Error("That page redirects elsewhere — try the exact final URL instead.");
+      }
       if (!response.ok) {
         throw new Error(`That page returned an error (${response.status}).`);
       }
       html = await response.text();
     } catch (err) {
-      throw new Error(err instanceof Error && err.message.includes("error (") ? err.message : "Couldn't reach that page.");
+      throw new Error(
+        err instanceof Error && (err.message.includes("error (") || err.message.includes("redirects elsewhere"))
+          ? err.message
+          : "Couldn't reach that page.",
+      );
     }
 
     const text = htmlToText(html).slice(0, MAX_PAGE_TEXT_LENGTH);
