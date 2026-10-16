@@ -2,6 +2,78 @@
 
 Legend: ✅ real and working · 🟡 built, but mocked/disconnected from a real backend · ⬜ not built yet
 
+Last updated: October 13, 2026 — **Self-service password reset shipped,
+`saveLeadLineItems` ownership fix shipped, a real dev-only crash fixed at
+its root cause, a price-sheet display bug fixed, and production email
+delivery moved off Supabase's default sender.**
+
+1. **`saveLeadLineItems` explicit tenant-ownership check** (commit
+   `5aa5644`) — the one LOW finding left over from the auth audit. Added
+   the same gate-then-mutate ownership check its sibling functions
+   (`sendLeadReply`, `saveClarificationMessages`) already use, so it no
+   longer relies on RLS alone. Not previously exploitable, but one risky
+   future refactor away from being a real hole — now closed regardless.
+2. **Self-service password reset** (commit `bbe9cc4`) — `/forgot-password`
+   and `/reset-password`, a "Forgot password?" link on `/login`. No prior
+   reset flow existed at all. `getSession()` on mount (not a race against
+   `PASSWORD_RECOVERY`) reliably recognizes a valid recovery link, same
+   guarantee `use-auth.ts` already relies on elsewhere. Verified live,
+   end to end, against the real Supabase project: request → real email
+   received → link clicked → working form → password updated → logged in
+   with the new password. Separately verified the invalid/expired-link
+   state.
+3. **Production email now goes through Resend, not Supabase's default
+   sender** (dashboard config, no code) — `jobitready.com` verified on
+   Resend (DKIM/SPF via GoDaddy), custom SMTP enabled in Supabase
+   (`smtp.resend.com`, sender `noreply@jobitready.com`). This was
+   required, not optional: Supabase's default sender is rate-limited and
+   in practice only proved reliable for org team-member addresses — a
+   real signup's confirmation/reset email was not provably reachable
+   before this. Verified live: a reset email to a non-team-member address
+   arrived correctly branded as "Job It Ready <noreply@jobitready.com>".
+   Also corrected two stale Supabase Auth settings discovered during this
+   same testing: **Redirect URLs** didn't include `jobitready.com` at
+   all (only the default Vercel preview URL), and **Site URL** was still
+   pointed at that same stale Vercel URL instead of the real domain —
+   both fixed in the dashboard.
+   **Still off, deliberately**: "Confirm email." Recommended to stay off
+   until a non-team-member signup-confirmation send (not just
+   password-reset) is verified through the new Resend setup — enabling it
+   prematurely risks permanently locking out a real signup whose
+   confirmation email doesn't arrive. No code changes needed either way;
+   `signup.tsx` already handles both states.
+4. **Fixed a real local-dev-only crash at its root cause, not worked
+   around** (commit `0ede85e`) — `public-lead-server.ts` and
+   `meta-whatsapp-server.ts` both had a static top-level import of
+   `notify-server.ts` (pulls in `nodemailer`), used only deep inside one
+   function each, while the rest of each file is legitimately imported by
+   real client components (`QuoteFlow.tsx`, `dashboard.leads.index.tsx`,
+   `ConnectWhatsAppMeta.tsx`, `WhatsAppStatusLight.tsx`). Production was
+   never affected (the build-time compiler already splits server-function
+   bodies out of the client bundle), but `vite dev` serves modules more
+   literally and doesn't do that same split, so the dev client bundle
+   requested nodemailer's whole module graph and crashed with `Class
+   extends value undefined is not a constructor` on any client page that
+   so much as imported one of these files — confirmed live on both
+   `/dashboard` and `/reset-password` during this session's testing.
+   Converted both to dynamic imports scoped to the one function that
+   actually needs them. Confirmed fixed after a dev-server restart.
+5. **Price-sheet summary showing a range for flat-priced rows** (commit
+   `592552f`) — `formatPrice()` displayed a range whenever `priceMin !==
+   priceMax`, regardless of the row's actual `pricingType`, so a row
+   left over from an import or a prior "Range" setting kept showing e.g.
+   "$130–$180" after switching the dropdown to "Flat." Now trusts
+   `pricingType` alone; switching the dropdown away from "range" also
+   resets `priceMax` to `priceMin` so the stale value can't resurface.
+
+`tsc`/build clean and the existing 47-test suite passing after every
+change above. All five confirmed deployed to production (items 1–4
+functionally live-verified during this session; item 5's deploy was
+confirmed via the Vercel API but not re-tested live in the dashboard
+after deploying).
+
+---
+
 Last updated: October 12, 2026 — **Auth/authorization audit, three fixes
 shipped.** Full read-only audit of sign-in auth and authorization
 (Supabase Auth flow, `requireSupabaseAuth` coverage, tenant-scoping on
@@ -45,16 +117,16 @@ for this scope, so verification here is tsc/build/existing-suite plus a
 live post-deploy check that the deleted route 404s, not new automated
 tests.
 
-**Noted, not fixed — explicitly deferred, same audit**: `saveLeadLineItems`
-(`leads-server.ts`) relies on RLS alone for tenant isolation instead of
-the explicit `tenant_id` check every sibling function in that file uses —
-not currently exploitable, but one risky refactor (swapping in the admin
-client, which other files in this codebase do use elsewhere) away from a
-real cross-tenant write with no defense left. No password-reset flow
-exists at all. No login rate-limiting/lockout beyond Supabase's own
-defaults. `npm audit` shows 4 known high-severity advisories
-(nodemailer/js-yaml/nanoid/source-map-js), already noted as deferred
-before this audit.
+**Noted, not fixed at the time — both since resolved, see October 13
+entry above**: `saveLeadLineItems` (`leads-server.ts`) relied on RLS
+alone for tenant isolation instead of the explicit `tenant_id` check
+every sibling function in that file uses (fixed commit `5aa5644`); no
+password-reset flow existed at all (built commit `bbe9cc4`). **Still
+genuinely open**: no login rate-limiting/lockout beyond Supabase's own
+defaults. `npm audit` shows 5 known high-severity advisories
+(nodemailer ×2/js-yaml/nanoid/source-map-js) — corrected count, matches
+the "5" already noted further down in this file; "4" here was simply
+wrong when first written, not a count that changed.
 
 ---
 
@@ -536,16 +608,24 @@ that day's session, most recent first.
    question always lands on the same scripted result). **Committed and
    pushed, commit `f03c6da`** — live at `/simulation` once that deploy
    completed.
-7. **Still open, not yet addressed** (from the audit in point 1, not
-   urgent but real): the public `/quote/:slug` and widget endpoints
-   (`createLead`, `finalizeLeadWithQuote`) have no rate limiting (unlike
-   `/demo`, which has a durable per-IP budget) and accept
+7. ~~**Still open, not yet addressed**~~ **Resolved by later work — this
+   entire point is stale.** At the time this was written: the public
+   `/quote/:slug` and widget endpoints (`createLead`,
+   `finalizeLeadWithQuote`) had no rate limiting and accepted
    `lineItems`/`confidence`/`diagnosis` with no re-validation against the
-   tenant's actual price sheet — a crafted request could inject a
-   fabricated "AI quote" as if genuine. No per-tenant AI cost ceiling
-   exists (only the same leaky, per-instance, shared in-memory
-   `withinRateLimit()` counter). Zero automated tests exist anywhere in
-   the repo. Full detail in the audit already relayed to the user.
+   tenant's actual price sheet, no per-tenant AI cost ceiling existed
+   (only the leaky, per-instance, shared in-memory `withinRateLimit()`
+   counter), and zero automated tests existed anywhere in the repo. All
+   four are now false: `createLead`/`finalizeLeadWithQuote` both call
+   `enforceTenantRateLimit` and `validateLineItemsAgainstPriceSheet`
+   (the "P0 security fix" comments marking this are right in
+   `public-lead-server.ts`); `getQuoteEstimate`/`getFollowUpAnswer` call
+   a real durable per-tenant `enforceTenantAiLimit` alongside the old
+   global counter, not instead of fixing it; and the test suite has 47
+   passing tests across `estimate-server.test.ts` and
+   `whatsapp-conversation-server.test.ts`. Left here, corrected in place
+   rather than deleted, so the "before" half of this file's own stated
+   purpose (the trail of what was found and fixed) stays intact.
 8. **Unresolved question, blocked on an image-viewing limit in the
    current chat**: the user reported "there's no garbage disposal
    connected to this price sheet" — likely a missing
@@ -776,7 +856,7 @@ not.
 | Auth / sessions | ✅ | Real Supabase Auth — `src/integrations/supabase/` (client, server-side `requireSupabaseAuth` middleware for gating server functions, client-side `attachSupabaseAuth` that auto-attaches the session token to every server-function call). Ported from a working pattern in the `buildraid` repo, wired to FrontDesk's **own**, separate Supabase project — not shared with any other app. |
 | Database | ✅ core tables · 🟡 not everything reads from it yet | `supabase/migrations/0001_init.sql` defines `tenants`, `price_sheet_items`, `leads`, `lead_line_items`, `lead_messages` — all RLS-scoped to the signed-in user's own tenant, with a trigger that auto-creates a tenant row on signup (no onboarding wizard needed just to get *a* tenant to read/write). `0002_whatsapp.sql`/`0003_whatsapp_connections.sql` add WhatsApp routing (see the WhatsApp row above). `0004_business_capabilities.sql` (`tenant_capabilities` — applied and verified) and `0005_field_notes.sql` (`field_notes` — applied and verified, application layer not built yet) are new this pass — see Phase 1.5 below. `src/lib/tenant-server.ts`, `price-sheet-server.ts`, `leads-server.ts`, `capabilities-server.ts` are the auth-gated server functions the dashboard pages above call. Not yet wired to the database: the AI's live pricing input (`estimate-server.ts` still uses `SAMPLE_PRICE_SHEET`, since `/demo` isn't tenant-scoped yet — see Phase 1, step 9 below). |
 | Billing (Stripe) | ✅ | Real Checkout session creation, a real Billing Portal session, and real payment-method/invoice reads (`src/lib/stripe-server.ts`, auth-gated) plus a real webhook (`src/routes/api.stripe.webhook.tsx`) that verifies Stripe's signature and records the plan on the user via Supabase's admin API. Subscription status lives in Supabase `user_metadata` for now — a real `subscriptions` table is worth it once the rest of the data model exists, but wasn't needed to make this real. |
-| Email notifications | ✅ mechanism · 🟡 not triggered by anything real yet | `src/lib/notify-server.ts`'s `sendLeadNotificationEmail` — ported directly from Cabos Handyman's own working `api/send-booking-email.js` (same nodemailer + Gmail App Password approach, same HTML-escaping of user-supplied text before interpolation). Fires the moment a lead is created, not gated behind an actual confirmed booking — same real pattern Cabos already uses in production. Needs `NOTIFICATION_FROM_EMAIL` + `EMAIL_APP_PASSWORD` set (a Gmail account + an App Password, not a real password — no Meta-style business verification needed, this is the easy piece). SMS still doesn't exist. |
+| Email notifications | ✅ real, wired to real callers | `src/lib/notify-server.ts`'s `sendLeadNotificationEmail` — ported directly from Cabos Handyman's own working `api/send-booking-email.js` (same nodemailer + Gmail App Password approach, same HTML-escaping of user-supplied text before interpolation). Fires the moment a lead is created (`createLead`, `finalizeLeadWithQuote` in `public-lead-server.ts`), not gated behind an actual confirmed booking — same real pattern Cabos already uses in production. **Corrected 2026-10-13**: the status tag previously said "not triggered by anything real yet," contradicting this entry's own next sentence — confirmed this session (via a dynamic-import fix to the same call sites) that both callers are real, live production code paths, not stubs. Needs `NOTIFICATION_FROM_EMAIL` + `EMAIL_APP_PASSWORD` set (a Gmail account + an App Password) — unverified whether these are actually set in production, not re-checked this pass. SMS still doesn't exist. |
 | Legal pages (Privacy Policy, Terms) | ✅ | `/privacy` and `/terms` now exist as real pages; footer's old "Austin, Texas" line replaced with links to both. |
 | Customer-facing "remote estimate" disclaimer | ✅ | Every place a customer actually receives a price — the proposal document (`BusinessDocument.tsx`), the WhatsApp webhook's two outbound quote messages, and the dashboard's auto-drafted suggested reply (English + Spanish, `reply-composer.ts`) — now states the price is estimated from photos/description and may change after an on-site inspection. Deliberately not added to invoices/receipts (confirmed work, not an estimate) or internal-only displays. |
 
