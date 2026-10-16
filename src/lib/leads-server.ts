@@ -158,11 +158,18 @@ export const getMyLead = createServerFn({ method: "GET" })
   });
 
 // CSV escaping — wrap in quotes if the value contains a comma, quote, or
-// newline; double any internal quotes. Minimal but correct for the plain
-// text fields leads actually have (no formulas/injection-relevant content).
-function csvField(value: string): string {
-  if (/[",\n]/.test(value)) return `"${value.replace(/"/g, '""')}"`;
-  return value;
+// newline; double any internal quotes. Every field here is customer-
+// supplied (name/phone/address/problem come straight from a public lead
+// form or a WhatsApp message, never validated against a safe-character
+// set), so a value starting with =, +, -, or @ is also neutralized with a
+// leading apostrophe — otherwise Excel/Google Sheets would interpret it as
+// a formula the moment the business owner opens this export, a known CSV-
+// injection class (CWE-1236), not a hypothetical one given these fields'
+// real provenance.
+export function csvField(value: string): string {
+  const neutralized = /^[=+\-@]/.test(value) ? `'${value}` : value;
+  if (/[",\n]/.test(neutralized)) return `"${neutralized.replace(/"/g, '""')}"`;
+  return neutralized;
 }
 
 // Crew-only (see entitlements-server.ts). Enforced here, server-side, on

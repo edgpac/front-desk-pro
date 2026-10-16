@@ -98,7 +98,7 @@ export function DashboardShell() {
         // tenant fetch is broken.
       });
     // Same authoritative check entitlements/billing already use (Supabase
-    // user_metadata, subscriptionStatus === "active") — no Stripe calls,
+    // app_metadata, subscriptionStatus === "active") — no Stripe calls,
     // no separate logic, just the plan half of what getMyBillingInfo
     // returns, so the sidebar can't disagree with the billing page.
     getMyPlanSummary()

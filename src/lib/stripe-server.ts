@@ -18,6 +18,34 @@ const PLAN_LABEL: Record<"solo" | "crew", string> = {
   crew: "Job It Ready Crew",
 };
 
+// Reverse of PLAN_PRICE_CENTS — lifecycle events (renewals, plan changes,
+// cancellations) carry a Subscription object with a real unit_amount, but
+// no guarantee of a fresh, accurate `plan` metadata field the way a brand
+// new checkout does. Matching on price is the source of truth; metadata is
+// only a fallback. Exported so api.stripe.webhook.tsx and the one-time
+// reconciliation script (scripts/reconcile-subscription-metadata.ts) share
+// exactly one definition of "how do we compute a plan from a real Stripe
+// subscription" rather than risking the two drifting apart.
+const PRICE_CENTS_TO_PLAN = Object.fromEntries(
+  Object.entries(PLAN_PRICE_CENTS).map(([plan, cents]) => [cents, plan as "solo" | "crew"]),
+) as Record<number, "solo" | "crew">;
+
+export function resolvePlanFromSubscription(subscription: Stripe.Subscription): "solo" | "crew" | null {
+  const price = subscription.items.data[0]?.price;
+  // createCheckoutSession always creates sessions in "usd" — this check
+  // exists so a same-numbered amount in a different currency (e.g. a
+  // subscription created directly in the Stripe dashboard, or a future
+  // multi-currency path) can never be silently misread as a real plan by
+  // coincidence of cents alone. Nothing in this app currently creates a
+  // non-USD subscription, but unit_amount is a bare integer with no
+  // currency dimension of its own, so this guard costs nothing and removes
+  // a latent (if currently unreachable) ambiguity.
+  const matchedPlan = price?.currency === "usd" && price.unit_amount != null ? PRICE_CENTS_TO_PLAN[price.unit_amount] : undefined;
+  if (matchedPlan) return matchedPlan;
+  const metaPlan = subscription.metadata?.["plan"];
+  return metaPlan === "solo" || metaPlan === "crew" ? metaPlan : null;
+}
+
 function getStripe(): Stripe {
   const key = process.env["STRIPE_SECRET_KEY"];
   if (!key) {
@@ -50,7 +78,17 @@ export const createCheckoutSession = createServerFn({ method: "POST" })
     // create carries metadata.userId, which is how the webhook resolves
     // lifecycle events (renewals, cancellations, failed payments — anything
     // that isn't the checkout flow itself) back to this Supabase user.
-    let customerId = userData.user.user_metadata?.["stripeCustomerId"] as string | undefined;
+    // Read from subscription_state (the authoritative table, RLS-scoped to
+    // the caller's own row), not app_metadata — see entitlements-server.ts's
+    // note. A client-forged stripeCustomerId used to let an attacker point
+    // this (and getMyBillingInfo/createBillingPortalSession below) at an
+    // arbitrary real Stripe customer; only server code holding the
+    // service-role key can ever write this table.
+    const { data: stateRow } = await context.supabase
+      .from("subscription_state")
+      .select("stripe_customer_id")
+      .maybeSingle();
+    let customerId = stateRow?.stripe_customer_id ?? undefined;
     if (!customerId) {
       const customer = await stripe.customers.create({
         email: userData.user.email,
@@ -112,23 +150,25 @@ export type BillingInfo = {
   invoices: Array<{ id: string; date: string; amount: string; plan: string; hostedUrl: string | null }>;
 };
 
-// api.stripe.webhook.tsx writes {plan, subscriptionStatus, stripeCustomerId}
-// onto the Supabase auth user's own metadata on checkout.session.completed —
-// this is the read side of that, which nothing called until now (billing
-// settings just showed hardcoded mock invoices regardless of whether anyone
-// had actually subscribed).
+// write_authoritative_subscription_state writes {plan, subscription_status,
+// stripe_customer_id} into subscription_state on checkout.session.completed
+// and every other subscription lifecycle event — this is the read side of
+// that, via the caller's own RLS-scoped client (not app_metadata — see
+// entitlements-server.ts's note).
 export const getMyBillingInfo = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }): Promise<BillingInfo> => {
-    const { data: userData, error } = await context.supabase.auth.getUser();
-    if (error || !userData?.user) {
+    const { data: stateRow, error } = await context.supabase
+      .from("subscription_state")
+      .select("plan, subscription_status, stripe_customer_id")
+      .maybeSingle();
+    if (error) {
       throw new Error("Couldn't read your account — try logging in again.");
     }
 
-    const metadata = userData.user.user_metadata ?? {};
-    const plan = (metadata["plan"] as "solo" | "crew" | undefined) ?? null;
-    const subscriptionStatus = (metadata["subscriptionStatus"] as string | undefined) ?? null;
-    const stripeCustomerId = metadata["stripeCustomerId"] as string | undefined;
+    const plan = (stateRow?.plan as "solo" | "crew" | null | undefined) ?? null;
+    const subscriptionStatus = stateRow?.subscription_status ?? null;
+    const stripeCustomerId = stateRow?.stripe_customer_id ?? undefined;
 
     if (!stripeCustomerId) {
       return { plan, subscriptionStatus, paymentMethod: null, invoices: [] };
@@ -170,8 +210,12 @@ export const getMyBillingInfo = createServerFn({ method: "GET" })
 export const createBillingPortalSession = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }) => {
-    const { data: userData, error } = await context.supabase.auth.getUser();
-    const stripeCustomerId = userData?.user?.user_metadata?.["stripeCustomerId"] as string | undefined;
+    // subscription_state, not app_metadata — see entitlements-server.ts's note.
+    const { data: stateRow, error } = await context.supabase
+      .from("subscription_state")
+      .select("stripe_customer_id")
+      .maybeSingle();
+    const stripeCustomerId = stateRow?.stripe_customer_id ?? undefined;
     if (error || !stripeCustomerId) {
       throw new Error("No billing account on file yet — pick a plan first.");
     }

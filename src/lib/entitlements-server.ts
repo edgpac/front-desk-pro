@@ -15,27 +15,69 @@ const PLAN_FEATURES: Record<PlanId, Record<Feature, boolean>> = {
   crew: { csvExport: true },
 };
 
-type SubscriptionMeta = { plan?: string; subscriptionStatus?: string };
+export type SubscriptionMeta = { plan?: string; subscriptionStatus?: string; stripeCustomerId?: string };
 
+// 2026-10 security audit, revised twice since the original fix:
+//
+// Part 1 (HIGH finding): subscription state used to be read from
+// `user_metadata`, which Supabase's own Auth API lets any signed-in user
+// freely rewrite on themselves (`supabase.auth.updateUser({ data: {...}
+// })`) — a documented, intentional GoTrue capability, not a bug in this
+// app, but one that makes `user_metadata` unusable for anything
+// authorization-sensitive.
+//
+// Fifth pass (this revision): moved off `app_metadata` too, onto the
+// `subscription_state` table (0023_subscription_state.sql). `app_metadata`
+// was the correct fix for the client-write problem (only service-role code
+// can write it), but writing it went through Supabase's GoTrue Admin
+// HTTP API, which has no conditional/atomic write primitive — a separate
+// review found a real race where a worker that had lost ownership of its
+// processing claim could still complete a stale write afterward (see that
+// migration's comment for the full mechanism). `subscription_state` is
+// written only by `write_authoritative_subscription_state`, a Postgres
+// function that performs the ownership check and the write together, under
+// a row lock, in one call — not two sequential steps a concurrent worker
+// could land between. `app_metadata` is kept only as a best-effort,
+// explicitly non-authoritative mirror (for visibility in the Supabase Auth
+// dashboard) — nothing in this file, or anywhere else, reads it for an
+// entitlement decision anymore.
+//
 // The one authoritative definition of "does this JIR account have an active
-// subscription" — written by api.stripe.webhook.tsx on checkout, renewals,
-// cancellations, failed payments, and plan changes. subscriptionStatus must
-// be exactly "active"; anything else (or missing entirely — canceled,
-// past_due, unpaid, never subscribed) has none. Every check in this file,
-// and anything gating the public quote/widget intake by subscription state,
-// goes through this — never a second, separately-maintained copy of the rule.
-function isActiveSubscriptionMeta(meta: SubscriptionMeta): meta is { plan: PlanId; subscriptionStatus: "active" } {
+// subscription." subscriptionStatus must be exactly "active"; anything else
+// (or missing entirely — canceled, past_due, unpaid, incomplete, paused,
+// never subscribed) has none. Every check in this file, and anything gating
+// the public quote/widget intake by subscription state, goes through this —
+// never a second, separately-maintained copy of the rule.
+export function isActiveSubscriptionMeta(meta: SubscriptionMeta): meta is { plan: PlanId; subscriptionStatus: "active" } {
   if (meta.subscriptionStatus !== "active") return false;
   return meta.plan === "solo" || meta.plan === "crew";
 }
 
-// Reads the authenticated user's real, current plan straight from their own
-// Supabase auth metadata — never trusts anything a client claims about its
-// own plan.
+type SubscriptionStateRow = { plan: string | null; subscription_status: string | null };
+
+function metaFromRow(row: SubscriptionStateRow | null): SubscriptionMeta {
+  // Missing or ambiguous state fails closed: a null row, a null plan, or
+  // any subscriptionStatus other than exactly "active" all produce a
+  // SubscriptionMeta that isActiveSubscriptionMeta rejects — there is no
+  // path here that infers or assumes access from an incomplete record.
+  if (!row) return {};
+  return {
+    ...(row.plan != null ? { plan: row.plan } : {}),
+    ...(row.subscription_status != null ? { subscriptionStatus: row.subscription_status } : {}),
+  };
+}
+
+// Reads the authenticated user's real, current plan straight from the
+// authoritative subscription_state table — via the caller's own RLS-scoped
+// client (the table's one SELECT policy is `auth.uid() = user_id`, so this
+// query is automatically scoped to the caller's own row; no separate
+// auth.getUser() call is needed just to establish identity). Never trusts
+// anything a client claims about its own plan, and never reads
+// user_metadata or app_metadata for this (see note above).
 export async function getMyPlan(supabase: SupabaseClient): Promise<PlanId | null> {
-  const { data, error } = await supabase.auth.getUser();
-  if (error || !data.user) return null;
-  const meta = data.user.user_metadata as SubscriptionMeta;
+  const { data, error } = await supabase.from("subscription_state").select("plan, subscription_status").maybeSingle();
+  if (error) return null;
+  const meta = metaFromRow(data as SubscriptionStateRow | null);
   return isActiveSubscriptionMeta(meta) ? meta.plan : null;
 }
 
@@ -44,11 +86,16 @@ export async function getMyPlan(supabase: SupabaseClient): Promise<PlanId | null
 // session to read the tenant owner's plan from the normal way. Takes an
 // already-created admin (service-role) client rather than creating its own,
 // so callers that already have one (public-lead-server.ts's getAdminClient)
-// don't need a second Supabase client per request.
+// don't need a second Supabase client per request. service_role bypasses
+// RLS, so this reads any user's row directly by id.
 export async function hasActiveSubscriptionForOwner(admin: SupabaseClient, userId: string): Promise<boolean> {
-  const { data, error } = await admin.auth.admin.getUserById(userId);
-  if (error || !data?.user) return false;
-  return isActiveSubscriptionMeta(data.user.user_metadata as SubscriptionMeta);
+  const { data, error } = await admin
+    .from("subscription_state")
+    .select("plan, subscription_status")
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (error) return false;
+  return isActiveSubscriptionMeta(metaFromRow(data as SubscriptionStateRow | null));
 }
 
 // Convenience wrapper for callers that only have a tenant slug and haven't
