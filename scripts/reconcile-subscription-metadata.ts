@@ -1,14 +1,40 @@
 // One-time (re-runnable) reconciliation / backfill for the 2026-10
 // security-audit fix. Subscription state has moved twice: first from
 // client-writable `user_metadata` to service-role-only `app_metadata`,
-// and now (this revision) from `app_metadata` to the authoritative
-// `subscription_state` table (0023_subscription_state.sql) — written
-// going forward only via write_authoritative_subscription_state's atomic,
-// claim-fenced Postgres function (see api.stripe.webhook.tsx). This
-// script does NOT go through that function: it's a one-time, offline
-// batch backfill, not a live webhook delivery racing concurrent workers,
-// so it writes subscription_state directly via the service-role client
-// (which bypasses RLS) rather than needing a claim token.
+// and now from `app_metadata` to the authoritative `subscription_state`
+// table (0023_subscription_state.sql).
+//
+// SIXTH PASS: this script's write path used to be a plain, unconditional
+// `subscription_state` upsert based on a Stripe snapshot captured during
+// an earlier bulk pass — found in review to be racy against a live
+// webhook: if a webhook wrote a newer state for some user after this
+// script's bulk fetch but before this script's write for that same user,
+// this script could silently overwrite the newer state with its stale
+// snapshot. Fixed by reusing the exact same claim-fenced write path the
+// webhook uses (`writeSubscriptionState`, imported from
+// api.stripe.webhook.tsx, verified importable from a plain `bun run`
+// script context, not just inside the Vite/vitest pipeline — this was
+// checked empirically before relying on it, not assumed) — this script's
+// writes are now serialized against any concurrent webhook write for the
+// same user via the same per-user claim, and the data actually written is
+// re-fetched fresh from Stripe at write time, not the earlier bulk
+// snapshot. The bulk pass (`buildCustomerIndex`) is still used, but only
+// to decide cheaply which users even need attention — the authoritative
+// numbers for each write come from a fresh re-fetch under the claim,
+// exactly mirroring how a live webhook event is processed. See
+// `reconcileOneUser` below for the exact mechanism, and
+// `writeSubscriptionState`'s own comment (api.stripe.webhook.tsx) for why
+// this closes the race structurally rather than narrowing it.
+//
+// Also SIXTH PASS: `admin`/`stripe` are no longer module-level singletons
+// baked into every function — every function that needs them now takes
+// them as parameters, and the full orchestration loop
+// (`runReconciliation`) is its own function `main()` just calls with the
+// real ones. This is a dependency-injection refactor only, not a
+// behavior change: it's what makes the orchestration (pagination,
+// idempotency, partial-failure recovery) testable with fake clients
+// instead of only the pure decision functions being testable — see
+// reconcile-subscription-metadata.test.ts.
 //
 // This script does NOT copy existing user_metadata OR app_metadata values
 // into subscription_state — either may have been set by a user calling
@@ -51,9 +77,15 @@
 // conflicting subscription state) are never guessed at — they're reported
 // under "flagged for manual review" and left untouched.
 
-import { createClient } from "@supabase/supabase-js";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
 import { resolvePlanFromSubscription } from "../src/lib/stripe-server";
+import {
+  writeSubscriptionState,
+  LockUnavailableError,
+  ClaimLostError,
+  AuthoritativeWriteError,
+} from "../src/routes/api.stripe.webhook";
 
 const APPLY = process.argv.includes("--apply");
 
@@ -66,18 +98,13 @@ function requireEnv(name: string): string {
   return value;
 }
 
-const SUPABASE_URL = requireEnv("SUPABASE_URL");
-const SUPABASE_SERVICE_ROLE_KEY = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
-const STRIPE_SECRET_KEY = requireEnv("STRIPE_SECRET_KEY");
-
-const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-  auth: { persistSession: false, autoRefreshToken: false },
-});
-const stripe = new Stripe(STRIPE_SECRET_KEY);
-
 export type ComputedState = {
   plan: "solo" | "crew" | null;
-  subscriptionStatus: string | null;
+  // Never actually null: a real Stripe subscription's .status is always a
+  // string, and subscription_state.subscription_status is `not null` in
+  // the schema (0023_subscription_state.sql) — typed non-nullable to match
+  // both, not just defensively widened.
+  subscriptionStatus: string;
   stripeCustomerId: string;
 };
 
@@ -94,11 +121,13 @@ export type Outcome =
 // Search API access, and avoiding Search API's eventual-consistency window
 // entirely removes a class of "ran right after a real signup, missed it"
 // bug.
-async function buildCustomerIndex(): Promise<Map<string, Stripe.Customer[]>> {
+export async function buildCustomerIndex(
+  stripeClient: Stripe,
+): Promise<Map<string, Stripe.Customer[]>> {
   const index = new Map<string, Stripe.Customer[]>();
   let startingAfter: string | undefined;
   for (;;) {
-    const page = await stripe.customers.list({
+    const page = await stripeClient.customers.list({
       limit: 100,
       ...(startingAfter ? { starting_after: startingAfter } : {}),
     });
@@ -196,7 +225,9 @@ export async function computeStateForCustomers(
 // rationale as buildCustomerIndex: one query instead of one per user.
 // service_role bypasses RLS, so this sees every user's row regardless of
 // subscription_state's owner-only SELECT policy.
-async function buildExistingStateIndex(): Promise<Map<string, ComputedState>> {
+export async function buildExistingStateIndex(
+  admin: SupabaseClient,
+): Promise<Map<string, ComputedState>> {
   const index = new Map<string, ComputedState>();
   let from = 0;
   const pageSize = 1000;
@@ -206,13 +237,12 @@ async function buildExistingStateIndex(): Promise<Map<string, ComputedState>> {
       .select("user_id, plan, subscription_status, stripe_customer_id")
       .range(from, from + pageSize - 1);
     if (error) {
-      console.error("Could not read existing subscription_state rows:", error.message);
-      process.exit(1);
+      throw new Error(`Could not read existing subscription_state rows: ${error.message}`);
     }
     for (const row of data ?? []) {
       index.set(row["user_id"] as string, {
         plan: row["plan"] as "solo" | "crew" | null,
-        subscriptionStatus: row["subscription_status"] as string | null,
+        subscriptionStatus: row["subscription_status"] as string,
         stripeCustomerId: row["stripe_customer_id"] as string,
       });
     }
@@ -222,51 +252,121 @@ async function buildExistingStateIndex(): Promise<Map<string, ComputedState>> {
   return index;
 }
 
-// Best-effort, non-blocking mirror into app_metadata — same posture as
-// api.stripe.webhook.tsx's mirrorToAppMetadata. Never affects the script's
-// own success/failure accounting; a mirror failure is logged and ignored.
-async function mirrorToAppMetadata(
+export type ReconcileWriteResult =
+  | { kind: "written" }
+  | { kind: "stale_at_write_time"; detail: string } // fresh re-fetch no longer agrees with the bulk-pass outcome
+  | { kind: "claim_unavailable" }
+  | { kind: "write_rejected" } // claim was lost between acquiring it and the authoritative write
+  | { kind: "error"; error: string };
+
+// The one and only write path, reused unchanged from api.stripe.webhook.tsx
+// rather than reimplemented — see the file header for why. Re-fetches this
+// ONE user's current Stripe state fresh, inside writeSubscriptionState's
+// own claim-fenced critical section, rather than trusting the earlier bulk
+// snapshot, which is used here only to know WHICH customers to re-check,
+// not what to write. If the fresh re-check no longer agrees that this user
+// has a single clear, reconciled state (e.g. it churned to ambiguous, or
+// disappeared, between the bulk pass and now), the write is aborted rather
+// than applying a decision that's no longer current — self-correcting on
+// the next run, which re-derives everything from scratch anyway.
+export async function reconcileOneUser(
+  admin: SupabaseClient,
+  stripeClient: Stripe,
   userId: string,
-  existingAppMetadata: Record<string, unknown> | null | undefined,
-  state: ComputedState,
-): Promise<void> {
-  const { error } = await admin.auth.admin.updateUserById(userId, {
-    app_metadata: {
-      ...existingAppMetadata,
-      plan: state.plan,
-      subscriptionStatus: state.subscriptionStatus,
-      stripeCustomerId: state.stripeCustomerId,
-    },
-  });
-  if (error) {
-    console.error(
-      `  -> app_metadata mirror failed for user ${userId} (non-authoritative, ignored): ${error.message}`,
-    );
+  customersForUser: Stripe.Customer[],
+): Promise<ReconcileWriteResult> {
+  try {
+    await writeSubscriptionState(admin, userId, async () => {
+      const fresh = await computeStateForCustomers(customersForUser, stripeClient);
+      if (fresh.kind !== "reconciled") {
+        throw new Error(
+          `fresh re-check at write time produced "${fresh.kind}", not "reconciled" — aborting this write`,
+        );
+      }
+      return {
+        plan: fresh.state.plan,
+        subscriptionStatus: fresh.state.subscriptionStatus,
+        stripeCustomerId: fresh.state.stripeCustomerId,
+      };
+    });
+    return { kind: "written" };
+  } catch (err) {
+    if (err instanceof LockUnavailableError) return { kind: "claim_unavailable" };
+    if (err instanceof ClaimLostError || err instanceof AuthoritativeWriteError)
+      return { kind: "write_rejected" };
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.includes("aborting this write"))
+      return { kind: "stale_at_write_time", detail: message };
+    return { kind: "error", error: message };
   }
 }
 
-async function main() {
-  console.log(
-    APPLY
+export type ReconciliationSummary = {
+  reconciled: number;
+  unchanged: number;
+  noStripeCustomer: number;
+  ambiguous: number;
+  error: number;
+  flagged: string[];
+};
+
+// Minimal shape of the one Supabase admin call this orchestration needs
+// beyond the `.from(...)` query builder (`listUsers`) — typed narrowly so
+// a fake client in tests doesn't need to implement the entire
+// SupabaseClient surface, just this one method plus `.from()`.
+type UserPage = {
+  users: Array<{ id: string; email?: string | undefined; app_metadata: Record<string, unknown> }>;
+};
+export type ReconciliationDeps = {
+  admin: SupabaseClient & {
+    auth: {
+      admin: {
+        listUsers: (opts: {
+          page: number;
+          perPage: number;
+        }) => Promise<{ data: UserPage; error: { message: string } | null }>;
+      };
+    };
+  };
+  stripe: Stripe;
+  apply: boolean;
+  log?: (...args: unknown[]) => void;
+};
+
+// The full orchestration loop, extracted out of main() so it can be driven
+// by fake admin/stripe clients in tests (reconcile-subscription-metadata.test.ts)
+// instead of only the pure decision functions (pickAuthoritativeSubscription,
+// computeStateForCustomers) being testable. main() below calls this with the
+// real singletons; nothing about its own logic changes based on who's calling
+// it.
+export async function runReconciliation(deps: ReconciliationDeps): Promise<ReconciliationSummary> {
+  const { admin, stripe, apply, log = console.log } = deps;
+  log(
+    apply
       ? "Running in APPLY mode — subscription_state WILL be written (plus a best-effort app_metadata mirror)."
       : "Running in DRY-RUN mode — nothing will be written. Pass --apply to write.",
   );
 
-  const index = await buildCustomerIndex();
-  console.log(`Indexed ${index.size} distinct userId(s) across all Stripe customers.`);
+  const index = await buildCustomerIndex(stripe);
+  log(`Indexed ${index.size} distinct userId(s) across all Stripe customers.`);
 
-  const existingState = await buildExistingStateIndex();
-  console.log(`Found ${existingState.size} existing subscription_state row(s).`);
+  const existingState = await buildExistingStateIndex(admin);
+  log(`Found ${existingState.size} existing subscription_state row(s).`);
 
-  const counts = { reconciled: 0, no_stripe_customer: 0, ambiguous: 0, error: 0, unchanged: 0 };
-  const flagged: string[] = [];
+  const summary: ReconciliationSummary = {
+    reconciled: 0,
+    unchanged: 0,
+    noStripeCustomer: 0,
+    ambiguous: 0,
+    error: 0,
+    flagged: [],
+  };
 
   let page = 1;
   for (;;) {
     const { data, error } = await admin.auth.admin.listUsers({ page, perPage: 200 });
     if (error) {
-      console.error("Could not list Supabase users:", error.message);
-      process.exit(1);
+      throw new Error(`Could not list Supabase users: ${error.message}`);
     }
     if (data.users.length === 0) break;
 
@@ -291,24 +391,24 @@ async function main() {
         // there) rather than simply "never subscribed." Flag it instead
         // of silently leaving stale state untouched — never guess which
         // is right.
-        if (existing && (existing.plan != null || existing.subscriptionStatus != null)) {
-          counts.ambiguous++;
-          flagged.push(
-            `${user.id} (${user.email ?? "no email"}): no matching Stripe customer/subscription found, but subscription_state already claims plan=${existing.plan ?? "null"} status=${existing.subscriptionStatus ?? "null"} — left untouched, needs manual review.`,
+        if (existing) {
+          summary.ambiguous++;
+          summary.flagged.push(
+            `${user.id} (${user.email ?? "no email"}): no matching Stripe customer/subscription found, but subscription_state already claims plan=${existing.plan ?? "null"} status=${existing.subscriptionStatus} — left untouched, needs manual review.`,
           );
           continue;
         }
-        counts.no_stripe_customer++;
+        summary.noStripeCustomer++;
         continue; // expected for the majority of users — nothing to reconcile
       }
       if (outcome.kind === "error") {
-        counts.error++;
-        console.error(`[error] user ${user.id} (${user.email ?? "no email"}): ${outcome.error}`);
+        summary.error++;
+        log(`[error] user ${user.id} (${user.email ?? "no email"}): ${outcome.error}`);
         continue;
       }
       if (outcome.kind === "ambiguous") {
-        counts.ambiguous++;
-        flagged.push(`${user.id} (${user.email ?? "no email"}): ${outcome.reason}`);
+        summary.ambiguous++;
+        summary.flagged.push(`${user.id} (${user.email ?? "no email"}): ${outcome.reason}`);
         continue;
       }
 
@@ -318,55 +418,100 @@ async function main() {
         existing?.subscriptionStatus === outcome.state.subscriptionStatus &&
         existing?.stripeCustomerId === outcome.state.stripeCustomerId;
       if (unchanged) {
-        counts.unchanged++;
+        summary.unchanged++;
         continue;
       }
 
-      counts.reconciled++;
-      console.log(
-        `[${APPLY ? "apply" : "dry-run"}] user ${user.id} (${user.email ?? "no email"}): ` +
+      log(
+        `[${apply ? "apply" : "dry-run"}] user ${user.id} (${user.email ?? "no email"}): ` +
           `plan ${existing?.plan ?? "null"} -> ${outcome.state.plan}, ` +
           `status ${existing?.subscriptionStatus ?? "null"} -> ${outcome.state.subscriptionStatus}`,
       );
 
-      if (APPLY) {
-        const { error: writeError } = await admin.from("subscription_state").upsert({
-          user_id: user.id,
-          plan: outcome.state.plan,
-          subscription_status: outcome.state.subscriptionStatus,
-          stripe_customer_id: outcome.state.stripeCustomerId,
-          updated_at: new Date().toISOString(),
-        });
-        if (writeError) {
-          console.error(`  -> write failed: ${writeError.message}`);
-          counts.error++;
-          counts.reconciled--;
-          continue;
-        }
-        await mirrorToAppMetadata(user.id, user.app_metadata, outcome.state);
+      if (!apply) {
+        summary.reconciled++;
+        continue;
       }
+
+      // Claim-fenced, re-fetches fresh at write time — see
+      // reconcileOneUser's own comment. `customers` (the bulk-pass
+      // customer list for this user) is passed through only to tell the
+      // fresh re-check which Stripe customer objects to look at; it is
+      // never itself written.
+      const writeResult = await reconcileOneUser(admin, stripe, user.id, customers ?? []);
+      if (writeResult.kind === "claim_unavailable") {
+        log(
+          `  -> could not acquire the write claim for user ${user.id} (another process may be using it right now) — skipped, safe to retry on a future run.`,
+        );
+        summary.error++;
+        continue;
+      }
+      if (writeResult.kind === "write_rejected") {
+        log(
+          `  -> write_authoritative_subscription_state rejected the write for user ${user.id} (claim lost or RPC error) — skipped, safe to retry on a future run.`,
+        );
+        summary.error++;
+        continue;
+      }
+      if (writeResult.kind === "stale_at_write_time") {
+        log(
+          `  -> state for user ${user.id} changed between the bulk pass and the write (${writeResult.detail}) — skipped rather than writing a decision that's no longer current; will be re-derived correctly on the next run.`,
+        );
+        summary.error++;
+        continue;
+      }
+      if (writeResult.kind === "error") {
+        log(`  -> write failed for user ${user.id}: ${writeResult.error}`);
+        summary.error++;
+        continue;
+      }
+      // writeResult.kind === "written" — writeSubscriptionState already
+      // performed the best-effort app_metadata mirror internally; no
+      // separate mirror call needed here.
+      summary.reconciled++;
     }
 
     if (data.users.length < 200) break;
     page++;
   }
 
-  console.log("\n--- Summary ---");
-  console.log(`Reconciled (changed): ${counts.reconciled}`);
-  console.log(`Already correct (unchanged): ${counts.unchanged}`);
-  console.log(`No Stripe customer (free users, expected): ${counts.no_stripe_customer}`);
-  console.log(`Flagged for manual review (ambiguous): ${counts.ambiguous}`);
-  console.log(`Errors: ${counts.error}`);
-  if (flagged.length > 0) {
-    console.log("\nFlagged accounts — resolve manually, do not guess:");
-    for (const line of flagged) console.log(`  - ${line}`);
+  log("\n--- Summary ---");
+  log(`Reconciled (changed): ${summary.reconciled}`);
+  log(`Already correct (unchanged): ${summary.unchanged}`);
+  log(`No Stripe customer (free users, expected): ${summary.noStripeCustomer}`);
+  log(`Flagged for manual review (ambiguous): ${summary.ambiguous}`);
+  log(`Errors: ${summary.error}`);
+  if (summary.flagged.length > 0) {
+    log("\nFlagged accounts — resolve manually, do not guess:");
+    for (const line of summary.flagged) log(`  - ${line}`);
   }
-  if (!APPLY && counts.reconciled > 0) {
-    console.log("\nThis was a dry run. Re-run with --apply to write these changes.");
+  if (!apply && summary.reconciled > 0) {
+    log("\nThis was a dry run. Re-run with --apply to write these changes.");
   }
+
+  return summary;
 }
 
-main().catch((err) => {
-  console.error("Reconciliation script failed:", err);
-  process.exit(1);
-});
+async function main() {
+  const SUPABASE_URL = requireEnv("SUPABASE_URL");
+  const SUPABASE_SERVICE_ROLE_KEY = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
+  const STRIPE_SECRET_KEY = requireEnv("STRIPE_SECRET_KEY");
+
+  const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  const stripe = new Stripe(STRIPE_SECRET_KEY);
+
+  await runReconciliation({ admin, stripe, apply: APPLY });
+}
+
+// Only run main() when this file is executed directly (`bun run
+// scripts/reconcile-subscription-metadata.ts`), not when it's imported by
+// the test file — importing it must never require real env vars or touch
+// real Stripe/Supabase.
+if (import.meta.main) {
+  main().catch((err) => {
+    console.error("Reconciliation script failed:", err);
+    process.exit(1);
+  });
+}

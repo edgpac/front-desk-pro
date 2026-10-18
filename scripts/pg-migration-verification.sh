@@ -230,6 +230,72 @@ CUSTOMER_AFTER_ROLLBACK=$("${PSQL[@]}" -t -c "select stripe_customer_id from sub
 check "stripe_customer_id from the failed call never landed (got: $CUSTOMER_AFTER_ROLLBACK, must not be cus_should_not_land)" bash -c "[ '$CUSTOMER_AFTER_ROLLBACK' != 'cus_should_not_land' ]"
 
 echo ""
+echo "== Task 4: Stripe event dedup/lease functions (claim_stripe_event, complete_stripe_event, fail_stripe_event) against the REAL schema =="
+echo "-- Previously only signature-checked via pg_catalog; this section exercises their actual behavior. --"
+
+EVT_A="evt_test_duplicate_completed"
+RESULT=$("${PSQL[@]}" -t -c "select claim_stripe_event('$EVT_A', '44444444-4444-4444-4444-444444444444');" | tr -d '[:space:]')
+check "claim_stripe_event claims a brand-new event (got: $RESULT)" bash -c "[ '$RESULT' = 'claimed' ]"
+
+"${PSQL[@]}" -c "select complete_stripe_event('$EVT_A', '44444444-4444-4444-4444-444444444444');" >/dev/null
+RESULT=$("${PSQL[@]}" -t -c "select claim_stripe_event('$EVT_A', '55555555-5555-5555-5555-555555555555');" | tr -d '[:space:]')
+check "completed-event duplicate is rejected as duplicate_completed, never reprocessed (got: $RESULT)" bash -c "[ '$RESULT' = 'duplicate_completed' ]"
+
+EVT_B="evt_test_already_processing"
+"${PSQL[@]}" -c "select claim_stripe_event('$EVT_B', '66666666-6666-6666-6666-666666666666');" >/dev/null
+RESULT=$("${PSQL[@]}" -t -c "select claim_stripe_event('$EVT_B', '77777777-7777-7777-7777-777777777777');" | tr -d '[:space:]')
+check "an event already being actively processed (lease not expired) is rejected as duplicate_processing (got: $RESULT)" bash -c "[ '$RESULT' = 'duplicate_processing' ]"
+
+EVT_C="evt_test_stale_lease_recovery"
+"${PSQL[@]}" -c "select claim_stripe_event('$EVT_C', '88888888-8888-8888-8888-888888888888', 1);" >/dev/null # 1-second lease, real function parameter, not a simulated clock
+"${PSQL[@]}" -c "select pg_sleep(1.3);" >/dev/null
+RESULT=$("${PSQL[@]}" -t -c "select claim_stripe_event('$EVT_C', '99999999-9999-9999-9999-999999999999', 1);" | tr -d '[:space:]')
+check "an abandoned event (processing, lease genuinely expired via real pg_sleep) becomes reclaimable (got: $RESULT)" bash -c "[ '$RESULT' = 'claimed' ]"
+
+EVT_D="evt_test_failed_reclaim"
+"${PSQL[@]}" -c "select claim_stripe_event('$EVT_D', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');" >/dev/null
+"${PSQL[@]}" -c "select fail_stripe_event('$EVT_D', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');" >/dev/null
+RESULT=$("${PSQL[@]}" -t -c "select claim_stripe_event('$EVT_D', 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb');" | tr -d '[:space:]')
+check "a FAILED event is reclaimable immediately, no lease wait needed (got: $RESULT)" bash -c "[ '$RESULT' = 'claimed' ]"
+
+EVT_E="evt_test_superseded_token"
+"${PSQL[@]}" -c "select claim_stripe_event('$EVT_E', 'cccccccc-cccc-cccc-cccc-cccccccccccc', 1);" >/dev/null
+"${PSQL[@]}" -c "select pg_sleep(1.3);" >/dev/null
+"${PSQL[@]}" -c "select claim_stripe_event('$EVT_E', 'dddddddd-dddd-dddd-dddd-dddddddddddd', 1);" >/dev/null # reclaimed by a newer "worker"
+RESULT=$("${PSQL[@]}" -t -c "select complete_stripe_event('$EVT_E', 'cccccccc-cccc-cccc-cccc-cccccccccccc');" | tr -d '[:space:]')
+check "complete_stripe_event with a superseded lease token is rejected, not applied (got: $RESULT)" bash -c "[ '$RESULT' = 'f' ]"
+RESULT=$("${PSQL[@]}" -t -c "select fail_stripe_event('$EVT_E', 'cccccccc-cccc-cccc-cccc-cccccccccccc');" | tr -d '[:space:]')
+check "fail_stripe_event with a superseded lease token is also rejected (got: $RESULT)" bash -c "[ '$RESULT' = 'f' ]"
+RESULT=$("${PSQL[@]}" -t -c "select complete_stripe_event('$EVT_E', 'dddddddd-dddd-dddd-dddd-dddddddddddd');" | tr -d '[:space:]')
+check "the CURRENT lease token's completion call succeeds (got: $RESULT)" bash -c "[ '$RESULT' = 't' ]"
+
+echo ""
+echo "-- Concurrent claim on a brand-new event id: real, separate processes racing claim_stripe_event. --"
+EVT_F="evt_test_concurrent_claim"
+RESULT_1_FILE=$(mktemp)
+RESULT_2_FILE=$(mktemp)
+"${PSQL[@]}" -t -c "select claim_stripe_event('$EVT_F', 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee');" > "$RESULT_1_FILE" 2>&1 &
+PID_1=$!
+"${PSQL[@]}" -t -c "select claim_stripe_event('$EVT_F', 'ffffffff-ffff-ffff-ffff-ffffffffffff');" > "$RESULT_2_FILE" 2>&1 &
+PID_2=$!
+wait "$PID_1" "$PID_2"
+R1=$(tr -d '[:space:]' < "$RESULT_1_FILE")
+R2=$(tr -d '[:space:]' < "$RESULT_2_FILE")
+rm -f "$RESULT_1_FILE" "$RESULT_2_FILE"
+CLAIMED_COUNT=0
+[ "$R1" = "claimed" ] && CLAIMED_COUNT=$((CLAIMED_COUNT + 1))
+[ "$R2" = "claimed" ] && CLAIMED_COUNT=$((CLAIMED_COUNT + 1))
+check "exactly one of two genuinely concurrent claim_stripe_event calls for the same new event id wins (got results: '$R1', '$R2')" bash -c "[ $CLAIMED_COUNT -eq 1 ]"
+
+echo ""
+echo "-- Rollback testing for these three functions: NOT reasonably forceable through their public signatures. --"
+echo "   Unlike write_authoritative_subscription_state (which has the plan CHECK constraint a caller can"
+echo "   deliberately violate), claim_stripe_event/complete_stripe_event/fail_stripe_event take only"
+echo "   (text, uuid[, int]) parameters with no CHECK constraint a legitimate call could violate — the"
+echo "   'processing'/'completed'/'failed' status values are hardcoded literals inside the function bodies,"
+echo "   never passed in. Explicitly not tested here rather than forcing an artificial, misleading case."
+
+echo ""
 echo "== Summary: $PASS passed, $FAIL failed =="
 if [ "$FAIL" -gt 0 ]; then
   exit 1
