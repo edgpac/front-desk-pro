@@ -195,3 +195,16 @@
 @utility num {
   font-variant-numeric: tabular-nums;
 }
+
+/* Proposal/invoice/receipt documents (BusinessDocument.tsx) render a fixed
+   8.5x11in page on screen and in the PNG export (html2canvas captures that
+   same DOM node); @page here makes the actual print/PDF output match it
+   exactly rather than drifting to the browser's own default paper size.
+   This is the only place in the app that calls window.print(), so this
+   rule is safe to scope globally — nothing else is ever printed through it. */
+@media print {
+  @page {
+    size: 8.5in 11in;
+    margin: 0;
+  }
+}
