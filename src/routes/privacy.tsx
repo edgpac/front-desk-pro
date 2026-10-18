@@ -24,7 +24,7 @@ function PrivacyPolicy() {
       <section className="mx-auto max-w-3xl px-5 py-14">
         <p className="label-caps text-primary">Legal</p>
         <h1 className="mt-3 text-4xl">Privacy Policy</h1>
-        <p className="mt-2 text-sm text-muted-foreground">Last updated September 6, 2026.</p>
+        <p className="mt-2 text-sm text-muted-foreground">Last updated October 18, 2026.</p>
 
         <div className="prose mt-8 max-w-none space-y-6 text-[15px] leading-relaxed text-foreground">
           <p>
@@ -61,6 +61,9 @@ function PrivacyPolicy() {
               API to generate the diagnosis and price estimate.</li>
             <li><strong>Twilio</strong> — WhatsApp messages (including photos) are sent and received through
               Twilio's platform.</li>
+            <li><strong>Meta</strong> — for businesses connected via WhatsApp Business Platform (Cloud API)
+              instead of Twilio, WhatsApp messages (including photos) are sent and received through Meta's
+              platform, subject to Meta's own WhatsApp Business policies in addition to this one.</li>
             <li><strong>Stripe</strong> — subscription payments are processed by Stripe. Job It Ready never
               receives or stores full card numbers.</li>
             <li><strong>Supabase</strong> — our database and authentication provider, where account and lead
