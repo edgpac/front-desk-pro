@@ -56,12 +56,18 @@ export function SiteFooter() {
               disclosure requirement and to avoid a deceptive-practice
               (invisible-text) pattern. */}
           <p>© 2026 Job It Ready. Operated by Edgardo P. Marrero.</p>
-          <div className="flex gap-4">
+          <div className="flex flex-wrap gap-4">
             <Link to="/privacy" className="hover:text-ink-foreground">
               Privacy Policy
             </Link>
             <Link to="/terms" className="hover:text-ink-foreground">
               Terms of Service
+            </Link>
+            <Link to="/cookies" className="hover:text-ink-foreground">
+              Cookies Policy
+            </Link>
+            <Link to="/community-standards" className="hover:text-ink-foreground">
+              Community Standards
             </Link>
           </div>
         </div>
