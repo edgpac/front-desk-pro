@@ -10,7 +10,8 @@ import {
   hasRecentHumanTakeover,
   MetaOutsideWindowError,
 } from "@/lib/meta-whatsapp-server";
-import { handleInboundWhatsAppMessage, type ChannelAdapter } from "@/lib/whatsapp-conversation-server";
+import { handleInboundWhatsAppMessage, sendGuardedReply, type ChannelAdapter } from "@/lib/whatsapp-conversation-server";
+import { getAdminClient } from "@/lib/public-lead-server";
 import { applyTemplateStatusUpdate } from "@/lib/whatsapp-templates-server";
 
 // Meta-specific wire protocol only — GET handshake, POST signature
@@ -201,6 +202,7 @@ export const Route = createFileRoute("/api/whatsapp/meta-webhook")({
                   fromPhone,
                   body,
                   mediaRef,
+                  providerMessageId: message.id,
                   profileName,
                   channel: "WhatsApp",
                   adapter,
@@ -212,15 +214,23 @@ export const Route = createFileRoute("/api/whatsapp/meta-webhook")({
                 // in this route. But the customer must never be met with
                 // silence — same fallback-message requirement api.whatsapp
                 // .webhook.tsx (Twilio) already has for the identical
-                // failure (a getQuoteEstimate validation/retry exhaustion,
-                // live-confirmed during P1-E testing: the customer got no
-                // reply at all and had no way to know anything went wrong).
+                // failure. Routed through sendGuardedReply (not a direct
+                // adapter.sendMessage) — this exact fallback was a
+                // confirmed, reproducible bypass of the loop guard in a
+                // prior review; sendGuardedReply fails closed (sends
+                // nothing) if the guard itself can't be safely checked.
                 console.error(`Meta WhatsApp message handling failed for tenant ${tenant.id}:`, err);
                 try {
-                  await adapter.sendMessage(
+                  await sendGuardedReply({
+                    admin: getAdminClient(),
+                    tenant,
                     fromPhone,
-                    "Sorry, I couldn't put together a reliable estimate for that just now — I'll have the team follow up with you directly.",
-                  );
+                    adapter,
+                    leadId: null,
+                    signature: { kind: "text", text: "system:webhook-error-fallback" },
+                    messageText:
+                      "Sorry, I couldn't put together a reliable estimate for that just now — I'll have the team follow up with you directly.",
+                  });
                 } catch (sendErr) {
                   console.error("Also failed to send the WhatsApp fallback message:", sendErr);
                 }

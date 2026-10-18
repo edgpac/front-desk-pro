@@ -9,6 +9,8 @@ import {
   MetaOutsideWindowError,
 } from "@/lib/meta-whatsapp-server";
 import { getApprovedWhatsAppTemplate, fillTemplateBody } from "@/lib/whatsapp-templates-server";
+import { getAdminClient } from "@/lib/public-lead-server";
+import { resumeLoopGuardState, normalizePhone } from "@/lib/whatsapp-loop-guard-server";
 
 // Resolves which of the two independent WhatsApp channels a tenant actually
 // has active (Twilio's concierge-connected number, or their own Meta
@@ -101,6 +103,17 @@ export const sendLeadReply = createServerFn({ method: "POST" })
           };
         }
       }
+
+      // A dashboard operator's own reply, after it has actually reached
+      // the customer (never before — same "only after a confirmed send"
+      // discipline as every other resume path), is an authorized human
+      // decision: a real person is actively handling this specific
+      // customer, so any tripped loop guard for this (tenant, phone) is
+      // cleared. 'operator_reply' is one of the fixed, enumerable resume
+      // reasons (0024_whatsapp_loop_guards.sql) — never a bare new
+      // message. resumeLoopGuardState never throws, so a failure here
+      // can't turn an otherwise-successful reply into a reported error.
+      await resumeLoopGuardState(getAdminClient(), tenantId, normalizePhone(to), "operator_reply");
     }
 
     // Only recorded once the real send (if any) succeeded — a WhatsApp
@@ -173,6 +186,10 @@ export const sendLeadReplyWithTemplate = createServerFn({ method: "POST" })
       await markConnectionFailed(metaConnection.connectionId, err instanceof Error ? err.message : "Template send failed.");
       return { status: "error", message: err instanceof Error ? err.message : "Could not send the template." };
     }
+
+    // Same authorized-resume reasoning as sendLeadReply above — only after
+    // the template send has actually confirmed success.
+    await resumeLoopGuardState(getAdminClient(), tenantId, normalizePhone(leadRow.phone as string), "operator_reply");
 
     const filledBody = fillTemplateBody(template.bodyText, data.bodyParams);
     const { error: insertError } = await context.supabase

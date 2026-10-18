@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { getAdminClient } from "@/lib/public-lead-server";
+import { resumeLoopGuardState } from "@/lib/whatsapp-loop-guard-server";
 import type { InboundWhatsAppTenant } from "@/lib/whatsapp-conversation-server";
 
 // Meta WhatsApp Cloud API — Stage 2B: Embedded Signup + OAuth/token
@@ -637,6 +638,17 @@ export async function recordHumanTakeover(tenantId: string, phone: string): Prom
   if (error) {
     console.error("Could not record WhatsApp human takeover:", error.message);
   }
+  // A human is now personally handling this conversation via their own
+  // connected WhatsApp Business App — the automated-loop concern is moot,
+  // so any tripped loop guard for this (tenant, phone) is cleared too.
+  // 'meta_human_echo' is one of the fixed, authorized resume reasons
+  // (see 0024_whatsapp_loop_guards.sql) — never a bare "new message
+  // arrived." resumeLoopGuardState already catches/logs its own errors
+  // and never throws, so a failure here can't affect the takeover
+  // recording above. tenantId/phone here are always the specific tenant
+  // and customer this echo was addressed to (resolved from the echo's own
+  // connection + `to` field by the caller) — never any other tenant's.
+  await resumeLoopGuardState(admin, tenantId, phone, "meta_human_echo");
 }
 
 export async function hasRecentHumanTakeover(tenantId: string, phone: string): Promise<boolean> {
