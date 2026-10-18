@@ -93,11 +93,21 @@ export const listMyPriceSheet = createServerFn({ method: "GET" })
 // its own client-side checks, but this is the one place that actually
 // decides what gets persisted, so it can't be skipped by calling the
 // server function directly. $0 is explicitly valid (a real, legitimate
-// price) — only negative numbers and an inverted min>max range are rejected.
-export function validatePriceSheetItem(item: { task: string; priceMin: number; priceMax: number }): string | null {
+// price, or an item not yet priced) — only negative numbers and an
+// inverted min>max range are rejected. `hours` was missing from this
+// check entirely until this fix (found during a pre-push review): a
+// negative value passed validation here and had no CHECK constraint to
+// catch it at the database level either (see 0001_init.sql).
+export function validatePriceSheetItem(item: {
+  task: string;
+  priceMin: number;
+  priceMax: number;
+  hours: number;
+}): string | null {
   if (item.priceMin < 0) return `"${item.task}": minimum price can't be negative.`;
   if (item.priceMax < 0) return `"${item.task}": maximum price can't be negative.`;
   if (item.priceMin > item.priceMax) return `"${item.task}": minimum price can't be greater than the maximum.`;
+  if (item.hours < 0) return `"${item.task}": hours can't be negative.`;
   return null;
 }
 

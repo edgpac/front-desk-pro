@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { Plus, Settings, Trash2, Upload } from "lucide-react";
+import { Download, Plus, RotateCcw, Settings, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
 
 import { PageHeader, Panel } from "@/components/app/DashboardShell";
@@ -23,6 +23,7 @@ import {
   type PricingType,
   type MaterialsPolicy,
 } from "@/lib/mock-data";
+import { downloadPriceSheetBackup, parsePriceSheetBackup } from "@/lib/price-sheet-backup";
 
 export const Route = createFileRoute("/dashboard/price-sheet")({
   component: PriceSheetPage,
@@ -85,6 +86,7 @@ function PriceSheetPage() {
   // is always shown expanded regardless of this set (see the render below).
   const [expandedNotes, setExpandedNotes] = useState<Set<string>>(new Set());
   const fileRef = useRef<HTMLInputElement>(null);
+  const restoreFileRef = useRef<HTMLInputElement>(null);
 
   function applyExtractedItems(extracted: ExtractedPriceSheetItem[], source: string) {
     if (extracted.length === 0) {
@@ -211,6 +213,51 @@ function PriceSheetPage() {
     }
   }
 
+  async function handleRestoreFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    if (!user) {
+      toast.info("Sign up to restore your own price sheet.");
+      return;
+    }
+    let text: string;
+    try {
+      text = await file.text();
+    } catch {
+      toast.error("Could not read that file.");
+      return;
+    }
+    const result = parsePriceSheetBackup(text);
+    if (!result.ok) {
+      toast.error(result.reason);
+      return;
+    }
+    const { items } = result;
+    if (items.length === 0) {
+      toast.error("That backup file has no services in it.");
+      return;
+    }
+    // Explicit confirmation before discarding whatever's currently in the
+    // editor (including any unsaved edits) — restoring REPLACES the table,
+    // unlike the AI-import buttons above, which only ever append. Nothing
+    // is written to the database by this step either way; the existing
+    // "Save changes" button below is still the only thing that persists it,
+    // so this is a deliberate two-step confirmation, not a one-click undo.
+    const confirmed = window.confirm(
+      `Restore ${items.length} service${items.length === 1 ? "" : "s"} from this backup? This replaces everything currently shown below${dirty ? " — including your unsaved changes" : ""}. Nothing is saved until you click "Save changes" afterward.`,
+    );
+    if (!confirmed) return;
+    setRows(
+      items.map((item) => ({
+        ...item,
+        id: `restored-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      })),
+    );
+    setDirty(true);
+    toast.success(`Restored ${items.length} service${items.length === 1 ? "" : "s"} — review below, then Save changes.`);
+  }
+
   async function handleImportFromUrl() {
     const url = urlValue.trim();
     if (!url) return;
@@ -269,6 +316,33 @@ function PriceSheetPage() {
         listed here. Anything missing gets passed to you as a manual request instead of an instant price, so the
         more complete this is, the fewer leads you have to price by hand.
       </div>
+
+      {user && (
+        <Panel title="Backup">
+          <p className="text-xs text-muted-foreground">
+            Download an exact copy of your price sheet — every field, including bundling, materials policy,
+            diagnosis fees, and AI notes (the photo and web-page import options above only ever recover the
+            basic task/price/hours, never those). Keep the file somewhere safe; restoring loads it back into
+            the table below for you to review, same as the AI-import options — nothing is saved until you
+            click "Save changes".
+          </p>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <Button variant="outline" size="sm" onClick={() => downloadPriceSheetBackup(rows)}>
+              <Download className="mr-2 h-4 w-4" /> Download backup
+            </Button>
+            <input
+              ref={restoreFileRef}
+              type="file"
+              accept="application/json,.json"
+              className="hidden"
+              onChange={(e) => void handleRestoreFile(e)}
+            />
+            <Button variant="outline" size="sm" onClick={() => restoreFileRef.current?.click()}>
+              <RotateCcw className="mr-2 h-4 w-4" /> Restore from backup
+            </Button>
+          </div>
+        </Panel>
+      )}
 
       <Panel title="Import from a web page">
         <div className="flex flex-wrap items-center gap-2">
