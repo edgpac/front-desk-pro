@@ -136,6 +136,17 @@ function Signup() {
                 <Button type="submit" size="lg" className="w-full" disabled={busy}>
                   {busy ? "Creating account…" : "Create account"}
                 </Button>
+                <p className="text-center text-xs text-muted-foreground">
+                  By creating an account, you agree to our{" "}
+                  <Link to="/terms" className="underline-offset-4 hover:underline hover:text-foreground">
+                    Terms
+                  </Link>{" "}
+                  and{" "}
+                  <Link to="/privacy" className="underline-offset-4 hover:underline hover:text-foreground">
+                    Privacy Policy
+                  </Link>
+                  .
+                </p>
               </form>
 
               <ul className="mt-6 space-y-2 text-sm text-muted-foreground">
