@@ -1,4 +1,4 @@
-import { createServerFn } from "@tanstack/react-start";
+import { createServerFn, createServerOnlyFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { createClient } from "@supabase/supabase-js";
 import { createHash } from "node:crypto";
@@ -120,7 +120,8 @@ export const getTenantForQuote = createServerFn({ method: "GET" })
         priceMax: item["price_max"] as number,
         hours: item["hours"] as number,
         bundleable: item["bundleable"] as boolean,
-        materialsPolicy: item["materials_policy"] as "included" | "customer_pays_receipt" | "confirmed_after_inspection",
+        materialsPolicy: item["materials_policy"] as
+          "included" | "customer_pays_receipt" | "confirmed_after_inspection",
         diagnosisFee: item["diagnosis_pricing_type"]
           ? {
               pricingType: item["diagnosis_pricing_type"] as "flat" | "hourly",
@@ -236,7 +237,12 @@ async function validateLineItemsAgainstPriceSheet(
 
   for (const li of lineItems) {
     const failure = validateSubmittedLineItem(
-      { description: li.description, priceSheetItemId: li.priceSheetItemId, amount: li.rate, hours: li.hours },
+      {
+        description: li.description,
+        priceSheetItemId: li.priceSheetItemId,
+        amount: li.rate,
+        hours: li.hours,
+      },
       priceSheet,
       serviceCallFee,
       serviceCallFeeMode,
@@ -269,7 +275,8 @@ const TENANT_RATE_WINDOW_SECONDS = 24 * 60 * 60;
 // shouldn't trip it.
 const TENANT_QUOTE_MAX_PER_WINDOW = 15;
 const TENANT_READ_MAX_PER_WINDOW = 40;
-const TENANT_TRAFFIC_MESSAGE = "This business is getting a lot of requests right now — try again in a few minutes.";
+const TENANT_TRAFFIC_MESSAGE =
+  "This business is getting a lot of requests right now — try again in a few minutes.";
 
 async function enforceTenantRateLimit(
   admin: ReturnType<typeof getAdminClient>,
@@ -335,7 +342,11 @@ export const createLead = createServerFn({ method: "POST" })
     const flagFields = data.hasPartiallyDeferredWork
       ? { status: "flagged", flagType: "partially_priced", flagReason: PARTIALLY_PRICED_REASON }
       : data.pendingNegotiatedPrice
-        ? { status: "flagged", flagType: "pending_negotiated_price", flagReason: PENDING_NEGOTIATED_PRICE_REASON }
+        ? {
+            status: "flagged",
+            flagType: "pending_negotiated_price",
+            flagReason: PENDING_NEGOTIATED_PRICE_REASON,
+          }
         : { status: null, flagType: null, flagReason: null };
 
     // Atomic: both the lead row and its line items commit or roll back
@@ -399,8 +410,12 @@ export const createLead = createServerFn({ method: "POST" })
           diagnosis: data.diagnosis,
           confidence: data.confidence,
           ...(data.isEmergency !== undefined ? { isEmergency: data.isEmergency } : {}),
-          ...(data.pendingNegotiatedPrice !== undefined ? { pendingNegotiatedPrice: data.pendingNegotiatedPrice } : {}),
-          ...(data.hasPartiallyDeferredWork !== undefined ? { hasPartiallyDeferredWork: data.hasPartiallyDeferredWork } : {}),
+          ...(data.pendingNegotiatedPrice !== undefined
+            ? { pendingNegotiatedPrice: data.pendingNegotiatedPrice }
+            : {}),
+          ...(data.hasPartiallyDeferredWork !== undefined
+            ? { hasPartiallyDeferredWork: data.hasPartiallyDeferredWork }
+            : {}),
         },
         lineItems: data.lineItems.map((item, index) => ({ id: String(index), ...item })),
         total,
@@ -481,20 +496,43 @@ type CreateClarifyingLeadInput = {
 // api.whatsapp.webhook.tsx's lookup, since createLead (above) always sets a
 // concrete confidence for a finished quote and nothing else in this codebase
 // ever writes a leads row at all. No new column or status value needed.
-export const createClarifyingLead = createServerFn({ method: "POST" })
-  .validator((input: CreateClarifyingLeadInput) => input)
-  .handler(async ({ data }) => {
-    const admin = getAdminClient();
-
+// Extracted so the subscription-gate fix below can be regression-tested
+// with a fake admin client — createServerFn-wrapped handlers have no test
+// harness in this codebase (same reasoning as stripe-server.ts's
+// perform* functions), so this is a plain, directly-callable function;
+// the createServerFn below is now a thin wrapper over it. No behavior
+// change — purely mechanical. Wrapped in createServerOnlyFn: this file is
+// imported by client code (widget.$slug.tsx imports getTenantForQuote from
+// it), and unlike a createServerFn().handler() body — which TanStack's
+// build strips from the client bundle automatically — a plain top-level
+// export is not, so without this wrapper the build's import-protection
+// check correctly refused to let this function's server-only
+// enforceTenantRateLimit/getClientIpHash call chain exist in a
+// client-reachable module (confirmed by actually running `vite build`,
+// not assumed).
+export const performCreateClarifyingLead = createServerOnlyFn(
+  async (
+    admin: ReturnType<typeof getAdminClient>,
+    data: CreateClarifyingLeadInput,
+  ): Promise<{ id: string }> => {
     const { data: tenant, error: tenantError } = await admin
       .from("tenants")
-      .select("id")
+      .select("id, user_id")
       .eq("slug", data.tenantSlug)
       .single();
     if (tenantError || !tenant) {
-      throw new Error("Business not found.");
+      throw new Error(INTAKE_UNAVAILABLE_MESSAGE);
     }
     await enforceTenantRateLimit(admin, tenant.id as string, "quote");
+    // Same subscription gate every other public intake path enforces (see
+    // createLead/createFlaggedLead above) — this function was missed when
+    // those were added, leaving a canceled/unsubscribed tenant's public
+    // WhatsApp/widget clarification flow reachable indefinitely. Same
+    // generic message as the tenant-not-found case above: a visitor must
+    // never be able to tell "wrong slug" from "canceled" apart.
+    if (!(await hasActiveSubscriptionForOwner(admin, tenant["user_id"] as string))) {
+      throw new Error(INTAKE_UNAVAILABLE_MESSAGE);
+    }
 
     const { data: lead, error: leadError } = await admin
       .from("leads")
@@ -513,7 +551,12 @@ export const createClarifyingLead = createServerFn({ method: "POST" })
     }
 
     return { id: lead.id as string };
-  });
+  },
+);
+
+export const createClarifyingLead = createServerFn({ method: "POST" })
+  .validator((input: CreateClarifyingLeadInput) => input)
+  .handler(async ({ data }) => performCreateClarifyingLead(getAdminClient(), data));
 
 type FinalizeLeadInput = {
   leadId: string;
@@ -554,20 +597,29 @@ type FinalizeLeadInput = {
 // conversation — updates the existing row rather than inserting a second
 // one, so a WhatsApp thread that needed clarification ends up as exactly one
 // lead, same as a thread that didn't.
-export const finalizeLeadWithQuote = createServerFn({ method: "POST" })
-  .validator((input: FinalizeLeadInput) => input)
-  .handler(async ({ data }) => {
-    const admin = getAdminClient();
-
+// Extracted for the same reason as performCreateClarifyingLead above —
+// regression-testable with a fake admin client. No behavior change.
+export const performFinalizeLeadWithQuote = createServerOnlyFn(
+  async (
+    admin: ReturnType<typeof getAdminClient>,
+    data: FinalizeLeadInput,
+  ): Promise<{ id: string; total: number }> => {
     const { data: tenant, error: tenantError } = await admin
       .from("tenants")
-      .select("id, name, email, currency, service_call_fee, service_call_fee_mode")
+      .select("id, user_id, name, email, currency, service_call_fee, service_call_fee_mode")
       .eq("slug", data.tenantSlug)
       .single();
     if (tenantError || !tenant) {
       throw new Error(INTAKE_UNAVAILABLE_MESSAGE);
     }
     await enforceTenantRateLimit(admin, tenant.id as string, "quote");
+    // Same subscription gate every other public intake path enforces (see
+    // createLead/createFlaggedLead above) — this function was missed when
+    // those were added, leaving a canceled/unsubscribed tenant's public
+    // widget/WhatsApp flow able to finalize full priced leads indefinitely.
+    if (!(await hasActiveSubscriptionForOwner(admin, tenant["user_id"] as string))) {
+      throw new Error(INTAKE_UNAVAILABLE_MESSAGE);
+    }
     await validateLineItemsAgainstPriceSheet(
       admin,
       tenant.id as string,
@@ -591,40 +643,47 @@ export const finalizeLeadWithQuote = createServerFn({ method: "POST" })
     const flagFields = data.hasPartiallyDeferredWork
       ? { status: "flagged", flagType: "partially_priced", flagReason: PARTIALLY_PRICED_REASON }
       : data.pendingNegotiatedPrice
-        ? { status: "flagged", flagType: "pending_negotiated_price", flagReason: PENDING_NEGOTIATED_PRICE_REASON }
+        ? {
+            status: "flagged",
+            flagType: "pending_negotiated_price",
+            flagReason: PENDING_NEGOTIATED_PRICE_REASON,
+          }
         : { status: null, flagType: null, flagReason: null };
 
     // Atomic: the lead update and its line-item inserts commit or roll back
     // together (0019_lead_write_atomicity.sql) — previously two separate
     // requests, which could leave a lead marked "quoted" with no visible
     // line items if the second one failed.
-    const { data: updatedLeadId, error: updateError } = await admin.rpc("update_lead_with_line_items", {
-      p_lead_id: data.leadId,
-      p_tenant_id: tenant.id,
-      // Writing customer_name/phone here too (not just diagnosis/quote
-      // fields) is required for the widget (P1-D): unlike WhatsApp, which
-      // already has a real phone/profile name the moment
-      // createClarifyingLead runs, the widget only collects contact info at
-      // the very end of the flow, after any clarification rounds — so the
-      // row created earlier still has empty placeholders that need to be
-      // filled in here. A no-op for WhatsApp, which already wrote the same
-      // values at createClarifyingLead time.
-      p_customer_name: data.customerName,
-      p_phone: data.phone,
-      p_diagnosis: data.diagnosis,
-      p_confidence: data.confidence,
-      p_ai_line_items_snapshot: data.lineItems,
-      p_status: flagFields.status,
-      p_flag_type: flagFields.flagType,
-      p_flag_reason: flagFields.flagReason,
-      p_line_items: data.lineItems.map((item, index) => ({
-        description: item.description,
-        qty: item.qty,
-        unit: item.unit,
-        rate: item.rate,
-        sort_order: index,
-      })),
-    });
+    const { data: updatedLeadId, error: updateError } = await admin.rpc(
+      "update_lead_with_line_items",
+      {
+        p_lead_id: data.leadId,
+        p_tenant_id: tenant.id,
+        // Writing customer_name/phone here too (not just diagnosis/quote
+        // fields) is required for the widget (P1-D): unlike WhatsApp, which
+        // already has a real phone/profile name the moment
+        // createClarifyingLead runs, the widget only collects contact info at
+        // the very end of the flow, after any clarification rounds — so the
+        // row created earlier still has empty placeholders that need to be
+        // filled in here. A no-op for WhatsApp, which already wrote the same
+        // values at createClarifyingLead time.
+        p_customer_name: data.customerName,
+        p_phone: data.phone,
+        p_diagnosis: data.diagnosis,
+        p_confidence: data.confidence,
+        p_ai_line_items_snapshot: data.lineItems,
+        p_status: flagFields.status,
+        p_flag_type: flagFields.flagType,
+        p_flag_reason: flagFields.flagReason,
+        p_line_items: data.lineItems.map((item, index) => ({
+          description: item.description,
+          qty: item.qty,
+          unit: item.unit,
+          rate: item.rate,
+          sort_order: index,
+        })),
+      },
+    );
     if (updateError) {
       throw new Error(`Could not update lead: ${updateError.message}`);
     }
@@ -649,8 +708,12 @@ export const finalizeLeadWithQuote = createServerFn({ method: "POST" })
           diagnosis: data.diagnosis,
           confidence: data.confidence,
           ...(data.isEmergency !== undefined ? { isEmergency: data.isEmergency } : {}),
-          ...(data.pendingNegotiatedPrice !== undefined ? { pendingNegotiatedPrice: data.pendingNegotiatedPrice } : {}),
-          ...(data.hasPartiallyDeferredWork !== undefined ? { hasPartiallyDeferredWork: data.hasPartiallyDeferredWork } : {}),
+          ...(data.pendingNegotiatedPrice !== undefined
+            ? { pendingNegotiatedPrice: data.pendingNegotiatedPrice }
+            : {}),
+          ...(data.hasPartiallyDeferredWork !== undefined
+            ? { hasPartiallyDeferredWork: data.hasPartiallyDeferredWork }
+            : {}),
         },
         lineItems: data.lineItems.map((item, index) => ({ id: String(index), ...item })),
         total,
@@ -658,7 +721,12 @@ export const finalizeLeadWithQuote = createServerFn({ method: "POST" })
     );
 
     return { id: data.leadId, total };
-  });
+  },
+);
+
+export const finalizeLeadWithQuote = createServerFn({ method: "POST" })
+  .validator((input: FinalizeLeadInput) => input)
+  .handler(async ({ data }) => performFinalizeLeadWithQuote(getAdminClient(), data));
 
 // P1-D: generic "append messages to a lead's thread" — used by the widget
 // (QuoteFlow.tsx) to persist clarification Q&A as it happens, the same
