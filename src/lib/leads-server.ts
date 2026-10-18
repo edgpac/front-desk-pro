@@ -280,6 +280,28 @@ export const deleteLead = createServerFn({ method: "POST" })
     return { ok: true as const };
   });
 
+// Bulk delete for the inbox's checkbox-select flow. One query, not a loop
+// of deleteLead calls — `.in("id", ids)` combined with `.eq("tenant_id",
+// tenantId)` means every id is still individually tenant-scoped (an id
+// belonging to another tenant, however it ended up in the list, is
+// silently excluded from the delete rather than ever being checked one
+// id at a time). Same cascade as deleteLead, same "nothing orphaned"
+// guarantee. An empty array is a no-op, not an error.
+export const deleteLeads = createServerFn({ method: "POST" })
+  .validator((input: string[]) => input)
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context, data: ids }) => {
+    if (ids.length === 0) return { ok: true as const, deleted: 0 };
+    const tenantId = await getTenantId(context.supabase, context.userId);
+    const { error, count } = await context.supabase
+      .from("leads")
+      .delete({ count: "exact" })
+      .eq("tenant_id", tenantId)
+      .in("id", ids);
+    if (error) throw new Error(`Could not delete leads: ${error.message}`);
+    return { ok: true as const, deleted: count ?? 0 };
+  });
+
 export const updateLeadDiagnosis = createServerFn({ method: "POST" })
   .validator((input: { id: string; diagnosis: string }) => input)
   .middleware([requireSupabaseAuth])

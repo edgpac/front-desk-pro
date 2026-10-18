@@ -7,9 +7,10 @@ import { PageHeader, Panel } from "@/components/app/DashboardShell";
 import { StatusPill } from "@/components/app/StatusPill";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/use-auth";
-import { listMyLeads, exportMyLeadsCsv, deleteLead } from "@/lib/leads-server";
+import { listMyLeads, exportMyLeadsCsv, deleteLead, deleteLeads } from "@/lib/leads-server";
 import { createLead } from "@/lib/public-lead-server";
 import { getMyTenant } from "@/lib/tenant-server";
 import { getMyBillingInfo } from "@/lib/stripe-server";
@@ -30,6 +31,8 @@ function LeadInbox() {
   const [sendingTest, setSendingTest] = useState(false);
   const [plan, setPlan] = useState<"solo" | "crew" | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkDeleting, setBulkDeleting] = useState(false);
 
   useEffect(() => {
     if (authLoading) return;
@@ -119,11 +122,63 @@ function LeadInbox() {
     }
     const previous = allLeads;
     setAllLeads((l) => l.filter((lead) => lead.id !== id));
+    setSelected((s) => {
+      if (!s.has(id)) return s;
+      const next = new Set(s);
+      next.delete(id);
+      return next;
+    });
     try {
       await deleteLead({ data: id });
     } catch (err) {
       setAllLeads(previous);
       toast.error(err instanceof Error ? err.message : "Could not delete lead.");
+    }
+  }
+
+  function toggleSelected(id: string) {
+    setSelected((s) => {
+      const next = new Set(s);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSelectAllVisible() {
+    setSelected((s) => {
+      const allVisibleSelected = leads.length > 0 && leads.every((l) => s.has(l.id));
+      if (allVisibleSelected) {
+        const next = new Set(s);
+        for (const l of leads) next.delete(l.id);
+        return next;
+      }
+      const next = new Set(s);
+      for (const l of leads) next.add(l.id);
+      return next;
+    });
+  }
+
+  async function handleBulkDelete() {
+    const ids = Array.from(selected);
+    if (ids.length === 0) return;
+    if (!window.confirm(`Delete ${ids.length} lead${ids.length === 1 ? "" : "s"}? This can't be undone.`)) return;
+    if (!user) {
+      setAllLeads((l) => l.filter((lead) => !selected.has(lead.id)));
+      setSelected(new Set());
+      return;
+    }
+    const previous = allLeads;
+    setBulkDeleting(true);
+    setAllLeads((l) => l.filter((lead) => !selected.has(lead.id)));
+    setSelected(new Set());
+    try {
+      await deleteLeads({ data: ids });
+    } catch (err) {
+      setAllLeads(previous);
+      toast.error(err instanceof Error ? err.message : "Could not delete the selected leads.");
+    } finally {
+      setBulkDeleting(false);
     }
   }
 
@@ -134,6 +189,8 @@ function LeadInbox() {
         : true,
     );
   }, [allLeads, filter, search]);
+
+  const allVisibleSelected = leads.length > 0 && leads.every((l) => selected.has(l.id));
 
   return (
     <div className="space-y-6 p-6 lg:p-10">
@@ -180,19 +237,51 @@ function LeadInbox() {
             </Button>
           ))}
         </div>
-        <Input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search name or problem…"
-          className="max-w-xs"
-          aria-label="Search leads"
-        />
+        <div className="flex flex-wrap items-center gap-2">
+          {selected.size > 0 && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => void handleBulkDelete()}
+              disabled={bulkDeleting}
+              className="text-destructive hover:text-destructive"
+            >
+              {bulkDeleting ? "Deleting…" : `Delete ${selected.size} selected`}
+            </Button>
+          )}
+          <Input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search name or problem…"
+            className="max-w-xs"
+            aria-label="Search leads"
+          />
+        </div>
       </div>
 
       <Panel>
-        <ul className="-m-4 divide-y divide-border">
+        {leads.length > 0 && (
+          <div className="-mx-4 -mt-4 mb-2 flex items-center gap-3 border-b border-border px-4 py-2">
+            <Checkbox
+              checked={allVisibleSelected}
+              onCheckedChange={() => toggleSelectAllVisible()}
+              aria-label="Select all visible leads"
+            />
+            <span className="text-xs text-muted-foreground">
+              {selected.size > 0 ? `${selected.size} selected` : "Select all"}
+            </span>
+          </div>
+        )}
+        <ul className="-m-4 mt-0 divide-y divide-border">
           {leads.map((lead) => (
             <li key={lead.id} className="flex items-center hover:bg-muted/40">
+              <div className="pl-4">
+                <Checkbox
+                  checked={selected.has(lead.id)}
+                  onCheckedChange={() => toggleSelected(lead.id)}
+                  aria-label={`Select lead from ${lead.customer}`}
+                />
+              </div>
               <Link
                 to="/dashboard/leads/$id"
                 params={{ id: lead.id }}
