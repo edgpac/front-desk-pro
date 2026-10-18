@@ -16,179 +16,9 @@ import {
 } from "@/lib/public-lead-server";
 import { sendFollowUpNotificationEmail } from "@/lib/notify-server";
 import { lineItemAmount, money } from "@/lib/mock-data";
-import {
-  evaluateInboundInteraction,
-  evaluateOutboundInteraction,
-  claimLoopNotice,
-  releaseLoopNoticeClaim,
-  markLoopNoticeSent,
-  LoopGuardCheckFailed,
-  type FactSignatureInput,
-  type LoopGuardEvaluation,
-} from "@/lib/whatsapp-loop-guard-server";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-// WhatsApp AI-to-AI / non-progressing-answer loop guard — see
-// 0024_whatsapp_loop_guards.sql and whatsapp-loop-guard-server.ts for the
-// full design. This message is deliberately generic (never restates a
-// price or any job-specific detail) so the pause itself can never become
-// part of a stale/incorrect restatement if sent more than once (the
-// guard's notification is explicitly at-least-once, never exactly-once —
-// see markLoopNoticeSent's own comment).
-export const LOOP_PAUSE_MESSAGE =
-  "We've paused automated replies here for a moment — our team will follow up with you directly.";
-
-// Bounded, in-process retry for confirming a pause notice as sent AFTER
-// the real provider send has already succeeded — see handleLoopGuardPause
-// below for why this exists (a prior review found the failure path for
-// "send succeeded, but the DB write confirming it failed" was silently
-// ignored). Small and immediate: the underlying cause of a single failed
-// write here is usually transient, so a couple of quick retries often
-// resolves it cleanly; this is not an attempt to build real reliability
-// infrastructure, just to not give up on the FIRST transient blip when a
-// cheap retry costs almost nothing against a webhook response budget.
-const LOOP_NOTICE_MARK_SENT_RETRIES = 3;
-const LOOP_NOTICE_MARK_SENT_RETRY_DELAY_MS = 200;
-
-// Attempts to flag the currently-open lead (if any) as loop_suspected —
-// WHERE flag_type IS NULL, so an existing, unrelated flag (needs_human_
-// review, outside_service_scope, etc.) is never overwritten — and
-// attempts/retries the pause notice if one is still owed. Called both from
-// the moment a trip is first detected and from the fast-path at the top of
-// handleInboundWhatsAppMessage for an already-tripped phone, so a notice
-// left 'pending' after a crash or timeout gets retried the next time any
-// message arrives, per the documented at-least-once guarantee.
-export async function handleLoopGuardPause(params: {
-  admin: ReturnType<typeof getAdminClient>;
-  tenant: InboundWhatsAppTenant;
-  fromPhone: string;
-  adapter: ChannelAdapter;
-  leadId: string | null;
-}): Promise<void> {
-  const { admin, tenant, fromPhone, adapter, leadId } = params;
-
-  if (leadId) {
-    const { error } = await admin
-      .from("leads")
-      .update({
-        status: "flagged",
-        flag_type: "loop_suspected",
-        flag_reason:
-          "Automated replies paused — repeated or high-volume WhatsApp exchange detected.",
-      })
-      .eq("id", leadId)
-      .is("flag_type", null);
-    if (error) {
-      console.error(
-        `Could not flag lead ${leadId} as loop_suspected (non-fatal, pause still in effect):`,
-        error.message,
-      );
-    }
-  }
-
-  // Atomic claim, not a plain read — closes the concurrent-notice-claim
-  // race a prior review found (two near-simultaneous callers could both
-  // read notice_status = 'pending' and both attempt a real send before
-  // either confirmed). A caller that doesn't win the claim must not send
-  // at all; the notice is either already sent, already being sent by the
-  // caller who did win, or nothing is owed yet.
-  const claimed = await claimLoopNotice(admin, tenant.id, fromPhone);
-  if (!claimed) return;
-
-  try {
-    await adapter.sendMessage(fromPhone, LOOP_PAUSE_MESSAGE);
-  } catch (err) {
-    // The provider SEND itself failed (not a DB-confirmation problem) —
-    // release immediately so the very next inbound message retries right
-    // away, per the existing at-least-once design. Still never claims
-    // exactly-once delivery — see mark_whatsapp_loop_notice_sent's own
-    // comment for the honest, accepted uncertainty when a provider call
-    // times out after possibly already succeeding.
-    await releaseLoopNoticeClaim(admin, tenant.id, fromPhone);
-    console.error(
-      `Could not send WhatsApp loop-pause notice for tenant ${tenant.id}, phone ${fromPhone} (will retry on next inbound message):`,
-      err,
-    );
-    return;
-  }
-
-  // The provider has CONFIRMED the send succeeded. Record that
-  // confirmation durably — retried a few times in-process, since a
-  // single failed write here is often transient. A prior review found
-  // this call's return value was previously never checked at all: if the
-  // very first attempt failed, the claim was silently left stuck in
-  // 'sending' with no explicit handling, and the next inbound message's
-  // staleness-based reclaim would then resend the IDENTICAL notice — a
-  // guaranteed, not just possible, duplicate.
-  let confirmed = false;
-  for (let attempt = 0; attempt < LOOP_NOTICE_MARK_SENT_RETRIES && !confirmed; attempt++) {
-    if (attempt > 0) await sleep(LOOP_NOTICE_MARK_SENT_RETRY_DELAY_MS);
-    confirmed = await markLoopNoticeSent(admin, tenant.id, fromPhone);
-  }
-
-  if (!confirmed) {
-    // The message DEFINITELY reached the customer (no exception above),
-    // but this database could not confirm that fact after several
-    // attempts — a genuinely uncertain outcome, not a guarantee this
-    // code can manufacture. Deliberately NOT released back to 'pending'
-    // here: doing so would let the very next inbound message resend
-    // immediately, turning an uncertain outcome into a GUARANTEED
-    // duplicate. Left in 'sending' instead, so recovery follows the same
-    // staleness-based reclaim already relied on for a provider-timeout-
-    // with-unknown-result — at most one eventual retry, bounded by
-    // LOOP_NOTICE_CLAIM_STALE_SECONDS, consistent with the same honest
-    // at-least-once guarantee this design has always stated.
-    console.error(
-      `WhatsApp loop-pause notice was sent to tenant ${tenant.id}, phone ${fromPhone}, but could not be confirmed in the database after ${LOOP_NOTICE_MARK_SENT_RETRIES} attempts — delivery state is now uncertain; recovery will follow the existing stale-claim path, not an immediate retry.`,
-    );
-  }
-}
-
-// The one chokepoint every automated WhatsApp reply in this file sends
-// through. Evaluates the loop guard (repeated-answer signal AND volume
-// signal, independently — see evaluate_whatsapp_loop_guard) before
-// sending; on a trip (just now or already tripped), suppresses the
-// automated reply entirely and hands off to handleLoopGuardPause instead.
-// On a guard-check FAILURE (RPC error, etc.), fails CLOSED — no automated
-// reply — rather than the fail-open choice claimLeadSlot makes elsewhere
-// in this file for an unrelated, lower-stakes concern (a missed dedup
-// there risks a possible duplicate lead; failing open here risks
-// unbounded automated cost/spam).
-export async function sendGuardedReply(params: {
-  admin: ReturnType<typeof getAdminClient>;
-  tenant: InboundWhatsAppTenant;
-  fromPhone: string;
-  adapter: ChannelAdapter;
-  leadId: string | null;
-  signature: FactSignatureInput;
-  messageText: string;
-  onSent?: () => Promise<void>;
-}): Promise<{ sent: boolean }> {
-  const { admin, tenant, fromPhone, adapter, leadId, signature, messageText, onSent } = params;
-
-  let tripped: boolean;
-  try {
-    const evaluation = await evaluateOutboundInteraction(admin, tenant.id, fromPhone, { signature, leadId });
-    tripped = evaluation.tripped;
-  } catch (err) {
-    console.error(
-      `WhatsApp loop guard check failed for tenant ${tenant.id}, phone ${fromPhone} — failing closed (no automated reply):`,
-      err instanceof LoopGuardCheckFailed ? err.message : err,
-    );
-    tripped = true; // fail closed
-  }
-
-  if (tripped) {
-    await handleLoopGuardPause({ admin, tenant, fromPhone, adapter, leadId });
-    return { sent: false };
-  }
-
-  if (onSent) await onSent();
-  await adapter.sendMessage(fromPhone, messageText);
-  return { sent: true };
 }
 
 // Duplicate-lead race mitigation (0019_lead_write_atomicity.sql). The
@@ -219,47 +49,6 @@ async function releaseLeadSlot(admin: ReturnType<typeof getAdminClient>, tenantI
     // leaked claim can block a later, genuinely new conversation.
     console.error("release_whatsapp_lead_slot failed:", error.message);
   }
-}
-
-// Reuses the exact same (tenant, phone) mutex as the brand-new-lead path
-// above, applied to a DIFFERENT risk: two near-simultaneous messages for
-// a lead that's already mid-clarification (or already quoted and
-// answering a same-job follow-up) both running the AI pipeline
-// concurrently for that one lead. Unlike a duplicate brand-new lead (an
-// annoying but recoverable outcome), finalizeLeadWithQuote's own
-// update_lead_with_line_items (0019_lead_write_atomicity.sql)
-// unconditionally INSERTs line items whenever any are supplied — calling
-// it twice concurrently for the same lead would insert duplicate line
-// items on that one lead, a real data-correctness problem, not just a
-// duplicate reply. It also directly inflates the WhatsApp loop guard's
-// own evidence with self-inflicted duplicates rather than genuine
-// repetition.
-//
-// Deliberately NOT the same "poll for something to appear, then proceed
-// anyway" fallback the brand-new-lead path uses on a lost claim — there's
-// no safe way to "proceed anyway" here (the risk above applies), so a
-// lost claim here means skipping this round's automated reply entirely.
-// The customer's message is still recorded (by the caller, before this
-// is invoked); the in-flight round will complete and reply on its own.
-// This is a deliberate, stated trade-off, not an oversight: a message
-// arriving in this exact race window may not get its own immediate
-// automated reply. Widening this to a retry/poll loop was considered and
-// rejected for this pass as unnecessary complexity for a narrow race
-// window — worth revisiting if it proves too strict in practice.
-export async function withLeadProcessingClaim(
-  admin: ReturnType<typeof getAdminClient>,
-  tenantId: string,
-  phone: string,
-  run: () => Promise<void>,
-): Promise<boolean> {
-  const claimed = await claimLeadSlot(admin, tenantId, phone);
-  if (!claimed) return false;
-  try {
-    await run();
-  } finally {
-    await releaseLeadSlot(admin, tenantId, phone);
-  }
-  return true;
 }
 
 async function findRecentLeadId(
@@ -387,52 +176,12 @@ export async function handleInboundWhatsAppMessage(params: {
   fromPhone: string;
   body: string;
   mediaRef: string | undefined;
-  // Twilio's MessageSid or Meta's wamid, where the channel supplies one —
-  // recorded as evidence (see evaluateInboundInteraction) and used for the
-  // "exact duplicate content, different id" signal. Never required: a
-  // channel/caller that can't supply one still works, just without that
-  // specific signal's benefit for this message.
-  providerMessageId: string | undefined;
   profileName: string | undefined;
   channel: "WhatsApp";
   adapter: ChannelAdapter;
 }): Promise<void> {
-  const { tenant, fromPhone, body, mediaRef, providerMessageId, profileName, channel, adapter } = params;
+  const { tenant, fromPhone, body, mediaRef, profileName, channel, adapter } = params;
   const admin = getAdminClient();
-
-  // Every inbound message is recorded as evidence AND evaluated in one
-  // atomic call — this is both the "is this phone already paused" fast
-  // path and the duplicate-content/volume detection step; neither AI nor
-  // routing logic runs below this until the evaluation comes back clear.
-  // A guard-read/write failure fails CLOSED (treated as tripped), same
-  // reasoning as sendGuardedReply below.
-  let inboundEvaluation: LoopGuardEvaluation;
-  try {
-    inboundEvaluation = await evaluateInboundInteraction(admin, tenant.id, fromPhone, {
-      body,
-      mediaRef,
-      providerMessageId,
-      leadId: null,
-    });
-  } catch (err) {
-    console.error(
-      `WhatsApp loop guard pre-check failed for tenant ${tenant.id}, phone ${fromPhone} — failing closed (no automated reply):`,
-      err,
-    );
-    inboundEvaluation = {
-      tripped: true,
-      justTripped: false,
-      tripReason: null,
-      isDuplicateContent: false,
-      duplicateContentCount: 0,
-      repeatCount: 0,
-      recentEventCount: 0,
-    };
-  }
-  if (inboundEvaluation.tripped) {
-    await handleLoopGuardPause({ admin, tenant, fromPhone, adapter, leadId: null });
-    return;
-  }
 
   // Reinvented "check existing customer" from the original n8n templates —
   // but scoped to this tenant, and against the real leads table instead of
@@ -465,7 +214,6 @@ export async function handleInboundWhatsAppMessage(params: {
   if (route === "continue_clarification" && openLead) {
     await admin.from("lead_messages").insert({ lead_id: openLead.id, role: "customer", body });
 
-    const claimed = await withLeadProcessingClaim(admin, tenant.id, fromPhone, async () => {
     const { data: priorMessages } = await admin
       .from("lead_messages")
       .select("role, body")
@@ -524,17 +272,10 @@ export async function handleInboundWhatsAppMessage(params: {
         clarifyImageMediaType = media.mediaType;
       } catch (err) {
         console.error("Could not re-download the original WhatsApp photo:", err);
-        const lostPhotoMessage =
-          "Sorry, I lost track of the original photo — could you resend it along with your answer?";
-        await sendGuardedReply({
-          admin,
-          tenant,
+        await adapter.sendMessage(
           fromPhone,
-          adapter,
-          leadId: openLead.id,
-          signature: { kind: "text", text: lostPhotoMessage },
-          messageText: lostPhotoMessage,
-        });
+          "Sorry, I lost track of the original photo — could you resend it along with your answer?",
+        );
         return;
       }
     }
@@ -557,15 +298,7 @@ export async function handleInboundWhatsAppMessage(params: {
       });
     } catch (err) {
       if (err instanceof Error && err.message === UNSUPPORTED_IMAGE_MESSAGE) {
-        await sendGuardedReply({
-          admin,
-          tenant,
-          fromPhone,
-          adapter,
-          leadId: openLead.id,
-          signature: { kind: "text", text: UNSUPPORTED_IMAGE_MESSAGE },
-          messageText: UNSUPPORTED_IMAGE_MESSAGE,
-        });
+        await adapter.sendMessage(fromPhone, UNSUPPORTED_IMAGE_MESSAGE);
         return;
       }
       // P2: getQuoteEstimate exhausted its retry (e.g. a validation/wording
@@ -590,18 +323,8 @@ export async function handleInboundWhatsAppMessage(params: {
       // customer that's an option instead of leaving it implicit).
       const recoveryMessage =
         "Got it — we've noted everything so far, and the team will follow up with you on a price. If you're asking about something else, just describe it and we'll get you a fresh estimate.";
-      await sendGuardedReply({
-        admin,
-        tenant,
-        fromPhone,
-        adapter,
-        leadId: openLead.id,
-        signature: { kind: "text", text: recoveryMessage },
-        messageText: recoveryMessage,
-        onSent: async () => {
-          await admin.from("lead_messages").insert({ lead_id: openLead.id, role: "assistant", body: recoveryMessage });
-        },
-      });
+      await admin.from("lead_messages").insert({ lead_id: openLead.id, role: "assistant", body: recoveryMessage });
+      await adapter.sendMessage(fromPhone, recoveryMessage);
       return;
     }
 
@@ -609,27 +332,13 @@ export async function handleInboundWhatsAppMessage(params: {
       const question = clarifyResult.questions[0];
       const optionsText = question?.options?.length ? `\n(${question.options.join(" / ")})` : "";
       const questionText = `${question?.question ?? "Can you tell me a bit more?"}${optionsText}`;
-      await sendGuardedReply({
-        admin,
-        tenant,
-        fromPhone,
-        adapter,
-        leadId: openLead.id,
-        signature: { kind: "text", text: questionText },
-        messageText: questionText,
-        onSent: async () => {
-          await admin.from("lead_messages").insert({ lead_id: openLead.id, role: "assistant", body: questionText });
-        },
-      });
+      await admin.from("lead_messages").insert({ lead_id: openLead.id, role: "assistant", body: questionText });
+      await adapter.sendMessage(fromPhone, questionText);
       return;
     }
 
     if (clarifyResult.outOfScope) {
       const passAlongMessage = "I'll pass your message along to our team.";
-      // Flag update and owner notification happen regardless of guard
-      // state — if automation is paused, the owner needs to know even
-      // more, not less, so they can follow up manually. Only the
-      // customer-facing pass-along message itself is subject to the guard.
       await admin
         .from("leads")
         .update({
@@ -638,18 +347,8 @@ export async function handleInboundWhatsAppMessage(params: {
           flag_reason: `Nothing on the price sheet covers: ${openLead.problem}`,
         })
         .eq("id", openLead.id);
-      await sendGuardedReply({
-        admin,
-        tenant,
-        fromPhone,
-        adapter,
-        leadId: openLead.id,
-        signature: { kind: "text", text: passAlongMessage },
-        messageText: passAlongMessage,
-        onSent: async () => {
-          await admin.from("lead_messages").insert({ lead_id: openLead.id, role: "assistant", body: passAlongMessage });
-        },
-      });
+      await admin.from("lead_messages").insert({ lead_id: openLead.id, role: "assistant", body: passAlongMessage });
+      await adapter.sendMessage(fromPhone, passAlongMessage);
       void sendFollowUpNotificationEmail({
         tenant: { name: tenant.name, email: tenant.email, currency: tenant.currency },
         customerName: openLead.customer_name || profileName || "A customer",
@@ -684,56 +383,11 @@ export async function handleInboundWhatsAppMessage(params: {
       },
     });
 
-    // The lead itself is finalized above regardless — only the WhatsApp
-    // notification of it is subject to the loop guard.
-    await sendGuardedReply({
-      admin,
-      tenant,
+    await adapter.sendMessage(
       fromPhone,
-      adapter,
-      leadId: openLead.id,
-      signature: {
-        kind: "priced",
-        priceSheetItemIds: clarifyResult.lineItems.map((item) => item.priceSheetItemId),
-        amounts: [...clarifyResult.lineItems.map((item) => item.amount), clarifyResult.totalLow],
-      },
-      messageText: `${clarifyResult.diagnosis} ${formatQuotePriceLine(clarifyResult.totalLow, tenant.currency, clarifyResult.isDiagnosisOnly, clarifyResult.hasNoPricedWork, clarifyResult.hasPartiallyDeferredWork)} This estimate is based on the photos and information provided remotely. If the actual issue or scope of work is different than what was presented, the final price may change after inspection. Want me to get this booked in?`,
-    });
+      `${clarifyResult.diagnosis} ${formatQuotePriceLine(clarifyResult.totalLow, tenant.currency, clarifyResult.isDiagnosisOnly, clarifyResult.hasNoPricedWork, clarifyResult.hasPartiallyDeferredWork)} This estimate is based on the photos and information provided remotely. If the actual issue or scope of work is different than what was presented, the final price may change after inspection. Want me to get this booked in?`,
+    );
 
-    return;
-    });
-    if (!claimed) {
-      console.error(
-        `Could not claim lead slot for tenant ${tenant.id}, phone ${fromPhone} while mid-clarification — another message is already being processed for this lead; skipping automated reply for this round.`,
-      );
-      // Losing the claim must not also silently drop the owner's
-      // visibility into this message — the lead-slot claim is only
-      // meant to prevent duplicate AI/finalize processing, not to decide
-      // whether the owner gets told anything. The AI call itself never
-      // ran here, though, so this round's actual classification (needs
-      // clarification? out of scope? a real quote?) was never
-      // determined — neither the outside_service_scope flag nor its
-      // specific "[Outside price sheet]" wording can be honestly applied
-      // without that classification. Flagging needs_human_review instead
-      // (the exact same guarded, never-overwrite-an-existing-flag pattern
-      // handleLoopGuardPause already uses for the loop guard) still makes
-      // sure a human sees this lead needs attention, without asserting a
-      // classification this code never actually made.
-      await admin
-        .from("leads")
-        .update({
-          status: "flagged",
-          flag_type: "needs_human_review",
-          flag_reason: "A message arrived while another was already being processed for this conversation.",
-        })
-        .eq("id", openLead.id)
-        .is("flag_type", null);
-      void sendFollowUpNotificationEmail({
-        tenant: { name: tenant.name, email: tenant.email, currency: tenant.currency },
-        customerName: openLead.customer_name || profileName || "A customer",
-        body: `[Received while another message was being processed for this conversation] ${body}`,
-      });
-    }
     return;
   }
 
@@ -764,7 +418,6 @@ export async function handleInboundWhatsAppMessage(params: {
       });
 
       if (sameJob) {
-        const claimedFollowUp = await withLeadProcessingClaim(admin, tenant.id, fromPhone, async () => {
         const { data: lineItemRows } = await admin
           .from("lead_line_items")
           .select("description, rate, qty")
@@ -806,51 +459,8 @@ export async function handleInboundWhatsAppMessage(params: {
           },
         });
 
-        // lead_line_items has no priceSheetItemId column (a real,
-        // pre-existing schema limitation, not introduced here) — item
-        // descriptions stand in as the identity key for this specific
-        // site's signature, a stated precision reduction. Dollar amounts
-        // actually stated in the answer text are extracted directly
-        // (getFollowUpAnswer already validates every "$" figure traces to
-        // a real known amount — see its own allowedAmounts invariant),
-        // which is what mainly differentiates "still $194?" from
-        // "can you come at 3pm?" for the same already-quoted job, since
-        // the latter typically states no dollar figure at all.
-        const mentionedAmounts = [...answer.matchAll(/\$([\d,]+(?:\.\d{2})?)/g)].map((m) =>
-          Number(m[1]!.replace(/,/g, "")),
-        );
-        await sendGuardedReply({
-          admin,
-          tenant,
-          fromPhone,
-          adapter,
-          leadId: openLead.id,
-          signature: {
-            kind: "priced",
-            priceSheetItemIds: lineItemsForAnswer.map((item) => item.description),
-            amounts: mentionedAmounts,
-          },
-          messageText: answer,
-          onSent: async () => {
-            await admin.from("lead_messages").insert({ lead_id: openLead.id, role: "assistant", body: answer });
-          },
-        });
-        });
-        if (!claimedFollowUp) {
-          console.error(
-            `Could not claim lead slot for tenant ${tenant.id}, phone ${fromPhone} for a same-job follow-up — another message is already being processed for this lead; skipping automated reply for this round.`,
-          );
-        }
-        // Owner notification fires regardless of guard state AND
-        // regardless of the lead-slot claim outcome — unlike the
-        // out-of-scope flag/notification in the clarification branch
-        // above, this one was never dependent on any AI classification
-        // (it just reports the customer's own message text), so there is
-        // no reason a lost claim should suppress it too. Moved outside
-        // the claimed callback so it still fires exactly once even when
-        // claimedFollowUp is false; the single unconditional `return`
-        // right after means this can never run twice for the same
-        // message.
+        await admin.from("lead_messages").insert({ lead_id: openLead.id, role: "assistant", body: answer });
+        await adapter.sendMessage(fromPhone, answer);
         void sendFollowUpNotificationEmail({
           tenant: { name: tenant.name, email: tenant.email, currency: tenant.currency },
           customerName: openLead.customer_name || profileName || "A customer",
@@ -885,21 +495,10 @@ export async function handleInboundWhatsAppMessage(params: {
   // the job in enough detail.
   const hasSubstantialDescription = body.trim().length > 10;
   if (!mediaRef && !hasSubstantialDescription) {
-    // No lead exists yet at this point — leadId: null. This is exactly the
-    // path a prior review found entirely unguarded and entirely
-    // unrecorded (nothing was ever inserted into lead_messages here
-    // either, so even the volume signal had nothing to count). The
-    // evidence log is keyed on (tenant, phone), not on a lead, so this
-    // now records and evaluates correctly even before any lead exists.
-    await sendGuardedReply({
-      admin,
-      tenant,
+    await adapter.sendMessage(
       fromPhone,
-      adapter,
-      leadId: null,
-      signature: { kind: "text", text: "canned:thin-description-greeting" },
-      messageText: `Thanks for reaching out to ${tenant.name}! To get you a fast, accurate price, send a photo along with a description of what you need — or just describe the problem in more detail and I can help without one.`,
-    });
+      `Thanks for reaching out to ${tenant.name}! To get you a fast, accurate price, send a photo along with a description of what you need — or just describe the problem in more detail and I can help without one.`,
+    );
     return;
   }
 
@@ -921,16 +520,7 @@ export async function handleInboundWhatsAppMessage(params: {
     // customer's message indefinitely. No worse than before this fix.
   }
   try {
-    await handleFreshQuote({
-      tenant,
-      fromPhone,
-      body,
-      mediaRef,
-      profileName,
-      channel,
-      adapter,
-      admin,
-    });
+    await handleFreshQuote({ tenant, fromPhone, body, mediaRef, profileName, channel, adapter, admin });
   } finally {
     if (claimed) await releaseLeadSlot(admin, tenant.id, fromPhone);
   }
@@ -979,16 +569,7 @@ async function handleFreshQuote(params: {
       imageMediaType = media.mediaType;
     } catch (err) {
       console.error("Could not download WhatsApp photo:", err);
-      const photoLoadFailedMessage = "I couldn't load that photo — could you try sending it again?";
-      await sendGuardedReply({
-        admin,
-        tenant,
-        fromPhone,
-        adapter,
-        leadId: null,
-        signature: { kind: "text", text: photoLoadFailedMessage },
-        messageText: photoLoadFailedMessage,
-      });
+      await adapter.sendMessage(fromPhone, "I couldn't load that photo — could you try sending it again?");
       return;
     }
   }
@@ -1010,15 +591,7 @@ async function handleFreshQuote(params: {
     });
   } catch (err) {
     if (err instanceof Error && err.message === UNSUPPORTED_IMAGE_MESSAGE) {
-      await sendGuardedReply({
-        admin,
-        tenant,
-        fromPhone,
-        adapter,
-        leadId: null,
-        signature: { kind: "text", text: UNSUPPORTED_IMAGE_MESSAGE },
-        messageText: UNSUPPORTED_IMAGE_MESSAGE,
-      });
+      await adapter.sendMessage(fromPhone, UNSUPPORTED_IMAGE_MESSAGE);
       return;
     }
     throw err;
@@ -1049,19 +622,9 @@ async function handleFreshQuote(params: {
       },
     });
     await admin.from("lead_messages").insert({ lead_id: leadId, role: "customer", body: openingProblem });
+    await admin.from("lead_messages").insert({ lead_id: leadId, role: "assistant", body: questionText });
 
-    await sendGuardedReply({
-      admin,
-      tenant,
-      fromPhone,
-      adapter,
-      leadId,
-      signature: { kind: "text", text: questionText },
-      messageText: questionText,
-      onSent: async () => {
-        await admin.from("lead_messages").insert({ lead_id: leadId, role: "assistant", body: questionText });
-      },
-    });
+    await adapter.sendMessage(fromPhone, questionText);
     return;
   }
 
@@ -1081,18 +644,8 @@ async function handleFreshQuote(params: {
       },
     });
     await admin.from("lead_messages").insert({ lead_id: leadId, role: "customer", body: openingProblem });
-    await sendGuardedReply({
-      admin,
-      tenant,
-      fromPhone,
-      adapter,
-      leadId,
-      signature: { kind: "text", text: passAlongMessage },
-      messageText: passAlongMessage,
-      onSent: async () => {
-        await admin.from("lead_messages").insert({ lead_id: leadId, role: "assistant", body: passAlongMessage });
-      },
-    });
+    await admin.from("lead_messages").insert({ lead_id: leadId, role: "assistant", body: passAlongMessage });
+    await adapter.sendMessage(fromPhone, passAlongMessage);
     void sendFollowUpNotificationEmail({
       tenant: { name: tenant.name, email: tenant.email, currency: tenant.currency },
       customerName: profileName || "A customer",
@@ -1110,7 +663,7 @@ async function handleFreshQuote(params: {
     hours: item.hours,
   }));
 
-  const { id: leadId } = await createLead({
+  await createLead({
     data: {
       tenantSlug: tenant.slug,
       customerName: profileName || "WhatsApp customer",
@@ -1128,17 +681,8 @@ async function handleFreshQuote(params: {
     },
   });
 
-  await sendGuardedReply({
-    admin,
-    tenant,
+  await adapter.sendMessage(
     fromPhone,
-    adapter,
-    leadId,
-    signature: {
-      kind: "priced",
-      priceSheetItemIds: result.lineItems.map((item) => item.priceSheetItemId),
-      amounts: [...result.lineItems.map((item) => item.amount), result.totalLow],
-    },
-    messageText: `${result.diagnosis} ${formatQuotePriceLine(result.totalLow, tenant.currency, result.isDiagnosisOnly, result.hasNoPricedWork, result.hasPartiallyDeferredWork)} This estimate is based on the photos and information provided remotely. If the actual issue or scope of work is different than what was presented, the final price may change after inspection. Want me to get this booked in?`,
-  });
+    `${result.diagnosis} ${formatQuotePriceLine(result.totalLow, tenant.currency, result.isDiagnosisOnly, result.hasNoPricedWork, result.hasPartiallyDeferredWork)} This estimate is based on the photos and information provided remotely. If the actual issue or scope of work is different than what was presented, the final price may change after inspection. Want me to get this booked in?`,
+  );
 }

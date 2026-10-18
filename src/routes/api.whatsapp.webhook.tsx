@@ -1,8 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { getAdminClient } from "@/lib/public-lead-server";
 import { sendWhatsAppMessage, fetchTwilioMediaAsBase64, verifyTwilioSignature } from "@/lib/twilio-server";
-import { wasMessageAlreadyProcessed } from "@/lib/meta-whatsapp-server";
-import { handleInboundWhatsAppMessage, sendGuardedReply, type ChannelAdapter } from "@/lib/whatsapp-conversation-server";
+import { handleInboundWhatsAppMessage, type ChannelAdapter } from "@/lib/whatsapp-conversation-server";
 
 // Twilio-specific wire protocol only — signature verification, form-field
 // parsing, tenant lookup by tenants.whatsapp_number. Everything about the
@@ -50,7 +49,6 @@ export const Route = createFileRoute("/api/whatsapp/webhook")({
         const numMedia = Number(formParams["NumMedia"] || "0");
         const mediaUrl = formParams["MediaUrl0"];
         const profileName = formParams["ProfileName"];
-        const messageSid = formParams["MessageSid"] || undefined;
 
         const fromPhone = fromRaw.replace("whatsapp:", "");
         const toPhone = toRaw.replace("whatsapp:", "");
@@ -77,34 +75,21 @@ export const Route = createFileRoute("/api/whatsapp/webhook")({
           return emptyTwiml();
         }
 
-        // Duplicate-delivery dedup, same mechanism Meta's route already
-        // uses (whatsapp_processed_messages, insert-and-catch-conflict) —
-        // Twilio can also redeliver a webhook that didn't get a fast-
-        // enough 200. Only applied when Twilio actually supplied a
-        // MessageSid; a delivery with none is processed as before.
-        if (messageSid && (await wasMessageAlreadyProcessed(messageSid))) {
-          console.log(`Twilio WhatsApp message ${messageSid} already processed, skipping.`);
-          return emptyTwiml();
-        }
-
-        const tenantForSend = {
-          id: tenant.id,
-          slug: tenant.slug,
-          name: tenant.name,
-          email: tenant.email,
-          currency: tenant.currency,
-          laborRate: tenant.labor_rate,
-          serviceCallFee: tenant.service_call_fee,
-          serviceCallFeeMode: tenant.service_call_fee_mode,
-        };
-
         try {
           await handleInboundWhatsAppMessage({
-            tenant: tenantForSend,
+            tenant: {
+              id: tenant.id,
+              slug: tenant.slug,
+              name: tenant.name,
+              email: tenant.email,
+              currency: tenant.currency,
+              laborRate: tenant.labor_rate,
+              serviceCallFee: tenant.service_call_fee,
+              serviceCallFeeMode: tenant.service_call_fee_mode,
+            },
             fromPhone,
             body,
             mediaRef: numMedia > 0 ? mediaUrl : undefined,
-            providerMessageId: messageSid,
             profileName,
             channel: "WhatsApp",
             adapter: twilioAdapter,
@@ -114,26 +99,13 @@ export const Route = createFileRoute("/api/whatsapp/webhook")({
           // getQuoteEstimate validation/retry exhaustion) must never crash
           // the webhook response with no reply sent — the customer always
           // gets a graceful message, and Twilio always gets its 200 so it
-          // doesn't retry-storm this same event. Routed through
-          // sendGuardedReply (not a direct adapter.sendMessage) — this was
-          // a confirmed, reproducible bypass of the loop guard: a prior
-          // review found this exact fallback firing unconditionally,
-          // regardless of whether this phone was already paused. If the
-          // guard itself can't be safely checked, sendGuardedReply fails
-          // closed and sends nothing, rather than risk continuing a loop
-          // with an automated fallback message.
+          // doesn't retry-storm this same event.
           console.error(`WhatsApp conversation error for tenant ${tenant.slug}:`, err);
           try {
-            await sendGuardedReply({
-              admin,
-              tenant: tenantForSend,
+            await twilioAdapter.sendMessage(
               fromPhone,
-              adapter: twilioAdapter,
-              leadId: null,
-              signature: { kind: "text", text: "system:webhook-error-fallback" },
-              messageText:
-                "Sorry, I couldn't put together a reliable estimate for that just now — I'll have the team follow up with you directly.",
-            });
+              "Sorry, I couldn't put together a reliable estimate for that just now — I'll have the team follow up with you directly.",
+            );
           } catch (sendErr) {
             console.error("Also failed to send the WhatsApp fallback message:", sendErr);
           }
