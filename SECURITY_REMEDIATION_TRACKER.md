@@ -202,6 +202,25 @@ Last updated: 2026-10-18.
 - **Next action**: none required from me; optional for you — the
   live-traffic smoke test above, whenever convenient.
 
+### 1.8 — Signup page missing Terms/Privacy consent links 🟢 PUSHED
+- **Commit**: `20c9292`
+- **Finding**: `signup.tsx` renders no `SiteFooter`/`SiteHeader` and had
+  no Terms/Privacy link, checkbox, or text anywhere on the page — a user
+  could create a full account (email, password) without the signup flow
+  ever surfacing either document, even though `/terms` and `/privacy` are
+  real pages already linked elsewhere (site footer).
+- **Fix**: added a standard "By creating an account, you agree to our
+  Terms and Privacy Policy" line directly below the submit button,
+  linking to the existing `/terms` and `/privacy` routes.
+- **Tests**: markup-only change, no new logic — `tsc` clean, build clean,
+  full suite 250/250 unaffected.
+- **Migration dependency**: none.
+- **Production verification needed**: none beyond the deploy — visually
+  confirm the line renders correctly once live.
+- **Remaining risk**: none. Note this resolves only the signup-links half
+  of the original combined finding — the Privacy Policy's separate
+  missing-Meta-as-processor gap is still open, see §3.3.
+
 ---
 
 ## 2. Preserved, untouched (not part of any commit above)
@@ -282,21 +301,17 @@ code alone.
 **Dependencies**: none on other open items, but should be decided before
 Meta Advanced Access traffic scales up.
 
-### 3.3 — Privacy Policy processor disclosure + signup Terms/Privacy links 🔵
-**Confirmed still open, two distinct findings** (re-verified 2026-10-18,
-read both files in full):
-- `src/routes/privacy.tsx` lists Anthropic, Twilio, Stripe, and Supabase
-  as processors but **never mentions Meta**, despite a full Meta WhatsApp
-  Cloud API integration already built.
-- `src/routes/signup.tsx` renders no `SiteFooter`/`SiteHeader` — just a
-  back-link, the form, and a "Log in" link. **No Terms/Privacy link,
-  checkbox, or text anywhere on the page itself.** A user can create a
-  full account without the signup flow ever surfacing either document.
-**Decision needed from you**: exact copy for an explicit "by creating an
-account, you agree to..." line (product/legal wording), and whether to
-add Meta to the processor list (legal-text decision) — neither
-implemented here per the read-only constraint.
-**Dependencies**: none.
+### 3.3 — Privacy Policy omits Meta as a processor 🔵
+**Confirmed still open** (re-verified 2026-10-18). `src/routes/privacy.tsx`
+lists Anthropic, Twilio, Stripe, and Supabase as processors but **never
+mentions Meta**, despite a full Meta WhatsApp Cloud API integration
+already built (`meta-whatsapp-server.ts`, `ConnectWhatsAppMeta.tsx`,
+`api.whatsapp.meta-webhook.tsx`).
+**Decision needed from you**: whether to add Meta to the processor list,
+and exact wording — legal-text decision, not implemented here per the
+read-only constraint.
+**Dependencies**: none. (Signup Terms/Privacy links — the other half of
+this finding — resolved, see §1.8.)
 
 ### 3.4 — Supabase Auth rate limits / app-level protection 🔵
 **Confirmed still open** (re-verified 2026-10-18). Login (`login.tsx:43`),
@@ -360,8 +375,8 @@ change, not proposed for implementation now.
 
 1. Opt-out semantics for WhatsApp (§3.1) — product decision.
 2. Consent model for Meta WhatsApp connections (§3.2) — product/legal.
-3. Signup Terms/Privacy copy + whether to add Meta to the Privacy Policy's
-   processor list (§3.3) — product/legal.
+3. Whether to add Meta to the Privacy Policy's processor list (§3.3) —
+   product/legal. (Signup Terms/Privacy links — resolved, §1.8.)
 4. Check Supabase's actual dashboard Auth rate-limit settings, then decide
    if app-level throttling is also needed (§3.4) — provider-setting lookup
    + product decision.
