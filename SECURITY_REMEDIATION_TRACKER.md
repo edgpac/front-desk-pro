@@ -150,10 +150,12 @@ Last updated: 2026-10-18.
 
 ---
 
-## 2. Committed locally, NOT pushed — blocked
-
-### 2.1 — WhatsApp AI-to-AI / non-progressing-loop guard
-- **Commit**: `da22d34` (local only, one commit ahead of `origin/main`)
+### 1.7 — WhatsApp AI-to-AI / non-progressing-loop guard 🟢 PUSHED
+- **Commit**: `d1d1ef0` (pushed). Originally committed as `e3b1172`/`da22d34`,
+  held back pending migration coordination, then cherry-picked onto
+  `main` as `d1d1ef0` once the migration was confirmed live — same diff,
+  new hash, since the original commits had already been superseded by a
+  local reorder and a revert along the way (see the process note in §3).
 - **Finding**: a live incident where this app's own AI replied to an
   automated counterpart (e.g. Meta's own Business AI feature) with
   neither side recognizing the exchange wasn't progressing — bounded only
@@ -173,51 +175,36 @@ Last updated: 2026-10-18.
 - **Tests**: `whatsapp-loop-guard-server.test.ts` +
   `whatsapp-conversation-server.test.ts`, 60/60 passing. Full repo suite
   250/250, `tsc` clean, `bun run build` clean.
-- **Migration dependency**: `0024_whatsapp_loop_guards.sql` — **not yet
-  confirmed applied to production.** No mention of `0024` exists anywhere
-  in `ROADMAP.md`, and the migration file was untracked until this
-  engagement committed it — there is no record of it ever having been run
-  against the production database.
-- **Why this specific blocker matters**: every guard function above fails
-  **closed** on error (RPC/table missing → treated as "tripped" →
-  automated reply suppressed). If this code deploys before `0024` is
-  live, **every single inbound WhatsApp message, across every tenant,
-  gets paused and zero automated replies go out** — silently, from the
-  app's own perspective ("fail closed" working as designed), but it would
-  look to every tenant like the AI quoting pipeline simply stopped
-  responding.
-- **Approved way to apply + verify** (proposed — needs your execution,
-  not mine): run `supabase/migrations/0024_whatsapp_loop_guards.sql`
-  against production via the Supabase SQL Editor (the same flow used for
-  every prior migration this engagement), then run:
-  ```sql
-  -- Confirm both tables exist
-  select table_name from information_schema.tables
-  where table_schema = 'public' and table_name in ('whatsapp_loop_guards', 'whatsapp_interaction_events');
-
-  -- Confirm all five functions exist
-  select routine_name from information_schema.routines
-  where routine_schema = 'public' and routine_name in (
-    'record_whatsapp_interaction', 'claim_whatsapp_loop_notice',
-    'release_whatsapp_loop_notice_claim', 'mark_whatsapp_loop_notice_sent',
-    'resume_whatsapp_loop_guard'
-  );
-
-  -- Confirm RLS is enabled on both new tables (service-role only, same as other WhatsApp tables)
-  select relname, relrowsecurity from pg_class
-  where relname in ('whatsapp_loop_guards', 'whatsapp_interaction_events');
-  ```
-  All three queries should return the expected rows (2, 5, and 2
-  respectively, with `relrowsecurity = true`). Once you confirm this,
-  tell me and I'll push `da22d34` — a straightforward fast-forward, no
-  further review needed on my end since it's already fully tested and
-  isolated.
-- **Next action**: **yours** — apply + verify the migration, then
-  authorize the push.
+- **Migration dependency**: `0024_whatsapp_loop_guards.sql` — **confirmed
+  applied to production on 2026-10-18**, via the Supabase SQL Editor.
+  Verified with a combined query covering all 4 checks (2 tables, 5
+  functions, RLS on both tables, `leads` constraint widened to include
+  `loop_suspected`) — all 10 rows returned `true`, zero `MISSING`.
+  Confirmed before applying, separately, that the `leads_flag_type_check`
+  constraint this migration drops/recreates existed exactly as expected
+  (`convalidated: true`, all 5 pre-existing flag values present,
+  `loop_suspected` not yet among them) — so the one named-constraint
+  dependency the migration assumes was verified, not guessed.
+- **Why the blocker mattered** (resolved, kept for the record): every
+  guard function fails **closed** on error (RPC/table missing → treated
+  as "tripped" → automated reply suppressed) — deploying before `0024`
+  was live would have silently paused every automated WhatsApp reply
+  across every tenant. Not a live risk anymore now that the migration is
+  confirmed applied first.
+- **Deployment status**: pushed to `origin/main` as `d1d1ef0`
+  (`deac3ac..d1d1ef0`, fast-forward, no force). Will deploy on Vercel's
+  next build of `main`.
+- **Production verification still worth doing** (post-deploy, not
+  blocking): send a real WhatsApp test message through a connected tenant
+  and confirm a normal automated reply still goes out (proves the guard
+  isn't spuriously tripping on legitimate traffic now that it's live
+  against the real schema) — not yet performed as part of this push.
+- **Next action**: none required from me; optional for you — the
+  live-traffic smoke test above, whenever convenient.
 
 ---
 
-## 3. Preserved, untouched (not part of any commit above)
+## 2. Preserved, untouched (not part of any commit above)
 
 - `ROADMAP.md` — still has its own uncommitted edits from earlier this
   engagement (the "Future Database Tables" section). Left alone
@@ -239,24 +226,37 @@ Since neither had been pushed yet, I reordered them locally (via
 `git reset --soft` + rebuilding each commit from the same diffs, not an
 interactive rebase) so price-sheet, the Stripe refactor, the
 subscription-gate fix, and the reconciliation-script fix could all push
-independently, with WhatsApp left last and unpushed. This did not rewrite
-any already-pushed commit — only local-only history that had never left
-this machine.
+independently, with WhatsApp (`da22d34`) left last and unpushed. This did
+not rewrite any already-pushed commit — only local-only history that had
+never left this machine.
+
+**Process note on a mistake and its fix**: committing the tracker doc
+itself on top of `da22d34` meant the next `git push origin main` pushed
+the tracker commit AND the still-blocked WhatsApp commit together — an
+error, caught within minutes. Fixed with `git revert da22d34 --no-edit`
+(commit `deac3ac`), pushed immediately — a new commit undoing the change,
+not a force-push or history rewrite, so it's fully visible in the log.
+Once the migration was confirmed applied (see §1.7), `da22d34` was
+cherry-picked back onto `main` as `d1d1ef0` and pushed for real. Net
+effect on the repo: `da22d34`'s changes were briefly live, reverted
+within minutes, then correctly re-applied once the migration was
+actually confirmed — the log (`da22d34` → `1842651` → `deac3ac` →
+`d1d1ef0`) records exactly that sequence rather than hiding it.
 
 ---
 
-## 4. Next Security Phase — read-only findings (no fixes implemented)
+## 3. Next Security Phase — read-only findings (no fixes implemented)
 
 Re-verified against current code where noted; not re-investigated where
 nothing in this session's changes touched the relevant area (dates reflect
 when each was last confirmed against live code).
 
-### 4.1 — WhatsApp opt-out / STOP handling 🔵
+### 3.1 — WhatsApp opt-out / STOP handling 🔵
 **Confirmed still open** (re-verified 2026-10-18, current code). No
 opt-out/STOP/unsubscribe keyword handling anywhere in
 `whatsapp-conversation-server.ts`, `lead-reply-server.ts`,
 `meta-whatsapp-server.ts`, or either webhook route. No
-`whatsapp_opt_outs` table. The loop-guard feature (§2.1) is confirmed
+`whatsapp_opt_outs` table. The loop-guard feature (§1.7) is confirmed
 unrelated — spam/loop detection only, no opt-out semantics.
 **Outbound chokepoints** (where an opt-out check would need to live):
 AI-automated path funnels through `sendGuardedReply`
@@ -270,7 +270,7 @@ opt-out-check function + an integration-style test confirming a flagged
 number gets no automated or operator reply.
 **Dependencies**: none on other open items.
 
-### 4.2 — Meta/customer consent and authorization 🔵
+### 3.2 — Meta/customer consent and authorization 🔵
 **Confirmed still open** (re-verified 2026-10-18). Grepped
 `ConnectWhatsAppMeta.tsx`, `meta-whatsapp-server.ts`, and
 `dashboard.settings.business.tsx` for consent/opt-in language: zero hits.
@@ -282,7 +282,7 @@ code alone.
 **Dependencies**: none on other open items, but should be decided before
 Meta Advanced Access traffic scales up.
 
-### 4.3 — Privacy Policy processor disclosure + signup Terms/Privacy links 🔵
+### 3.3 — Privacy Policy processor disclosure + signup Terms/Privacy links 🔵
 **Confirmed still open, two distinct findings** (re-verified 2026-10-18,
 read both files in full):
 - `src/routes/privacy.tsx` lists Anthropic, Twilio, Stripe, and Supabase
@@ -298,7 +298,7 @@ add Meta to the processor list (legal-text decision) — neither
 implemented here per the read-only constraint.
 **Dependencies**: none.
 
-### 4.4 — Supabase Auth rate limits / app-level protection 🔵
+### 3.4 — Supabase Auth rate limits / app-level protection 🔵
 **Confirmed still open** (re-verified 2026-10-18). Login (`login.tsx:43`),
 signup (`signup.tsx:43-47`), password-reset request
 (`forgot-password.tsx:42-44`), and password-reset completion
@@ -316,7 +316,7 @@ added on top (would need its own design — this repo doesn't have a
 generic IP-rate-limit helper for non-tenant-scoped endpoints like auth).
 **Dependencies**: (a) blocks a real answer on (b).
 
-### 4.5 — Audit logging 🔵
+### 3.5 — Audit logging 🔵
 **Confirmed still absent** (re-verified 2026-10-18 — checked all 24
 current migrations directly, including the two new ones from this
 session): no `audit_log`/`audit_trail` table exists anywhere.
@@ -328,7 +328,7 @@ scoping question, not something I can resolve unilaterally.
 Advanced Access goes fully live, given WhatsApp credential handling is
 one of the more sensitive areas with zero audit trail today.
 
-### 4.6 — Session-token storage and XSS exposure ⚪ (architectural fact, not a new vulnerability)
+### 3.6 — Session-token storage and XSS exposure ⚪ (architectural fact, not a new vulnerability)
 **Re-confirmed 2026-10-18.** `src/integrations/supabase/client.ts` uses a
 custom storage adapter: Supabase's session (access+refresh JWT) goes to
 `localStorage` if "Remember me" is checked (default), `sessionStorage`
@@ -345,12 +345,10 @@ standing architectural fact. If this tool's security surface grows
 session storage would remove this exposure class entirely — a larger
 change, not proposed for implementation now.
 
-### 4.7 — Other findings, resolved this session ⚪
-- **Twilio webhook dedup** — was missing, now fixed as part of §2.1 (the
-  blocked WhatsApp commit): `MessageSid`-based dedup added, matching
-  Meta's route. Not yet live (blocked on the same migration gate, though
-  this specific piece doesn't actually depend on `0024` — see §2.1's own
-  note).
+### 3.7 — Other findings, resolved this session ⚪
+- **Twilio webhook dedup** — was missing, fixed and now live as part of
+  §1.7 (the WhatsApp commit, pushed as `d1d1ef0`): `MessageSid`-based
+  dedup added, matching Meta's route.
 - **Stripe webhook dedup** — has its own separate, durable claim-lease
   mechanism (`claim_stripe_event`/`complete_stripe_event`/
   `fail_stripe_event`, §1.2/§1.6), confirmed still correct, not reviewed
@@ -358,16 +356,15 @@ change, not proposed for implementation now.
 
 ---
 
-## 5. Summary of decisions needed from you
+## 4. Summary of decisions needed from you
 
-1. Apply + verify migration `0024` in production (§2.1), then authorize
-   pushing `da22d34`.
-2. Opt-out semantics for WhatsApp (§4.1) — product decision.
-3. Consent model for Meta WhatsApp connections (§4.2) — product/legal.
-4. Signup Terms/Privacy copy + whether to add Meta to the Privacy Policy's
-   processor list (§4.3) — product/legal.
-5. Check Supabase's actual dashboard Auth rate-limit settings, then decide
-   if app-level throttling is also needed (§4.4) — provider-setting lookup
+1. Opt-out semantics for WhatsApp (§3.1) — product decision.
+2. Consent model for Meta WhatsApp connections (§3.2) — product/legal.
+3. Signup Terms/Privacy copy + whether to add Meta to the Privacy Policy's
+   processor list (§3.3) — product/legal.
+4. Check Supabase's actual dashboard Auth rate-limit settings, then decide
+   if app-level throttling is also needed (§3.4) — provider-setting lookup
    + product decision.
-6. Scope what needs audit logging before any schema design starts (§4.5)
+5. Scope what needs audit logging before any schema design starts (§3.5)
    — product/compliance.
+6. Optional: run the WhatsApp live-traffic smoke test noted in §1.7.
