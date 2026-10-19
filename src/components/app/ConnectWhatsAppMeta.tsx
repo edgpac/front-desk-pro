@@ -11,7 +11,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { WhatsAppSetupGuideContent } from "@/components/app/WhatsAppSetupGuide";
+import { WhatsAppSetupGuideContent, WHATSAPP_CONSENT_NOTICE_VERSION } from "@/components/app/WhatsAppSetupGuide";
 import {
   completeMetaWhatsAppSignup,
   disconnectMetaWhatsApp,
@@ -211,7 +211,9 @@ export function ConnectWhatsAppMeta() {
         }
         void (async () => {
           try {
-            const result = await completeMetaWhatsAppSignup({ data: { code, wabaId, phoneNumberId } });
+            const result = await completeMetaWhatsAppSignup({
+              data: { code, wabaId, phoneNumberId, consentNoticeVersion: WHATSAPP_CONSENT_NOTICE_VERSION },
+            });
             if (result.status === "connected") {
               setStatus("connected");
               setDisplayPhoneNumber(result.displayPhoneNumber);
@@ -312,14 +314,19 @@ export function ConnectWhatsAppMeta() {
       )}
 
       {/* Required gate, not Meta's own UI — Meta's popup is a cross-origin
-          iframe we can't modify or skip steps in. This exists because the
-          real flow (live-verified end to end 2026-10-10) has several
-          moments a first-time subscriber would otherwise have to guess
-          through: unfamiliar "Business Portfolio" terminology, a greyed-out
-          option that looks broken but isn't, and a verification wait after
-          finishing that isn't instant messaging access. handleConnect (the
-          real FB.login() trigger) is only ever called from "Continue"
-          below, never from the button above directly. */}
+          iframe we can't modify or skip steps in. Two distinct things this
+          now covers, per a dedicated review: (1) the original Meta-UI
+          walkthrough (unfamiliar "Business Portfolio" terminology, a
+          greyed-out option that looks broken but isn't, a post-finish
+          verification wait) and (2) a plain-language acknowledgment of
+          what Job It Ready itself does with WhatsApp data once connected
+          (WhatsAppSetupGuideContent's new opening paragraph), with a real
+          Privacy Policy link. Neither covers WABA-access authorization
+          itself — that happens on Meta's own screens moments later — or
+          any consent the business owes its own customers, which this
+          component has no visibility into. handleConnect (the real
+          FB.login() trigger) is only ever called from "Continue" below,
+          never from the button above directly. */}
       <Dialog
         open={showGuideDialog}
         onOpenChange={(open) => {
@@ -341,7 +348,8 @@ export function ConnectWhatsAppMeta() {
               onCheckedChange={(value) => setGuideAcknowledged(value === true)}
               className="mt-0.5"
             />
-            I've read this and understand what to expect.
+            I've read the above and understand that connecting WhatsApp lets Job It Ready process
+            messages and photos from my business's WhatsApp number as described.
           </label>
           <DialogFooter>
             <Button

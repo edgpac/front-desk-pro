@@ -190,13 +190,24 @@ const SIGNUP_FAILED_MESSAGE = "Couldn't connect WhatsApp right now. Please try a
 
 export const completeMetaWhatsAppSignup = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .validator((input: { code: string; wabaId: string; phoneNumberId: string }) => input)
+  .validator((input: { code: string; wabaId: string; phoneNumberId: string; consentNoticeVersion: string }) => input)
   .handler(async ({ context, data }): Promise<MetaSignupResult> => {
     const code = data.code?.trim();
     const clientWabaId = data.wabaId?.trim();
     const clientPhoneNumberId = data.phoneNumberId?.trim();
+    const consentNoticeVersion = data.consentNoticeVersion?.trim();
     if (!code) {
       return { status: "error", message: "Missing signup code." };
+    }
+    // Enforced server-side, not just by the dialog's disabled button —
+    // the client UI can't be trusted as the only thing standing between
+    // a connection and the acknowledgment it's supposed to require. A
+    // direct call to this function with no (or an empty) notice version
+    // is rejected before anything else runs, same "the server is the
+    // real gate" posture already used for other enforcement in this
+    // codebase (e.g. the WhatsApp opt-out check).
+    if (!consentNoticeVersion) {
+      return { status: "error", message: "Missing consent acknowledgment. Please try connecting again." };
     }
     if (!clientWabaId || !clientPhoneNumberId) {
       return {
@@ -280,6 +291,11 @@ export const completeMetaWhatsAppSignup = createServerFn({ method: "POST" })
         meta_phone_number_id: phoneNumberId,
         meta_system_user_token: accessToken,
         display_phone_number: displayPhoneNumber,
+        // Operational evidence only — see 0026_whatsapp_connection_consent.sql's
+        // own comment for exactly what this is and isn't. Recorded at the
+        // same instant as the rest of this row, not fabricated or backfilled.
+        consent_notice_version: consentNoticeVersion,
+        consent_acknowledged_at: new Date().toISOString(),
         status: "verifying",
       })
       .select("id")
