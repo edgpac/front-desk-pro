@@ -4,10 +4,12 @@ import {
   classifyFollowUpIntent,
   classifyFollowUpPhotoIntent,
   isSupportedImageBase64,
+  detectLanguage,
   NO_DESCRIPTION_PLACEHOLDER,
   UNSUPPORTED_IMAGE_MESSAGE,
   type Answer,
   type PriceSheetItem,
+  type DetectedLanguage,
 } from "@/lib/estimate-server";
 import {
   createLead,
@@ -468,24 +470,146 @@ function formatQuotePriceLine(
   isDiagnosisOnly: boolean,
   hasNoPricedWork: boolean,
   hasPartiallyDeferredWork: boolean,
+  language: DetectedLanguage,
 ): string {
   if (hasNoPricedWork) {
     // Distinct from isDiagnosisOnly: that case still has a real, priced fee
     // to state a number for. This is "negotiated" mode with nothing else
     // matched at all — no lineItem, no number, "$0" would be a lie.
-    return `We can't price this without seeing it in person — a service-call/diagnostic fee applies, and we'll confirm the exact amount when we contact you to schedule the visit.`;
+    return isEs(language)
+      ? "No podemos darle un precio sin verlo en persona — aplica una tarifa de visita de servicio/diagnóstico, y confirmaremos el monto exacto cuando nos comuniquemos con usted para agendar la visita."
+      : "We can't price this without seeing it in person — a service-call/diagnostic fee applies, and we'll confirm the exact amount when we contact you to schedule the visit.";
   }
   const pricedPortion = isDiagnosisOnly
-    ? `Diagnosis visit fee: ${money(totalLow, currency)}, due for an in-person visit — this applies toward the total repair cost once we know what's needed.`
-    : `Estimated price: ${money(totalLow, currency)}.`;
+    ? isEs(language)
+      ? `Tarifa de visita de diagnóstico: ${money(totalLow, currency)}, correspondiente a una visita en persona — este monto se aplica al costo total de la reparación una vez que sepamos qué se necesita.`
+      : `Diagnosis visit fee: ${money(totalLow, currency)}, due for an in-person visit — this applies toward the total repair cost once we know what's needed.`
+    : isEs(language)
+      ? `Precio estimado: ${money(totalLow, currency)}.`
+      : `Estimated price: ${money(totalLow, currency)}.`;
   // P2 mixed-pricing: at least one other described issue has no price-sheet
   // match and was deferred — the total above is real and correct for what
   // IS priced, but it is not the whole request, so that must be said
   // explicitly rather than left to be inferred.
   if (hasPartiallyDeferredWork) {
-    return `${pricedPortion} One part of this request still needs an in-person look before we can price it — we'll confirm that separately when we're in touch.`;
+    return isEs(language)
+      ? `${pricedPortion} Una parte de esta solicitud aún necesita una revisión en persona antes de poder darle un precio — se lo confirmaremos por separado cuando nos comuniquemos.`
+      : `${pricedPortion} One part of this request still needs an in-person look before we can price it — we'll confirm that separately when we're in touch.`;
   }
   return pricedPortion;
+}
+
+// WhatsApp-specific customer-facing copy, localized to the customer's
+// detected language (estimate-server.ts's detectLanguage/LANGUAGE_NAME —
+// Claude already localizes diagnosis/questions/options per that same
+// detection inside getQuoteEstimate/getFollowUpAnswer/
+// classifyFollowUpPhotoIntent's own prompts). These are the surrounding
+// hardcoded strings THIS file builds itself around that AI-generated text
+// — previously always English regardless of detected language, producing
+// a jarring language switch mid-conversation for Spanish-speaking
+// customers (confirmed live, 2026-10-19: a fully-Spanish conversation
+// ended with an English "Estimated price... Want me to get this booked
+// in?" tail). Hebrew (also a detectLanguage outcome) has no translated
+// copy anywhere in this codebase yet (same pre-existing gap already in
+// reply-composer.ts's buildSuggestedReply) — falls back to English here
+// too, for consistency with that existing precedent rather than inventing
+// a half-covered third language.
+function isEs(language: DetectedLanguage): boolean {
+  return language === "es";
+}
+
+function localizedGreeting(language: DetectedLanguage, businessName: string): string {
+  return isEs(language)
+    ? `¡Gracias por contactar a ${businessName}! Para darle un precio rápido y preciso, envíe una foto junto con una descripción de lo que necesita — o simplemente describa el problema con más detalle y puedo ayudarle sin foto.`
+    : `Thanks for reaching out to ${businessName}! To get you a fast, accurate price, send a photo along with a description of what you need — or just describe the problem in more detail and I can help without one.`;
+}
+
+function localizedLostPhotoMessage(language: DetectedLanguage): string {
+  return isEs(language)
+    ? "Disculpe, perdí la foto original — ¿podría reenviarla junto con su respuesta?"
+    : "Sorry, I lost track of the original photo — could you resend it along with your answer?";
+}
+
+// A WhatsApp-only Spanish variant — the shared UNSUPPORTED_IMAGE_MESSAGE
+// constant (estimate-server.ts) stays English-only and unchanged, since
+// it's also compared with === as an error-type sentinel across channels
+// that don't have a conversational language to detect (the dashboard price
+// sheet upload, the widget's QuoteFlow.tsx). Only the customer-facing text
+// actually sent over WhatsApp is localized here.
+function localizedUnsupportedImageMessage(language: DetectedLanguage): string {
+  return isEs(language)
+    ? "Por favor envíe una foto en formato JPG o PNG. Las fotos HEIC no son compatibles."
+    : UNSUPPORTED_IMAGE_MESSAGE;
+}
+
+function localizedRecoveryMessage(language: DetectedLanguage): string {
+  return isEs(language)
+    ? "Entendido — hemos anotado todo hasta ahora, y el equipo le dará seguimiento con un precio. Si está preguntando sobre algo más, solo descríbalo y le daremos un nuevo estimado."
+    : "Got it — we've noted everything so far, and the team will follow up with you on a price. If you're asking about something else, just describe it and we'll get you a fresh estimate.";
+}
+
+function localizedClarifyingFallbackQuestion(language: DetectedLanguage): string {
+  return isEs(language) ? "¿Podría darme un poco más de detalle?" : "Can you tell me a bit more?";
+}
+
+function localizedPassAlongMessage(language: DetectedLanguage): string {
+  return isEs(language)
+    ? "Voy a pasar su mensaje a nuestro equipo."
+    : "I'll pass your message along to our team.";
+}
+
+function localizedPhotoLoadFailedMessage(language: DetectedLanguage): string {
+  return isEs(language)
+    ? "No pude cargar esa foto — ¿podría intentar enviarla de nuevo?"
+    : "I couldn't load that photo — could you try sending it again?";
+}
+
+function localizedDisambiguationQuestion(language: DetectedLanguage): string {
+  return isEs(language)
+    ? "¿Esta foto es sobre el trabajo que ya cotizamos, o es algo diferente que le gustaría que cotizáramos? Si es el mismo trabajo, por favor reenvíe la foto para poder verla con más detalle."
+    : "Is this photo about the job I already quoted, or something different you'd like priced? If it's the same job, go ahead and resend the photo so I can take a closer look.";
+}
+
+function localizedReassessFailedMessage(language: DetectedLanguage): string {
+  return isEs(language)
+    ? "Gracias por la foto — el equipo la revisará de cerca y le daremos seguimiento con el precio actualizado."
+    : "Thanks for the photo — I'll have the team take a closer look and follow up on the updated price.";
+}
+
+function localizedAskToConfirmMessage(language: DetectedLanguage): string {
+  return isEs(language)
+    ? "Gracias por la foto — para asegurarme de darle el precio correcto, ¿podría confirmar: esto sigue siendo sobre el mismo trabajo que cotizamos, o algo cambió?"
+    : "Thanks for the photo — to make sure I price this correctly, can you confirm: is this still about the same job I quoted, or has something changed?";
+}
+
+function localizedPhotoUpdateIntro(language: DetectedLanguage): string {
+  return isEs(language)
+    ? "¡Gracias por la foto! Según lo que puedo ver, actualicé su estimado:"
+    : "Thanks for the photo! Based on what I can see, I've updated your estimate:";
+}
+
+function localizedPreviousPriceNote(language: DetectedLanguage, amount: string): string {
+  return isEs(language) ? ` (antes ${amount}.)` : ` (previously ${amount}.)`;
+}
+
+// Evidence-aware closing line — must never claim photo evidence that was
+// never actually sent. Live-confirmed defect, 2026-10-19: a text-only
+// Spanish conversation (no photo ever attached) still received "Este
+// estimado se basa en las fotos..." — the photo-based wording was
+// previously unconditional regardless of whether a photo existed. hadPhoto
+// reflects whether THIS round's message actually carried one (not whether
+// any photo exists anywhere in the lead's history).
+function localizedEstimateBasisClosing(language: DetectedLanguage, hadPhoto: boolean): string {
+  if (isEs(language)) {
+    const basis = hadPhoto
+      ? "Este estimado se basa en las fotos e información proporcionada de forma remota."
+      : "Este estimado se basa en la información y descripción proporcionada.";
+    return `${basis} Si el problema real o el alcance del trabajo es diferente a lo presentado, el precio final podría cambiar después de una inspección en sitio. ¿Le gustaría que agendemos la visita?`;
+  }
+  const basis = hadPhoto
+    ? "This estimate is based on the photos and information provided remotely."
+    : "This estimate is based on the information and description provided.";
+  return `${basis} If the actual issue or scope of work is different than what was presented, the final price may change after inspection. Want me to get this booked in?`;
 }
 
 // Channel-agnostic core extracted from api.whatsapp.webhook.tsx (the
@@ -656,6 +780,14 @@ export async function handleInboundWhatsAppMessage(params: {
     await admin.from("lead_messages").insert({ lead_id: openLead.id, role: "customer", body });
 
     const claimed = await withLeadProcessingClaim(admin, tenant.id, fromPhone, async () => {
+      // Computed once per round and reused for every customer-facing string
+      // this branch builds itself (the AI's own diagnosis/questions/options
+      // are already localized independently, per getQuoteEstimate's own
+      // prompt instruction) — keeps every reply in one conversation turn in
+      // the same language, rather than redetecting (and risking a
+      // different outcome) per message.
+      const language = detectLanguage(openLead.problem, body);
+
       const { data: priorMessages } = await admin
         .from("lead_messages")
         .select("role, body")
@@ -716,8 +848,7 @@ export async function handleInboundWhatsAppMessage(params: {
           clarifyImageMediaType = media.mediaType;
         } catch (err) {
           console.error("Could not re-download the original WhatsApp photo:", err);
-          const lostPhotoMessage =
-            "Sorry, I lost track of the original photo — could you resend it along with your answer?";
+          const lostPhotoMessage = localizedLostPhotoMessage(language);
           await sendGuardedReply({
             admin,
             tenant,
@@ -751,14 +882,15 @@ export async function handleInboundWhatsAppMessage(params: {
         });
       } catch (err) {
         if (err instanceof Error && err.message === UNSUPPORTED_IMAGE_MESSAGE) {
+          const unsupportedImageMessage = localizedUnsupportedImageMessage(language);
           await sendGuardedReply({
             admin,
             tenant,
             fromPhone,
             adapter,
             leadId: openLead.id,
-            signature: { kind: "text", text: UNSUPPORTED_IMAGE_MESSAGE },
-            messageText: UNSUPPORTED_IMAGE_MESSAGE,
+            signature: { kind: "text", text: unsupportedImageMessage },
+            messageText: unsupportedImageMessage,
           });
           return;
         }
@@ -789,8 +921,7 @@ export async function handleInboundWhatsAppMessage(params: {
         // request in the same breath (the next message gets a genuine fresh
         // attempt either way, per decideLeadRoute — this just tells the
         // customer that's an option instead of leaving it implicit).
-        const recoveryMessage =
-          "Got it — we've noted everything so far, and the team will follow up with you on a price. If you're asking about something else, just describe it and we'll get you a fresh estimate.";
+        const recoveryMessage = localizedRecoveryMessage(language);
         await sendGuardedReply({
           admin,
           tenant,
@@ -811,7 +942,7 @@ export async function handleInboundWhatsAppMessage(params: {
       if (clarifyResult.needsClarification) {
         const question = clarifyResult.questions[0];
         const optionsText = question?.options?.length ? `\n(${question.options.join(" / ")})` : "";
-        const questionText = `${question?.question ?? "Can you tell me a bit more?"}${optionsText}`;
+        const questionText = `${question?.question ?? localizedClarifyingFallbackQuestion(language)}${optionsText}`;
         await sendGuardedReply({
           admin,
           tenant,
@@ -830,7 +961,7 @@ export async function handleInboundWhatsAppMessage(params: {
       }
 
       if (clarifyResult.outOfScope) {
-        const passAlongMessage = "I'll pass your message along to our team.";
+        const passAlongMessage = localizedPassAlongMessage(language);
         // Flag update and owner notification happen regardless of guard
         // state — if automation is paused, the owner needs to know even
         // more, not less, so they can follow up manually. Only the
@@ -904,7 +1035,7 @@ export async function handleInboundWhatsAppMessage(params: {
           priceSheetItemIds: clarifyResult.lineItems.map((item) => item.priceSheetItemId),
           amounts: [...clarifyResult.lineItems.map((item) => item.amount), clarifyResult.totalLow],
         },
-        messageText: `${clarifyResult.diagnosis} ${formatQuotePriceLine(clarifyResult.totalLow, tenant.currency, clarifyResult.isDiagnosisOnly, clarifyResult.hasNoPricedWork, clarifyResult.hasPartiallyDeferredWork)} This estimate is based on the photos and information provided remotely. If the actual issue or scope of work is different than what was presented, the final price may change after inspection. Want me to get this booked in?`,
+        messageText: `${clarifyResult.diagnosis} ${formatQuotePriceLine(clarifyResult.totalLow, tenant.currency, clarifyResult.isDiagnosisOnly, clarifyResult.hasNoPricedWork, clarifyResult.hasPartiallyDeferredWork, language)} ${localizedEstimateBasisClosing(language, clarifyImageBase64 !== undefined)}`,
       });
 
       return;
@@ -1133,7 +1264,7 @@ export async function handleInboundWhatsAppMessage(params: {
       adapter,
       leadId: null,
       signature: { kind: "text", text: "canned:thin-description-greeting" },
-      messageText: `Thanks for reaching out to ${tenant.name}! To get you a fast, accurate price, send a photo along with a description of what you need — or just describe the problem in more detail and I can help without one.`,
+      messageText: localizedGreeting(detectLanguage(body), tenant.name),
     });
     return;
   }
@@ -1203,6 +1334,19 @@ async function handleQuotedFollowUpPhoto(params: {
   };
 }): Promise<boolean> {
   const { tenant, fromPhone, body, mediaRef, profileName, adapter, admin, openLead } = params;
+  // Computed once and reused for every customer-facing string this
+  // function builds itself — see the continue_clarification branch above
+  // for the same reasoning (the AI's own diagnosis/classification text is
+  // already localized independently). Deliberately customer-authored text
+  // ONLY (problem + this round's reply) — openLead.diagnosis is AI-
+  // generated, not something the customer wrote, and including it here
+  // would let a stored diagnosis in one language silently override a
+  // reliable signal from the customer's own words in the other. Found
+  // during review (2026-10-19): the original version of this line included
+  // openLead.diagnosis, which meant a lead whose diagnosis happened to
+  // read differently than the customer's own problem/reply text could
+  // flip the detected language out from under them.
+  const language = detectLanguage(openLead.problem, body);
 
   let imageBase64: string;
   let imageMediaType: string;
@@ -1215,7 +1359,7 @@ async function handleQuotedFollowUpPhoto(params: {
       `Could not download WhatsApp photo for follow-up classification, lead ${openLead.id}:`,
       err,
     );
-    const photoLoadFailedMessage = "I couldn't load that photo — could you try sending it again?";
+    const photoLoadFailedMessage = localizedPhotoLoadFailedMessage(language);
     await sendGuardedReply({
       admin,
       tenant,
@@ -1229,14 +1373,15 @@ async function handleQuotedFollowUpPhoto(params: {
   }
 
   if (!isSupportedImageBase64(imageBase64)) {
+    const unsupportedImageMessage = localizedUnsupportedImageMessage(language);
     await sendGuardedReply({
       admin,
       tenant,
       fromPhone,
       adapter,
       leadId: openLead.id,
-      signature: { kind: "text", text: UNSUPPORTED_IMAGE_MESSAGE },
-      messageText: UNSUPPORTED_IMAGE_MESSAGE,
+      signature: { kind: "text", text: unsupportedImageMessage },
+      messageText: unsupportedImageMessage,
     });
     return true;
   }
@@ -1256,8 +1401,7 @@ async function handleQuotedFollowUpPhoto(params: {
   }
 
   if (classification === "ambiguous") {
-    const disambiguationQuestion =
-      "Is this photo about the job I already quoted, or something different you'd like priced? If it's the same job, go ahead and resend the photo so I can take a closer look.";
+    const disambiguationQuestion = localizedDisambiguationQuestion(language);
     await sendGuardedReply({
       admin,
       tenant,
@@ -1345,8 +1489,7 @@ async function handleQuotedFollowUpPhoto(params: {
         });
       } catch (err) {
         console.error(`Reassessment failed for lead ${openLead.id}:`, err);
-        const reassessFailedMessage =
-          "Thanks for the photo — I'll have the team take a closer look and follow up on the updated price.";
+        const reassessFailedMessage = localizedReassessFailedMessage(language);
         await sendGuardedReply({
           admin,
           tenant,
@@ -1365,8 +1508,7 @@ async function handleQuotedFollowUpPhoto(params: {
       // the same fallback here: couldn't confidently reassess even with the
       // photo in hand, so ask rather than silently guess, change nothing, and
       // never duplicate the lead.
-      const askToConfirmMessage =
-        "Thanks for the photo — to make sure I price this correctly, can you confirm: is this still about the same job I quoted, or has something changed?";
+      const askToConfirmMessage = localizedAskToConfirmMessage(language);
       if (reassessed.needsClarification) {
         await sendGuardedReply({
           admin,
@@ -1466,8 +1608,8 @@ async function handleQuotedFollowUpPhoto(params: {
       // as a fabricated number rather than "nothing was priced yet."
       const previousPriceNote = existingHasNoPricedWork
         ? ""
-        : ` (previously ${money(existingTotal, tenant.currency)}.)`;
-      const updateMessage = `Thanks for the photo! Based on what I can see, I've updated your estimate: ${reassessed.diagnosis} ${formatQuotePriceLine(newTotal, tenant.currency, reassessed.isDiagnosisOnly, reassessed.hasNoPricedWork, reassessed.hasPartiallyDeferredWork)}${previousPriceNote}`;
+        : localizedPreviousPriceNote(language, money(existingTotal, tenant.currency));
+      const updateMessage = `${localizedPhotoUpdateIntro(language)} ${reassessed.diagnosis} ${formatQuotePriceLine(newTotal, tenant.currency, reassessed.isDiagnosisOnly, reassessed.hasNoPricedWork, reassessed.hasPartiallyDeferredWork, language)}${previousPriceNote}`;
       await sendGuardedReply({
         admin,
         tenant,
@@ -1513,6 +1655,10 @@ async function handleFreshQuote(params: {
   admin: ReturnType<typeof getAdminClient>;
 }): Promise<void> {
   const { tenant, fromPhone, body, mediaRef, profileName, channel, adapter, admin } = params;
+  // No prior lead/diagnosis exists yet at this point — body is the only
+  // signal available, same reasoning as the thin-description greeting
+  // above.
+  const language = detectLanguage(body);
 
   const { data: priceSheetRows } = await admin
     .from("price_sheet_items")
@@ -1547,7 +1693,7 @@ async function handleFreshQuote(params: {
       imageMediaType = media.mediaType;
     } catch (err) {
       console.error("Could not download WhatsApp photo:", err);
-      const photoLoadFailedMessage = "I couldn't load that photo — could you try sending it again?";
+      const photoLoadFailedMessage = localizedPhotoLoadFailedMessage(language);
       await sendGuardedReply({
         admin,
         tenant,
@@ -1578,14 +1724,15 @@ async function handleFreshQuote(params: {
     });
   } catch (err) {
     if (err instanceof Error && err.message === UNSUPPORTED_IMAGE_MESSAGE) {
+      const unsupportedImageMessage = localizedUnsupportedImageMessage(language);
       await sendGuardedReply({
         admin,
         tenant,
         fromPhone,
         adapter,
         leadId: null,
-        signature: { kind: "text", text: UNSUPPORTED_IMAGE_MESSAGE },
-        messageText: UNSUPPORTED_IMAGE_MESSAGE,
+        signature: { kind: "text", text: unsupportedImageMessage },
+        messageText: unsupportedImageMessage,
       });
       return;
     }
@@ -1595,7 +1742,7 @@ async function handleFreshQuote(params: {
   if (result.needsClarification) {
     const question = result.questions[0];
     const optionsText = question?.options?.length ? `\n(${question.options.join(" / ")})` : "";
-    const questionText = `${question?.question ?? "Can you tell me a bit more?"}${optionsText}`;
+    const questionText = `${question?.question ?? localizedClarifyingFallbackQuestion(language)}${optionsText}`;
 
     // Create the lead now, at the first clarification round, instead of
     // just replying and discarding the original photo/description — that
@@ -1639,7 +1786,7 @@ async function handleFreshQuote(params: {
 
   if (result.outOfScope) {
     const openingProblem = body || NO_DESCRIPTION_PLACEHOLDER;
-    const passAlongMessage = "I'll pass your message along to our team.";
+    const passAlongMessage = localizedPassAlongMessage(language);
     const { id: leadId } = await createFlaggedLead({
       data: {
         tenantSlug: tenant.slug,
@@ -1715,6 +1862,6 @@ async function handleFreshQuote(params: {
       priceSheetItemIds: result.lineItems.map((item) => item.priceSheetItemId),
       amounts: [...result.lineItems.map((item) => item.amount), result.totalLow],
     },
-    messageText: `${result.diagnosis} ${formatQuotePriceLine(result.totalLow, tenant.currency, result.isDiagnosisOnly, result.hasNoPricedWork, result.hasPartiallyDeferredWork)} This estimate is based on the photos and information provided remotely. If the actual issue or scope of work is different than what was presented, the final price may change after inspection. Want me to get this booked in?`,
+    messageText: `${result.diagnosis} ${formatQuotePriceLine(result.totalLow, tenant.currency, result.isDiagnosisOnly, result.hasNoPricedWork, result.hasPartiallyDeferredWork, language)} ${localizedEstimateBasisClosing(language, imageBase64 !== undefined)}`,
   });
 }

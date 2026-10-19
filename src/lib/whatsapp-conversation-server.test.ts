@@ -20,15 +20,24 @@ vi.mock("@/lib/public-lead-server", () => ({
   createFlaggedLead: vi.fn(),
   finalizeLeadWithQuote: vi.fn(),
 }));
-vi.mock("@/lib/estimate-server", () => ({
-  getQuoteEstimate: vi.fn(),
-  getFollowUpAnswer: vi.fn(),
-  classifyFollowUpIntent: vi.fn(),
-  classifyFollowUpPhotoIntent: vi.fn(),
-  isSupportedImageBase64: vi.fn(() => true),
-  NO_DESCRIPTION_PLACEHOLDER: "no description provided",
-  UNSUPPORTED_IMAGE_MESSAGE: "unsupported image message",
-}));
+vi.mock("@/lib/estimate-server", async (importOriginal) => {
+  // detectLanguage is real, not mocked — it's a pure, deterministic
+  // pattern-matcher (see estimate-server.ts), and the whatsapp-conversation-
+  // server.ts localization tests below depend on its actual Spanish-
+  // detection behavior to verify real language-routing, not a fake return
+  // value that would prove nothing about the real code path.
+  const actual = await importOriginal<typeof import("@/lib/estimate-server")>();
+  return {
+    getQuoteEstimate: vi.fn(),
+    getFollowUpAnswer: vi.fn(),
+    classifyFollowUpIntent: vi.fn(),
+    classifyFollowUpPhotoIntent: vi.fn(),
+    isSupportedImageBase64: vi.fn(() => true),
+    detectLanguage: actual.detectLanguage,
+    NO_DESCRIPTION_PLACEHOLDER: "no description provided",
+    UNSUPPORTED_IMAGE_MESSAGE: "unsupported image message",
+  };
+});
 vi.mock("@/lib/notify-server", () => ({
   sendFollowUpNotificationEmail: vi.fn(),
 }));
@@ -45,7 +54,12 @@ import {
 } from "./whatsapp-conversation-server";
 import { claimLoopNotice } from "./whatsapp-loop-guard-server";
 import { isOptedOut, normalizePhone } from "./whatsapp-opt-out-server";
-import { getAdminClient, createFlaggedLead, finalizeLeadWithQuote } from "@/lib/public-lead-server";
+import {
+  getAdminClient,
+  createLead,
+  createFlaggedLead,
+  finalizeLeadWithQuote,
+} from "@/lib/public-lead-server";
 import {
   getQuoteEstimate,
   classifyFollowUpIntent,
@@ -1618,6 +1632,469 @@ function fakeOptOutAdmin(config: { row?: FakeOptOutRow } = {}) {
   };
   return { admin: admin as unknown as SupabaseClient, row, calls };
 }
+
+// Localization regression coverage (2026-10-19): a real production
+// conversation was observed getting a Spanish AI-generated diagnosis
+// followed by a hardcoded English "Estimated price... Want me to get this
+// booked in?" tail — the surrounding template text this file builds itself
+// never branched on detectLanguage, unlike the AI's own diagnosis/question
+// text. Also covers the related evidence-language defect: the closing
+// line claimed "based on the photos" even on a text-only conversation that
+// never sent one.
+function fakeFreshQuoteAdmin() {
+  const calls = {
+    leadMessageInserts: [] as Array<{ lead_id: string; role: string; body: string }>,
+  };
+  const admin = {
+    rpc: async (name: string) => {
+      if (name === "record_whatsapp_interaction") {
+        return {
+          data: [
+            {
+              tripped: false,
+              just_tripped: false,
+              trip_reason: null,
+              is_duplicate_content: false,
+              duplicate_content_count: 0,
+              repeat_count: 0,
+              recent_event_count: 0,
+            },
+          ],
+          error: null,
+        };
+      }
+      if (name === "claim_whatsapp_lead_slot") return { data: true, error: null };
+      if (name === "release_whatsapp_lead_slot") return { data: null, error: null };
+      throw new Error(`fakeFreshQuoteAdmin: unexpected rpc "${name}"`);
+    },
+    from: (table: string) => {
+      if (table === "whatsapp_opt_outs") {
+        return {
+          select: () => ({
+            eq: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null, error: null }) }) }),
+          }),
+        };
+      }
+      if (table === "leads") {
+        // No open lead — every test in this block is a genuinely fresh,
+        // first-ever conversation from this phone number.
+        const chain: Record<string, unknown> = {
+          eq: () => chain,
+          gte: () => chain,
+          order: () => chain,
+          limit: () => chain,
+          maybeSingle: async () => ({ data: null, error: null }),
+        };
+        return { select: () => chain };
+      }
+      if (table === "price_sheet_items") {
+        return { select: () => ({ eq: async () => ({ data: [], error: null }) }) };
+      }
+      if (table === "lead_messages") {
+        return {
+          insert: async (row: { lead_id: string; role: string; body: string }) => {
+            calls.leadMessageInserts.push(row);
+            return { error: null };
+          },
+        };
+      }
+      throw new Error(`fakeFreshQuoteAdmin: unexpected table "${table}"`);
+    },
+  };
+  return { admin: admin as unknown as SupabaseClient, calls };
+}
+
+const PRICED_RESULT = {
+  needsClarification: false,
+  outOfScope: false,
+  isEmergency: false,
+  issueType: "Plumbing",
+  severity: "Low",
+  confidence: "High",
+  diagnosis: "Standard kitchen faucet replacement.",
+  isDiagnosisOnly: false,
+  hasNoPricedWork: false,
+  hasPartiallyDeferredWork: false,
+  lineItems: [
+    {
+      description: "Kitchen faucet replacement",
+      detail: "",
+      amount: 120,
+      priceSheetItemId: "ps-1",
+      hours: undefined,
+    },
+  ],
+  totalLow: 120,
+  totalHigh: 120,
+};
+
+describe("WhatsApp conversation language localization", () => {
+  beforeEach(() => {
+    vi.mocked(getQuoteEstimate).mockClear();
+    vi.mocked(createLead).mockClear();
+    vi.mocked(createLead).mockResolvedValue({ id: "new-lead-1" } as any);
+  });
+
+  it("instant quote, English, no photo: closing says 'information and description provided', never 'photos'", async () => {
+    const { admin } = fakeFreshQuoteAdmin();
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(getQuoteEstimate).mockResolvedValue(PRICED_RESULT as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "How much to replace a kitchen faucet?",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body).toContain(
+      "This estimate is based on the information and description provided.",
+    );
+    expect(sent[0]!.body).not.toContain("based on the photos");
+  });
+
+  it("instant quote, English, with photo: closing preserves the existing 'photos and information' wording", async () => {
+    const { admin } = fakeFreshQuoteAdmin();
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(getQuoteEstimate).mockResolvedValue(PRICED_RESULT as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "How much to replace a kitchen faucet?",
+      mediaRef: "media-ref-en-photo",
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body).toContain(
+      "This estimate is based on the photos and information provided remotely.",
+    );
+  });
+
+  it("instant quote, Spanish, no photo: entire reply is in Spanish, and never claims photo evidence that was never sent", async () => {
+    const { admin } = fakeFreshQuoteAdmin();
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(getQuoteEstimate).mockResolvedValue({
+      ...PRICED_RESULT,
+      diagnosis: "Reemplazo estándar de la llave de la cocina.",
+    } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "Tengo una fuga de agua en el baño, ¿cuánto cuesta repararla?",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(1);
+    const body = sent[0]!.body;
+    expect(body).toContain("Precio estimado:");
+    expect(body).toContain("Este estimado se basa en la información y descripción proporcionada.");
+    expect(body).toContain("¿Le gustaría que agendemos la visita?");
+    // The evidence-language bug this regression guards against: never say
+    // "based on photos" (in either language) when none was ever sent.
+    expect(body).not.toContain("fotos");
+    expect(body).not.toContain("This estimate is based on");
+  });
+
+  it("instant quote, Spanish, with photo: closing correctly claims photo evidence since one was actually sent", async () => {
+    const { admin } = fakeFreshQuoteAdmin();
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(getQuoteEstimate).mockResolvedValue({
+      ...PRICED_RESULT,
+      diagnosis: "Reemplazo estándar de la llave de la cocina.",
+    } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "Tengo una fuga de agua, aquí está la foto",
+      mediaRef: "media-ref-es-photo",
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body).toContain(
+      "Este estimado se basa en las fotos e información proporcionada de forma remota.",
+    );
+  });
+
+  // Photo-reassessment update path (handleQuotedFollowUpPhoto) — a
+  // different function/template than the instant-quote path above, with
+  // its own separate hardcoded English strings that had the identical bug.
+  const SPANISH_QUOTED_LEAD: FakeOpenLead = {
+    id: "lead-es-1",
+    customer_name: "Cliente",
+    photo_url: null,
+    problem: "Tengo una fuga de agua en el baño.",
+    confidence: "High",
+    diagnosis: "Fuga en la llave de paso del lavabo.",
+    flag_type: null,
+  };
+
+  it("photo-reassessment update, Spanish conversation: intro and price line are in Spanish", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: SPANISH_QUOTED_LEAD,
+      leadSlotClaimSucceeds: true,
+      existingLineItems: [{ description: "Reparación de llave de paso", rate: 120, qty: 1 }],
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(classifyFollowUpPhotoIntent).mockResolvedValue({ classification: "same_job" } as any);
+    vi.mocked(getQuoteEstimate).mockResolvedValue({
+      needsClarification: false,
+      outOfScope: false,
+      isEmergency: false,
+      issueType: "Plumbing",
+      severity: "Medium",
+      confidence: "High",
+      diagnosis: "Válvulas corroídas encontradas — la reparación es más extensa de lo normal.",
+      isDiagnosisOnly: false,
+      hasNoPricedWork: false,
+      hasPartiallyDeferredWork: false,
+      lineItems: [
+        {
+          description: "Reparación de llave de paso",
+          detail: "Válvulas corroídas",
+          amount: 185,
+          priceSheetItemId: "ps-1",
+          hours: undefined,
+        },
+      ],
+      totalLow: 185,
+      totalHigh: 185,
+    } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "aquí está cómo se ve",
+      mediaRef: "media-ref-es-reassess",
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(1);
+    const body = sent[0]!.body;
+    expect(body).toContain("¡Gracias por la foto! Según lo que puedo ver, actualicé su estimado:");
+    expect(body).toContain("Precio estimado:");
+    expect(body).toContain("(antes");
+    expect(body).not.toContain("Thanks for the photo");
+  });
+
+  it("photo-reassessment update, English conversation: unchanged, still in English (regression)", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: {
+        id: "lead-en-1",
+        customer_name: "Riley",
+        photo_url: null,
+        problem: "Kitchen faucet needs replacing.",
+        confidence: "High",
+        diagnosis: "Standard kitchen faucet replacement.",
+        flag_type: null,
+      },
+      leadSlotClaimSucceeds: true,
+      existingLineItems: [{ description: "Kitchen faucet replacement", rate: 120, qty: 1 }],
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(classifyFollowUpPhotoIntent).mockResolvedValue({ classification: "same_job" } as any);
+    vi.mocked(getQuoteEstimate).mockResolvedValue({
+      needsClarification: false,
+      outOfScope: false,
+      isEmergency: false,
+      issueType: "Plumbing",
+      severity: "Medium",
+      confidence: "High",
+      diagnosis: "Corroded shut-off valves found — replacement is more involved than standard.",
+      isDiagnosisOnly: false,
+      hasNoPricedWork: false,
+      hasPartiallyDeferredWork: false,
+      lineItems: [
+        {
+          description: "Kitchen faucet replacement",
+          detail: "Corroded valves",
+          amount: 185,
+          priceSheetItemId: "ps-1",
+          hours: undefined,
+        },
+      ],
+      totalLow: 185,
+      totalHigh: 185,
+    } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "here's what it looks like",
+      mediaRef: "media-ref-en-reassess",
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(1);
+    const body = sent[0]!.body;
+    expect(body).toContain(
+      "Thanks for the photo! Based on what I can see, I've updated your estimate:",
+    );
+    expect(body).toContain("(previously");
+    expect(body).not.toContain("Gracias por la foto");
+  });
+
+  // Regression for a real review finding (2026-10-19): the first version of
+  // this localization fix detected language from openLead.problem +
+  // openLead.diagnosis + body combined — meaning a lead's stored (AI-
+  // generated) diagnosis could silently override a reliable signal from
+  // the customer's OWN words. Fixed to detect from problem + body only.
+  // These two cases are the direct, deliberately mismatched proof: the
+  // customer's own text (problem, and this round's reply) must win even
+  // when the lead's existing diagnosis text reads in the other language.
+  it("language detection prefers the customer's own words: English problem + Spanish-reading stored diagnosis stays English", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: {
+        id: "lead-mismatch-1",
+        customer_name: "Riley",
+        photo_url: null,
+        problem: "Kitchen faucet needs replacing.",
+        confidence: "High",
+        // Deliberately contains a word from estimate-server.ts's own
+        // SPANISH_PATTERNS list ("problema") — a real, guaranteed pattern
+        // match, not just Spanish-looking prose — to prove it's never
+        // consulted for language detection — only openLead.problem and the
+        // customer's current reply (body) are. (A prior draft of this test
+        // used Spanish prose that happened not to match any actual
+        // detectLanguage pattern, which meant it passed even against the
+        // bug this test exists to catch — confirmed by deliberately
+        // reverting the fix and seeing it still pass. This wording was
+        // chosen specifically so reverting the fix makes this test fail.)
+        diagnosis: "Hay un problema con la llave de la cocina.",
+        flag_type: null,
+      },
+      leadSlotClaimSucceeds: true,
+      existingLineItems: [{ description: "Kitchen faucet replacement", rate: 120, qty: 1 }],
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(classifyFollowUpPhotoIntent).mockResolvedValue({ classification: "same_job" } as any);
+    vi.mocked(getQuoteEstimate).mockResolvedValue({
+      ...PRICED_RESULT,
+      diagnosis: "Corroded shut-off valves found.",
+      totalLow: 185,
+      totalHigh: 185,
+      lineItems: [
+        {
+          description: "Kitchen faucet replacement",
+          detail: "Corroded valves",
+          amount: 185,
+          priceSheetItemId: "ps-1",
+          hours: undefined,
+        },
+      ],
+    } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "here's what it looks like now",
+      mediaRef: "media-ref-mismatch-1",
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body).toContain(
+      "Thanks for the photo! Based on what I can see, I've updated your estimate:",
+    );
+    expect(sent[0]!.body).not.toContain("Gracias por la foto");
+  });
+
+  // Note on asymmetry: detectLanguage is a simple "does any Spanish pattern
+  // appear anywhere in the combined text" OR-test — appending more text
+  // (like a diagnosis) can only ever ADD a false match, never remove one
+  // the customer's own words already produced. So this direction can't
+  // actually be flipped by a mismatched diagnosis the way the opposite
+  // direction (tested above) can — this case instead confirms Spanish
+  // detection from the customer's own words stays correct regardless of
+  // what the stored diagnosis separately says, which is still worth
+  // locking in even though it isn't a red/green distinguishing case.
+  it("Spanish problem + English-reading stored diagnosis: Spanish is still correctly detected from the customer's own words", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: {
+        id: "lead-mismatch-2",
+        customer_name: "Cliente",
+        photo_url: null,
+        problem: "Tengo una fuga de agua en el baño.",
+        confidence: "High",
+        // Deliberately English, to prove it's never consulted.
+        diagnosis: "Standard shut-off valve repair.",
+        flag_type: null,
+      },
+      leadSlotClaimSucceeds: true,
+      existingLineItems: [{ description: "Reparación de llave de paso", rate: 120, qty: 1 }],
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(classifyFollowUpPhotoIntent).mockResolvedValue({ classification: "same_job" } as any);
+    vi.mocked(getQuoteEstimate).mockResolvedValue({
+      ...PRICED_RESULT,
+      diagnosis: "Válvulas corroídas encontradas.",
+      totalLow: 185,
+      totalHigh: 185,
+      lineItems: [
+        {
+          description: "Reparación de llave de paso",
+          detail: "Válvulas corroídas",
+          amount: 185,
+          priceSheetItemId: "ps-1",
+          hours: undefined,
+        },
+      ],
+    } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "así se ve ahora",
+      mediaRef: "media-ref-mismatch-2",
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body).toContain(
+      "¡Gracias por la foto! Según lo que puedo ver, actualicé su estimado:",
+    );
+    expect(sent[0]!.body).not.toContain("Thanks for the photo");
+  });
+});
 
 describe("WhatsApp opt-out — handleInboundWhatsAppMessage's state machine", () => {
   it("a STOP message records the opt-out and sends exactly one confirmation, with no AI/reply pipeline touched", async () => {
