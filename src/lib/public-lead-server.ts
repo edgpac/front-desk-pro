@@ -636,10 +636,20 @@ export const performFinalizeLeadWithQuote = createServerOnlyFn(
     // A leadId belonging to a different tenant simply matches zero rows —
     // update_lead_with_line_items returns null in that case.
     //
-    // P2: same priority ordering as createLead above. Passing status: null
-    // means "leave status/flag_type/flag_reason untouched" (matching the
-    // original conditional-spread behavior) — see the RPC's own comment in
-    // 0019_lead_write_atomicity.sql.
+    // P2: same priority ordering as createLead above. 2026-10-19 fix
+    // (0028_fix_lead_reassessment_atomicity.sql): the RPC no longer treats
+    // status: null as "leave flag fields untouched" — every call now states
+    // the lead's real target status/flag_type/flag_reason explicitly, so a
+    // reassessment can actually clear a stale pricing flag once it no
+    // longer applies (the second of two confirmed defects that migration
+    // fixes). status: "new" here matches create_lead_with_line_items' own
+    // coalesce(p_status, 'new') default for a brand-new lead — this is the
+    // same "normal, unflagged, quoted" state every pre-existing caller
+    // already produced for this branch, just explicit now instead of
+    // implicit. The RPC itself still protects any UNRELATED operational
+    // flag (needs_human_review, outside_service_scope, loop_suspected,
+    // conflicting_information) from ever being cleared by a pricing-driven
+    // call like this one — see that migration's own comment.
     const flagFields = data.hasPartiallyDeferredWork
       ? { status: "flagged", flagType: "partially_priced", flagReason: PARTIALLY_PRICED_REASON }
       : data.pendingNegotiatedPrice
@@ -648,7 +658,7 @@ export const performFinalizeLeadWithQuote = createServerOnlyFn(
             flagType: "pending_negotiated_price",
             flagReason: PENDING_NEGOTIATED_PRICE_REASON,
           }
-        : { status: null, flagType: null, flagReason: null };
+        : { status: "new", flagType: null, flagReason: null };
 
     // Atomic: the lead update and its line-item inserts commit or roll back
     // together (0019_lead_write_atomicity.sql) — previously two separate

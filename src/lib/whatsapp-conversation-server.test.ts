@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 // Mocked ONLY for the "claim-loss must still notify the owner" integration
@@ -24,6 +24,8 @@ vi.mock("@/lib/estimate-server", () => ({
   getQuoteEstimate: vi.fn(),
   getFollowUpAnswer: vi.fn(),
   classifyFollowUpIntent: vi.fn(),
+  classifyFollowUpPhotoIntent: vi.fn(),
+  isSupportedImageBase64: vi.fn(() => true),
   NO_DESCRIPTION_PLACEHOLDER: "no description provided",
   UNSUPPORTED_IMAGE_MESSAGE: "unsupported image message",
 }));
@@ -43,8 +45,14 @@ import {
 } from "./whatsapp-conversation-server";
 import { claimLoopNotice } from "./whatsapp-loop-guard-server";
 import { isOptedOut, normalizePhone } from "./whatsapp-opt-out-server";
-import { getAdminClient } from "@/lib/public-lead-server";
-import { getQuoteEstimate, classifyFollowUpIntent, getFollowUpAnswer } from "@/lib/estimate-server";
+import { getAdminClient, createFlaggedLead, finalizeLeadWithQuote } from "@/lib/public-lead-server";
+import {
+  getQuoteEstimate,
+  classifyFollowUpIntent,
+  classifyFollowUpPhotoIntent,
+  isSupportedImageBase64,
+  getFollowUpAnswer,
+} from "@/lib/estimate-server";
 import { sendFollowUpNotificationEmail } from "@/lib/notify-server";
 
 // Structural regression guard for "every automated outbound path must go
@@ -428,8 +436,20 @@ describe("handleLoopGuardPause", () => {
     // Not awaited individually — both start before either finishes, the
     // same shape as two near-simultaneous inbound messages both reaching
     // handleLoopGuardPause for the same (tenant, phone).
-    const p1 = handleLoopGuardPause({ admin, tenant: TEST_TENANT, fromPhone: TEST_PHONE, adapter, leadId: null });
-    const p2 = handleLoopGuardPause({ admin, tenant: TEST_TENANT, fromPhone: TEST_PHONE, adapter, leadId: null });
+    const p1 = handleLoopGuardPause({
+      admin,
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      adapter,
+      leadId: null,
+    });
+    const p2 = handleLoopGuardPause({
+      admin,
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      adapter,
+      leadId: null,
+    });
     await Promise.all([p1, p2]);
     expect(calls.claimAttempted).toBe(2);
     expect(sent).toHaveLength(1); // the loser never sent at all
@@ -464,7 +484,13 @@ describe("handleLoopGuardPause", () => {
       markSentFailTimes: 2, // fails the first 2 attempts, succeeds on the 3rd
     });
     const { adapter, sent } = fakeAdapter();
-    await handleLoopGuardPause({ admin, tenant: TEST_TENANT, fromPhone: TEST_PHONE, adapter, leadId: null });
+    await handleLoopGuardPause({
+      admin,
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      adapter,
+      leadId: null,
+    });
     expect(sent).toEqual([{ to: TEST_PHONE, body: LOOP_PAUSE_MESSAGE }]); // sent exactly once
     expect(calls.markSentAttempts).toBe(3);
     expect(calls.markSent).toBe(1);
@@ -478,7 +504,13 @@ describe("handleLoopGuardPause", () => {
       markSentFailTimes: Infinity, // never succeeds
     });
     const { adapter, sent } = fakeAdapter();
-    await handleLoopGuardPause({ admin, tenant: TEST_TENANT, fromPhone: TEST_PHONE, adapter, leadId: null });
+    await handleLoopGuardPause({
+      admin,
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      adapter,
+      leadId: null,
+    });
     // The message was sent exactly once — this is the crux of the fix:
     // the uncertain DB-confirmation failure must never cause ANOTHER
     // immediate send of the identical notice.
@@ -626,6 +658,17 @@ function fakeInboundAdmin(config: {
   // between decideLeadRoute's initial read and this call's own later
   // guarded update. Defaults to openLead.flag_type (no race).
   flagTypeAtWriteTime?: string | null;
+  // Photo-intelligence Priority 2: the existing lead's already-priced line
+  // items, read by handleQuotedFollowUpPhoto to decide whether a
+  // reassessment is materially different. Defaults to [] (no existing
+  // priced work) — every pre-existing test that doesn't pass this gets
+  // identical behavior to before this field existed.
+  existingLineItems?: Array<{ description: string; rate: number; qty: number }>;
+  // Proves the loop guard still gates every reply this new photo-handling
+  // code produces, same as every other branch in this file. Defaults to
+  // false (not tripped) — identical to every pre-existing test's implicit
+  // behavior before this field existed.
+  loopGuardTripped?: boolean;
 }) {
   // Deliberately NOT the same object decideLeadRoute's initial read
   // returns — see flagTypeAtWriteTime's own comment above.
@@ -643,16 +686,16 @@ function fakeInboundAdmin(config: {
   const admin = {
     rpc: async (name: string) => {
       if (name === "record_whatsapp_interaction") {
-        // Never trips in these tests — the point is to observe routing
-        // and claim behavior, not loop-guard tripping (covered
-        // exhaustively elsewhere in this file and in the real-Postgres
-        // suite).
+        // Only trips when a test explicitly asks it to (loopGuardTripped) —
+        // otherwise the point is to observe routing and claim behavior,
+        // not loop-guard tripping (covered exhaustively elsewhere in this
+        // file and in the real-Postgres suite).
         return {
           data: [
             {
-              tripped: false,
-              just_tripped: false,
-              trip_reason: null,
+              tripped: Boolean(config.loopGuardTripped),
+              just_tripped: Boolean(config.loopGuardTripped),
+              trip_reason: config.loopGuardTripped ? "repeat_pattern" : null,
               is_duplicate_content: false,
               duplicate_content_count: 0,
               repeat_count: 0,
@@ -676,6 +719,18 @@ function fakeInboundAdmin(config: {
       // doesn't throw "unexpected table" below for an unrelated feature.
       if (name === "record_whatsapp_opt_out") {
         return { data: [{ just_opted_out: true }], error: null };
+      }
+      // Minimal stubs for the loop-guard-pause path, reached only when a
+      // test sets loopGuardTripped — real state-tracking for these lives
+      // in fakeLoopGuardAdmin above; here they just need to not throw.
+      if (name === "claim_whatsapp_loop_notice") {
+        return { data: true, error: null };
+      }
+      if (
+        name === "release_whatsapp_loop_notice_claim" ||
+        name === "mark_whatsapp_loop_notice_sent"
+      ) {
+        return { data: true, error: null };
       }
       throw new Error(`fakeInboundAdmin: unexpected rpc "${name}"`);
     },
@@ -738,7 +793,11 @@ function fakeInboundAdmin(config: {
         };
       }
       if (table === "lead_line_items") {
-        return { select: () => ({ eq: async () => ({ data: [], error: null }) }) };
+        return {
+          select: () => ({
+            eq: async () => ({ data: config.existingLineItems ?? [], error: null }),
+          }),
+        };
       }
       if (table === "price_sheet_items") {
         // Read before every getQuoteEstimate call (claim-won path only)
@@ -894,7 +953,10 @@ describe("handleInboundWhatsAppMessage — a lost lead-slot claim must not silen
     vi.mocked(getAdminClient).mockReturnValue(admin);
     vi.mocked(sendFollowUpNotificationEmail).mockClear();
     vi.mocked(getQuoteEstimate).mockClear();
-    vi.mocked(getQuoteEstimate).mockResolvedValue({ needsClarification: false, outOfScope: true } as any);
+    vi.mocked(getQuoteEstimate).mockResolvedValue({
+      needsClarification: false,
+      outOfScope: true,
+    } as any);
     const { adapter, sent } = fakeAdapter();
 
     await handleInboundWhatsAppMessage({
@@ -957,6 +1019,454 @@ describe("handleInboundWhatsAppMessage — a lost lead-slot claim must not silen
 });
 
 // ---------------------------------------------------------------------
+// Photo-intelligence Priority 2 (2026-10-19): a photo attached to an
+// already-quoted lead's follow-up used to be treated unconditionally as
+// proof of a brand-new job. These tests cover the replacement behavior —
+// classify using the photo itself plus the prior job's context, and only
+// ever reassess (or ask) rather than assume. Real-image vision-input
+// coverage (does the photo actually reach the model) lives in
+// estimate-server.test.ts; these tests exercise the TypeScript-level
+// orchestration against a stateful fake admin/adapter, with
+// classifyFollowUpPhotoIntent/getQuoteEstimate/finalizeLeadWithQuote
+// mocked so each test drives one specific classification outcome.
+// ---------------------------------------------------------------------
+
+describe("handleInboundWhatsAppMessage — quoted_follow_up with a photo (Priority 2 photo intelligence)", () => {
+  const QUOTED_LEAD: FakeOpenLead = {
+    id: "lead-photo-1",
+    customer_name: "Riley",
+    photo_url: null,
+    problem: "Kitchen faucet needs replacing.",
+    confidence: "High", // already quoted
+    diagnosis: "Standard kitchen faucet replacement.",
+    flag_type: null,
+  };
+
+  beforeEach(() => {
+    vi.mocked(classifyFollowUpPhotoIntent).mockClear();
+    vi.mocked(classifyFollowUpIntent).mockClear();
+    vi.mocked(getQuoteEstimate).mockClear();
+    vi.mocked(finalizeLeadWithQuote).mockClear();
+    vi.mocked(createFlaggedLead).mockClear();
+    vi.mocked(sendFollowUpNotificationEmail).mockClear();
+    vi.mocked(isSupportedImageBase64).mockReturnValue(true);
+  });
+
+  // Scenario: a later photo that clearly relates to a DIFFERENT job.
+  it("classification=different_job: falls through to the fresh-quote flow, never reassesses the existing lead", async () => {
+    const { admin } = fakeInboundAdmin({ openLead: QUOTED_LEAD, leadSlotClaimSucceeds: true });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(classifyFollowUpPhotoIntent).mockResolvedValue({
+      classification: "different_job",
+    } as any);
+    // Fresh-quote path, shortest branch: out of scope — proves fallthrough
+    // reached handleFreshQuote's own getQuoteEstimate call (with the photo)
+    // without needing to exercise its full downstream lead-creation logic.
+    vi.mocked(getQuoteEstimate).mockResolvedValue({
+      needsClarification: false,
+      outOfScope: true,
+    } as any);
+    vi.mocked(createFlaggedLead).mockResolvedValue({ id: "new-unrelated-lead" } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "",
+      mediaRef: "media-ref-1",
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(classifyFollowUpPhotoIntent).toHaveBeenCalledTimes(1);
+    expect(classifyFollowUpPhotoIntent).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        priorProblem: QUOTED_LEAD.problem,
+        priorDiagnosis: QUOTED_LEAD.diagnosis,
+      }),
+    });
+    expect(finalizeLeadWithQuote).not.toHaveBeenCalled(); // never treated as the same job
+    expect(getQuoteEstimate).toHaveBeenCalledTimes(1); // the fresh-quote path genuinely ran
+    expect(createFlaggedLead).toHaveBeenCalledTimes(1); // a NEW lead, not an update to the old one
+    expect(sent).toEqual([{ to: TEST_PHONE, body: "I'll pass your message along to our team." }]);
+  });
+
+  // Scenario: an ambiguous photo that requires clarification.
+  it("classification=ambiguous: asks a clarifying question, creates no new lead, never reassesses", async () => {
+    const { admin, calls } = fakeInboundAdmin({
+      openLead: QUOTED_LEAD,
+      leadSlotClaimSucceeds: true,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(classifyFollowUpPhotoIntent).mockResolvedValue({
+      classification: "ambiguous",
+    } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "",
+      mediaRef: "media-ref-2",
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(getQuoteEstimate).not.toHaveBeenCalled();
+    expect(finalizeLeadWithQuote).not.toHaveBeenCalled();
+    expect(createFlaggedLead).not.toHaveBeenCalled();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body).toContain("Is this photo about the job I already quoted");
+    // The disambiguation question is recorded against the EXISTING lead,
+    // never a new one.
+    expect(
+      calls.leadMessageInserts.some((m) => m.lead_id === QUOTED_LEAD.id && m.role === "assistant"),
+    ).toBe(true);
+    expect(sendFollowUpNotificationEmail).toHaveBeenCalledTimes(1);
+  });
+
+  // Verifies what actually happens after the ambiguous question, across two
+  // real turns of handleInboundWhatsAppMessage — not just the first reply.
+  // Documented limitation (not a bug): there is no persistent "awaiting
+  // disambiguation" state (no new migration/column) — the customer's next
+  // message is independently reclassified from scratch, using only the
+  // photo it carries plus the lead's own problem/diagnosis. This is
+  // deliberate: WhatsApp media references aren't reliably re-fetchable
+  // after a delay, and this codebase has no job queue to hold conversation
+  // state between separate serverless invocations. The practical
+  // consequence, proven here: a customer who resends a photo after being
+  // asked behaves exactly like any other same_job photo follow-up — no
+  // special memory of having just been asked, but also no stuck/dead-end
+  // state. A second genuinely ambiguous photo in a row would ask again
+  // rather than silently guessing, which is the safe failure mode.
+  it("ambiguous question, then customer resends a photo: the second turn reassesses normally, with no memory of the first turn required", async () => {
+    const { admin, calls } = fakeInboundAdmin({
+      openLead: QUOTED_LEAD,
+      leadSlotClaimSucceeds: true,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    const { adapter, sent } = fakeAdapter();
+
+    // Turn 1: ambiguous photo.
+    vi.mocked(classifyFollowUpPhotoIntent).mockResolvedValueOnce({
+      classification: "ambiguous",
+    } as any);
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "",
+      mediaRef: "media-ref-amb-1",
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body).toContain("Is this photo about the job I already quoted");
+    expect(finalizeLeadWithQuote).not.toHaveBeenCalled();
+
+    // Turn 2: customer resends a photo in response. No special state was
+    // set up for this — it's classified fresh, exactly like any other
+    // incoming photo on this lead.
+    vi.mocked(classifyFollowUpPhotoIntent).mockResolvedValueOnce({
+      classification: "same_job",
+    } as any);
+    vi.mocked(getQuoteEstimate).mockResolvedValue({
+      needsClarification: false,
+      outOfScope: false,
+      isEmergency: false,
+      issueType: "Plumbing",
+      severity: "Medium",
+      confidence: "High",
+      diagnosis: "Corroded shut-off valves found.",
+      isDiagnosisOnly: false,
+      hasNoPricedWork: false,
+      hasPartiallyDeferredWork: false,
+      lineItems: [
+        {
+          description: "Kitchen faucet replacement",
+          detail: "Corroded valves",
+          amount: 185,
+          priceSheetItemId: "ps-1",
+          hours: undefined,
+        },
+      ],
+      totalLow: 185,
+      totalHigh: 185,
+    } as any);
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "here it is",
+      mediaRef: "media-ref-amb-2",
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(classifyFollowUpPhotoIntent).toHaveBeenCalledTimes(2); // independently reclassified, not skipped
+    // The second turn's material change completes the reassessment via the
+    // now-fixed finalizeLeadWithQuote path (0028_fix_lead_reassessment_atomicity.sql).
+    expect(finalizeLeadWithQuote).toHaveBeenCalledTimes(1);
+    const finalizeArg = vi.mocked(finalizeLeadWithQuote).mock.calls[0]![0] as {
+      data: Record<string, unknown>;
+    };
+    expect(finalizeArg.data["leadId"]).toBe(QUOTED_LEAD.id); // same lead throughout, never a new one
+    expect(sent).toHaveLength(2);
+    expect(sent[1]!.body).toContain("updated your estimate");
+    // Both turns' assistant messages are recorded against the SAME lead.
+    expect(
+      calls.leadMessageInserts.filter((m) => m.lead_id === QUOTED_LEAD.id && m.role === "assistant")
+        .length,
+    ).toBe(2);
+  });
+
+  // Scenario: a later photo providing evidence for the SAME job, with a
+  // materially changed estimate — must update the EXISTING lead (never a
+  // new one) and explain what changed. Re-enabled 2026-10-19
+  // (0028_fix_lead_reassessment_atomicity.sql): a real-Postgres-proven bug
+  // in update_lead_with_line_items (it only ever INSERTed line items,
+  // never deleted the lead's existing ones first) previously forced this
+  // path to flag for manual review instead of persisting anything — see
+  // SECURITY_REMEDIATION_TRACKER.md and scripts/pg-lead-reassessment-check.sh
+  // (35/35 checks, including the exact red/green reproduction of this bug
+  // against a real disposable Postgres instance) for why it's now safe to
+  // call finalizeLeadWithQuote here again.
+  it("classification=same_job, materially changed: updates the EXISTING lead via finalizeLeadWithQuote and explains the new price", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: QUOTED_LEAD,
+      leadSlotClaimSucceeds: true,
+      existingLineItems: [{ description: "Kitchen faucet replacement", rate: 120, qty: 1 }],
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(classifyFollowUpPhotoIntent).mockResolvedValue({ classification: "same_job" } as any);
+    vi.mocked(getQuoteEstimate).mockResolvedValue({
+      needsClarification: false,
+      outOfScope: false,
+      isEmergency: false,
+      issueType: "Plumbing",
+      severity: "Medium",
+      confidence: "High",
+      diagnosis: "Corroded shut-off valves found — replacement is more involved than standard.",
+      isDiagnosisOnly: false,
+      hasNoPricedWork: false,
+      hasPartiallyDeferredWork: false,
+      lineItems: [
+        {
+          description: "Kitchen faucet replacement",
+          detail: "Corroded valves",
+          amount: 185,
+          priceSheetItemId: "ps-1",
+          hours: undefined,
+        },
+      ],
+      totalLow: 185,
+      totalHigh: 185,
+    } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "here's what it looks like under the sink",
+      mediaRef: "media-ref-3",
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(finalizeLeadWithQuote).toHaveBeenCalledTimes(1);
+    const finalizeArg = vi.mocked(finalizeLeadWithQuote).mock.calls[0]![0] as {
+      data: Record<string, unknown>;
+    };
+    // Tenant/lead association: the EXISTING lead and tenant, never a
+    // fresh/different one.
+    expect(finalizeArg.data["leadId"]).toBe(QUOTED_LEAD.id);
+    expect(finalizeArg.data["tenantSlug"]).toBe(TEST_TENANT.slug);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body).toContain("updated your estimate");
+    expect(sent[0]!.body).toContain("185");
+    expect(sent[0]!.body).toContain("previously"); // explains what changed, never silent
+    expect(sent[0]!.body).toContain("120");
+  });
+
+  // Scenario: a later photo that does NOT materially change the estimate —
+  // must not send an unnecessary confirmation message.
+  it("classification=same_job, NOT materially changed: never calls finalizeLeadWithQuote and sends no message at all", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: QUOTED_LEAD,
+      leadSlotClaimSucceeds: true,
+      existingLineItems: [{ description: "Kitchen faucet replacement", rate: 120, qty: 1 }],
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(classifyFollowUpPhotoIntent).mockResolvedValue({ classification: "same_job" } as any);
+    vi.mocked(getQuoteEstimate).mockResolvedValue({
+      needsClarification: false,
+      outOfScope: false,
+      isEmergency: false,
+      issueType: "Plumbing",
+      severity: "Low",
+      confidence: "High",
+      diagnosis: "Confirms standard kitchen faucet replacement.",
+      isDiagnosisOnly: false,
+      hasNoPricedWork: false,
+      hasPartiallyDeferredWork: false,
+      lineItems: [
+        {
+          description: "Kitchen faucet replacement",
+          detail: "",
+          amount: 120,
+          priceSheetItemId: "ps-1",
+          hours: undefined,
+        },
+      ],
+      totalLow: 120,
+      totalHigh: 120,
+    } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "",
+      mediaRef: "media-ref-4",
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(finalizeLeadWithQuote).not.toHaveBeenCalled();
+    expect(sent).toEqual([]); // no unnecessary confirmation
+    // The owner is still informed a photo came in, even though nothing
+    // about the quote changed — same precedent as the existing text-only
+    // same-job branch, which also always notifies regardless of outcome.
+    expect(sendFollowUpNotificationEmail).toHaveBeenCalledTimes(1);
+  });
+
+  // Scenario: duplicate inbound photo events / concurrent processing — a
+  // lost lead-processing claim must suppress the automated reply entirely
+  // (same concurrency protection already proven for the text-only same-job
+  // path), never silently double-process or duplicate the lead's line items.
+  it("classification=same_job, lead-processing claim lost: AI pipeline never touched, no reply sent, owner still notified", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: QUOTED_LEAD,
+      leadSlotClaimSucceeds: false,
+      existingLineItems: [{ description: "Kitchen faucet replacement", rate: 120, qty: 1 }],
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(classifyFollowUpPhotoIntent).mockResolvedValue({ classification: "same_job" } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "",
+      mediaRef: "media-ref-5",
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(getQuoteEstimate).not.toHaveBeenCalled(); // claim-protected callback never ran
+    expect(finalizeLeadWithQuote).not.toHaveBeenCalled();
+    expect(sent).toEqual([]);
+    expect(sendFollowUpNotificationEmail).toHaveBeenCalledTimes(1);
+  });
+
+  // Scenario: continued loop-guard enforcement — every reply this new code
+  // produces still goes through sendGuardedReply (see the structural
+  // "exactly four raw adapter.sendMessage(...)" test above, which already
+  // proves this file adds no new direct send site). This test proves the
+  // guard's suppression itself still applies in practice when tripped.
+  it("loop guard tripped: suppresses the same-job reassessment reply, sends only the generic pause notice", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: QUOTED_LEAD,
+      leadSlotClaimSucceeds: true,
+      existingLineItems: [{ description: "Kitchen faucet replacement", rate: 120, qty: 1 }],
+      loopGuardTripped: true,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "",
+      mediaRef: "media-ref-6",
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    // Tripped before routing is even reached — classification never runs.
+    expect(classifyFollowUpPhotoIntent).not.toHaveBeenCalled();
+    expect(sent).toEqual([{ to: TEST_PHONE, body: LOOP_PAUSE_MESSAGE }]);
+  });
+
+  // Format/load-failure gates, proven not to bypass classification/reassessment.
+  it("an unsupported image format gets a clear message and never reaches classification or reassessment", async () => {
+    const { admin } = fakeInboundAdmin({ openLead: QUOTED_LEAD, leadSlotClaimSucceeds: true });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(isSupportedImageBase64).mockReturnValue(false);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "",
+      mediaRef: "media-ref-7",
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(classifyFollowUpPhotoIntent).not.toHaveBeenCalled();
+    expect(getQuoteEstimate).not.toHaveBeenCalled();
+    expect(sent).toEqual([{ to: TEST_PHONE, body: "unsupported image message" }]);
+  });
+
+  it("a photo download failure gets a clear retry message and never reaches classification", async () => {
+    const { admin } = fakeInboundAdmin({ openLead: QUOTED_LEAD, leadSlotClaimSucceeds: true });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    const sent: Array<{ to: string; body: string }> = [];
+    const adapter: ChannelAdapter = {
+      sendMessage: async (to, body) => {
+        sent.push({ to, body });
+      },
+      fetchMedia: async () => {
+        throw new Error("simulated media fetch failure");
+      },
+    };
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "",
+      mediaRef: "media-ref-8",
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(classifyFollowUpPhotoIntent).not.toHaveBeenCalled();
+    expect(sent).toEqual([
+      { to: TEST_PHONE, body: "I couldn't load that photo — could you try sending it again?" },
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------
 // WhatsApp opt-out — handleInboundWhatsAppMessage's own state machine
 // (handleOptOutState), checked BEFORE the loop guard. Real-Postgres
 // coverage of the underlying atomic RPCs (record_whatsapp_opt_out's own
@@ -965,10 +1475,18 @@ describe("handleInboundWhatsAppMessage — a lost lead-slot claim must not silen
 // the TypeScript-level orchestration against a stateful fake admin.
 // ---------------------------------------------------------------------
 
-type FakeOptOutRow = { opted_out_at: string | null; resumed_at: string | null; confirmation_status: string | null };
+type FakeOptOutRow = {
+  opted_out_at: string | null;
+  resumed_at: string | null;
+  confirmation_status: string | null;
+};
 
 function fakeOptOutAdmin(config: { row?: FakeOptOutRow } = {}) {
-  const row: FakeOptOutRow = config.row ?? { opted_out_at: null, resumed_at: null, confirmation_status: null };
+  const row: FakeOptOutRow = config.row ?? {
+    opted_out_at: null,
+    resumed_at: null,
+    confirmation_status: null,
+  };
   const calls = {
     recordOptOutCalls: 0,
     claimConfirmationCalls: 0,
@@ -982,7 +1500,8 @@ function fakeOptOutAdmin(config: { row?: FakeOptOutRow } = {}) {
     // of the fake were "accidentally" lenient about key matching.
     phoneKeysUsed: [] as string[],
   };
-  const currentlyOptedOut = () => Boolean(row.opted_out_at) && (!row.resumed_at || row.resumed_at < row.opted_out_at!);
+  const currentlyOptedOut = () =>
+    Boolean(row.opted_out_at) && (!row.resumed_at || row.resumed_at < row.opted_out_at!);
 
   const admin = {
     rpc: async (name: string, rpcParams?: Record<string, unknown>) => {
@@ -1068,7 +1587,9 @@ function fakeOptOutAdmin(config: { row?: FakeOptOutRow } = {}) {
                 calls.phoneKeysUsed.push(phoneValue);
                 return {
                   maybeSingle: async () => ({
-                    data: row.opted_out_at ? { opted_out_at: row.opted_out_at, resumed_at: row.resumed_at } : null,
+                    data: row.opted_out_at
+                      ? { opted_out_at: row.opted_out_at, resumed_at: row.resumed_at }
+                      : null,
                     error: null,
                   }),
                 };
@@ -1186,7 +1707,11 @@ describe("WhatsApp opt-out — handleInboundWhatsAppMessage's state machine", ()
     // what every enforcement check and the dashboard resume path both
     // call through normalizePhone(...) already.
     const { admin, calls } = fakeOptOutAdmin({
-      row: { opted_out_at: new Date().toISOString(), resumed_at: null, confirmation_status: "sent" },
+      row: {
+        opted_out_at: new Date().toISOString(),
+        resumed_at: null,
+        confirmation_status: "sent",
+      },
     });
     const WRITE_FORM = "+1 555 123 4567"; // how it might have been stored
     const READ_FORM = "+1-555-123-4567"; // a differently-punctuated form of the SAME number
@@ -1198,7 +1723,11 @@ describe("WhatsApp opt-out — handleInboundWhatsAppMessage's state machine", ()
 
   it("a repeated STOP from an already-opted-out number does NOT send a second confirmation", async () => {
     const { admin, row, calls } = fakeOptOutAdmin({
-      row: { opted_out_at: new Date(Date.now() - 60_000).toISOString(), resumed_at: null, confirmation_status: "sent" },
+      row: {
+        opted_out_at: new Date(Date.now() - 60_000).toISOString(),
+        resumed_at: null,
+        confirmation_status: "sent",
+      },
     });
     vi.mocked(getAdminClient).mockReturnValue(admin);
     const { adapter, sent } = fakeAdapter();
@@ -1221,7 +1750,11 @@ describe("WhatsApp opt-out — handleInboundWhatsAppMessage's state machine", ()
 
   it("an ordinary message from a currently-opted-out number gets NO reply at all — no auto-resume on a bare message", async () => {
     const { admin, row } = fakeOptOutAdmin({
-      row: { opted_out_at: new Date().toISOString(), resumed_at: null, confirmation_status: "sent" },
+      row: {
+        opted_out_at: new Date().toISOString(),
+        resumed_at: null,
+        confirmation_status: "sent",
+      },
     });
     vi.mocked(getAdminClient).mockReturnValue(admin);
     const { adapter, sent } = fakeAdapter();
@@ -1243,7 +1776,11 @@ describe("WhatsApp opt-out — handleInboundWhatsAppMessage's state machine", ()
 
   it("START from a currently-opted-out number resumes and sends exactly one opt-in confirmation", async () => {
     const { admin, row } = fakeOptOutAdmin({
-      row: { opted_out_at: new Date().toISOString(), resumed_at: null, confirmation_status: "sent" },
+      row: {
+        opted_out_at: new Date().toISOString(),
+        resumed_at: null,
+        confirmation_status: "sent",
+      },
     });
     vi.mocked(getAdminClient).mockReturnValue(admin);
     const { adapter, sent } = fakeAdapter();

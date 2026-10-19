@@ -2,6 +2,8 @@ import {
   getQuoteEstimate,
   getFollowUpAnswer,
   classifyFollowUpIntent,
+  classifyFollowUpPhotoIntent,
+  isSupportedImageBase64,
   NO_DESCRIPTION_PLACEHOLDER,
   UNSUPPORTED_IMAGE_MESSAGE,
   type Answer,
@@ -161,7 +163,8 @@ export async function handleLoopGuardPause(params: {
 
 export const OPT_OUT_CONFIRMATION_MESSAGE =
   "You've been unsubscribed and won't receive further messages here. Reply START to resubscribe.";
-export const OPT_IN_CONFIRMATION_MESSAGE = "You're resubscribed — you'll receive messages here again.";
+export const OPT_IN_CONFIRMATION_MESSAGE =
+  "You're resubscribed — you'll receive messages here again.";
 
 // Same claim -> send -> confirm crash-safety sequence as
 // handleLoopGuardPause above (see its own comments for the full reasoning
@@ -263,7 +266,10 @@ async function handleOptOutState(params: {
       // customer explicitly asked to stop, and the safer failure here is
       // "no reply at all" rather than risking a reply to someone who may
       // now be opted out in intent but not yet in the database.
-      console.error(`Could not record WhatsApp opt-out for tenant ${tenant.id}, phone ${fromPhone}:`, err);
+      console.error(
+        `Could not record WhatsApp opt-out for tenant ${tenant.id}, phone ${fromPhone}:`,
+        err,
+      );
       return { stop: true };
     }
     if (justOptedOut) {
@@ -321,7 +327,10 @@ export async function sendGuardedReply(params: {
 
   let tripped: boolean;
   try {
-    const evaluation = await evaluateOutboundInteraction(admin, tenant.id, fromPhone, { signature, leadId });
+    const evaluation = await evaluateOutboundInteraction(admin, tenant.id, fromPhone, {
+      signature,
+      leadId,
+    });
     tripped = evaluation.tripped;
   } catch (err) {
     console.error(
@@ -353,8 +362,15 @@ export async function sendGuardedReply(params: {
 // appears within the bound, it proceeds exactly as before this fix — never
 // worse than the pre-fix behavior, just no longer better-than-average-case
 // racy for the common, fast-response case.
-async function claimLeadSlot(admin: ReturnType<typeof getAdminClient>, tenantId: string, phone: string): Promise<boolean> {
-  const { data, error } = await admin.rpc("claim_whatsapp_lead_slot", { p_tenant_id: tenantId, p_phone: phone });
+async function claimLeadSlot(
+  admin: ReturnType<typeof getAdminClient>,
+  tenantId: string,
+  phone: string,
+): Promise<boolean> {
+  const { data, error } = await admin.rpc("claim_whatsapp_lead_slot", {
+    p_tenant_id: tenantId,
+    p_phone: phone,
+  });
   if (error) {
     console.error("claim_whatsapp_lead_slot failed, proceeding without the claim:", error.message);
     return true; // fail open — never block a real conversation over a lock-table hiccup
@@ -362,8 +378,15 @@ async function claimLeadSlot(admin: ReturnType<typeof getAdminClient>, tenantId:
   return Boolean(data);
 }
 
-async function releaseLeadSlot(admin: ReturnType<typeof getAdminClient>, tenantId: string, phone: string): Promise<void> {
-  const { error } = await admin.rpc("release_whatsapp_lead_slot", { p_tenant_id: tenantId, p_phone: phone });
+async function releaseLeadSlot(
+  admin: ReturnType<typeof getAdminClient>,
+  tenantId: string,
+  phone: string,
+): Promise<void> {
+  const { error } = await admin.rpc("release_whatsapp_lead_slot", {
+    p_tenant_id: tenantId,
+    p_phone: phone,
+  });
   if (error) {
     // Not fatal — p_stale_seconds on the claim RPC bounds how long a
     // leaked claim can block a later, genuinely new conversation.
@@ -509,7 +532,9 @@ export type LeadRouteDecision =
   | "continue_clarification" // genuinely still mid-clarification
   | "quoted_follow_up"; // already has a real quote (confidence set) — includes pending_negotiated_price
 
-export function decideLeadRoute(openLead: { confidence: string | null; flag_type: string | null } | null | undefined): LeadRouteDecision {
+export function decideLeadRoute(
+  openLead: { confidence: string | null; flag_type: string | null } | null | undefined,
+): LeadRouteDecision {
   if (!openLead) return "fresh_quote";
   // Order matters: pending_negotiated_price also has a non-null flag_type,
   // but always has a real confidence value too (finalizeLeadWithQuote
@@ -553,7 +578,8 @@ export async function handleInboundWhatsAppMessage(params: {
   channel: "WhatsApp";
   adapter: ChannelAdapter;
 }): Promise<void> {
-  const { tenant, fromPhone, body, mediaRef, providerMessageId, profileName, channel, adapter } = params;
+  const { tenant, fromPhone, body, mediaRef, providerMessageId, profileName, channel, adapter } =
+    params;
   const admin = getAdminClient();
 
   // Opt-out/opt-in state — checked BEFORE the loop guard, since an
@@ -630,241 +656,258 @@ export async function handleInboundWhatsAppMessage(params: {
     await admin.from("lead_messages").insert({ lead_id: openLead.id, role: "customer", body });
 
     const claimed = await withLeadProcessingClaim(admin, tenant.id, fromPhone, async () => {
-    const { data: priorMessages } = await admin
-      .from("lead_messages")
-      .select("role, body")
-      .eq("lead_id", openLead.id)
-      .order("created_at", { ascending: true });
+      const { data: priorMessages } = await admin
+        .from("lead_messages")
+        .select("role, body")
+        .eq("lead_id", openLead.id)
+        .order("created_at", { ascending: true });
 
-    // Deterministic pairing, not fuzzy matching: walk the ordered transcript
-    // once — an assistant question immediately followed by a customer reply
-    // is one answered pair. An unanswered trailing question (or any other
-    // shape) is simply not included.
-    const answers: Answer[] = [];
-    const messages = priorMessages ?? [];
-    for (let i = 0; i < messages.length - 1; i++) {
-      const question = messages[i];
-      const reply = messages[i + 1];
-      if (question && reply && question.role === "assistant" && reply.role === "customer") {
-        answers.push({ question: question.body, answer: reply.body });
-        i++;
+      // Deterministic pairing, not fuzzy matching: walk the ordered transcript
+      // once — an assistant question immediately followed by a customer reply
+      // is one answered pair. An unanswered trailing question (or any other
+      // shape) is simply not included.
+      const answers: Answer[] = [];
+      const messages = priorMessages ?? [];
+      for (let i = 0; i < messages.length - 1; i++) {
+        const question = messages[i];
+        const reply = messages[i + 1];
+        if (question && reply && question.role === "assistant" && reply.role === "customer") {
+          answers.push({ question: question.body, answer: reply.body });
+          i++;
+        }
       }
-    }
 
-    const { data: clarifyPriceSheetRows } = await admin
-      .from("price_sheet_items")
-      .select(
-        "id, task, category, keywords, pricing_type, price_min, price_max, hours, bundleable, materials_policy, diagnosis_pricing_type, diagnosis_fee, ai_notes",
-      )
-      .eq("tenant_id", tenant.id);
-    const clarifyPriceSheet: PriceSheetItem[] = (clarifyPriceSheetRows ?? []).map((row) => ({
-      id: row.id,
-      task: row.task,
-      category: row.category,
-      keywords: row.keywords,
-      pricingType: row.pricing_type,
-      priceMin: row.price_min,
-      priceMax: row.price_max,
-      hours: row.hours,
-      bundleable: row.bundleable,
-      materialsPolicy: row.materials_policy,
-      diagnosisFee: row.diagnosis_pricing_type ? { pricingType: row.diagnosis_pricing_type, amount: row.diagnosis_fee } : null,
-      aiNotes: row.ai_notes,
-    }));
+      const { data: clarifyPriceSheetRows } = await admin
+        .from("price_sheet_items")
+        .select(
+          "id, task, category, keywords, pricing_type, price_min, price_max, hours, bundleable, materials_policy, diagnosis_pricing_type, diagnosis_fee, ai_notes",
+        )
+        .eq("tenant_id", tenant.id);
+      const clarifyPriceSheet: PriceSheetItem[] = (clarifyPriceSheetRows ?? []).map((row) => ({
+        id: row.id,
+        task: row.task,
+        category: row.category,
+        keywords: row.keywords,
+        pricingType: row.pricing_type,
+        priceMin: row.price_min,
+        priceMax: row.price_max,
+        hours: row.hours,
+        bundleable: row.bundleable,
+        materialsPolicy: row.materials_policy,
+        diagnosisFee: row.diagnosis_pricing_type
+          ? { pricingType: row.diagnosis_pricing_type, amount: row.diagnosis_fee }
+          : null,
+        aiNotes: row.ai_notes,
+      }));
 
-    // The original photo stays canonical regardless of whether this reply
-    // has its own attachment — re-fetched fresh each round via the adapter
-    // (a stable Twilio media URL today; a Meta media id in a future
-    // channel) rather than a cached short-lived redirect. A text-only
-    // original lead has no photo to re-fetch at all (see photoUrl: "" at
-    // lead creation, below) — that's an expected, valid state, not a lost
-    // photo, so it must not hit the "lost track of it" fallback every round.
-    let clarifyImageBase64: string | undefined;
-    let clarifyImageMediaType: string | undefined;
-    if (openLead.photo_url) {
+      // The original photo stays canonical regardless of whether this reply
+      // has its own attachment — re-fetched fresh each round via the adapter
+      // (a stable Twilio media URL today; a Meta media id in a future
+      // channel) rather than a cached short-lived redirect. A text-only
+      // original lead has no photo to re-fetch at all (see photoUrl: "" at
+      // lead creation, below) — that's an expected, valid state, not a lost
+      // photo, so it must not hit the "lost track of it" fallback every round.
+      let clarifyImageBase64: string | undefined;
+      let clarifyImageMediaType: string | undefined;
+      if (openLead.photo_url) {
+        try {
+          const media = await adapter.fetchMedia(openLead.photo_url);
+          clarifyImageBase64 = media.base64;
+          clarifyImageMediaType = media.mediaType;
+        } catch (err) {
+          console.error("Could not re-download the original WhatsApp photo:", err);
+          const lostPhotoMessage =
+            "Sorry, I lost track of the original photo — could you resend it along with your answer?";
+          await sendGuardedReply({
+            admin,
+            tenant,
+            fromPhone,
+            adapter,
+            leadId: openLead.id,
+            signature: { kind: "text", text: lostPhotoMessage },
+            messageText: lostPhotoMessage,
+          });
+          return;
+        }
+      }
+
+      let clarifyResult;
       try {
-        const media = await adapter.fetchMedia(openLead.photo_url);
-        clarifyImageBase64 = media.base64;
-        clarifyImageMediaType = media.mediaType;
+        clarifyResult = await getQuoteEstimate({
+          data: {
+            tenantSlug: tenant.slug,
+            businessName: tenant.name,
+            laborRate: tenant.laborRate,
+            serviceCallFee: tenant.serviceCallFee,
+            serviceCallFeeMode: tenant.serviceCallFeeMode,
+            priceSheet: clarifyPriceSheet,
+            description: openLead.problem,
+            ...(clarifyImageBase64 !== undefined ? { imageBase64: clarifyImageBase64 } : {}),
+            ...(clarifyImageMediaType !== undefined
+              ? { imageMediaType: clarifyImageMediaType }
+              : {}),
+            answers,
+          },
+        });
       } catch (err) {
-        console.error("Could not re-download the original WhatsApp photo:", err);
-        const lostPhotoMessage =
-          "Sorry, I lost track of the original photo — could you resend it along with your answer?";
+        if (err instanceof Error && err.message === UNSUPPORTED_IMAGE_MESSAGE) {
+          await sendGuardedReply({
+            admin,
+            tenant,
+            fromPhone,
+            adapter,
+            leadId: openLead.id,
+            signature: { kind: "text", text: UNSUPPORTED_IMAGE_MESSAGE },
+            messageText: UNSUPPORTED_IMAGE_MESSAGE,
+          });
+          return;
+        }
+        // P2: getQuoteEstimate exhausted its retry (e.g. a validation/wording
+        // failure it couldn't self-correct) partway through an existing
+        // conversation — re-throwing here left the lead at confidence: null
+        // forever, so every future message from this phone re-entered this
+        // exact same clarification round for the rest of the 48-hour window,
+        // live-confirmed as an actual defect. Mark it terminal instead: the
+        // conversation and its history are preserved, and decideLeadRoute
+        // sends the NEXT message from this phone to fresh_quote (not back
+        // into clarification) — this message is only the one-time
+        // acknowledgment of this specific failure.
+        console.error(
+          `WhatsApp clarification finalize failed for lead ${openLead.id}, marking needs_human_review:`,
+          err,
+        );
+        await admin
+          .from("leads")
+          .update({
+            status: "flagged",
+            flag_type: "needs_human_review",
+            flag_reason: "AI couldn't finalize this quote automatically after clarification.",
+          })
+          .eq("id", openLead.id);
+        // Deliberately not "sent to the team for review" — reads like an
+        // escalation/complaint. Softer framing, and explicitly invites a new
+        // request in the same breath (the next message gets a genuine fresh
+        // attempt either way, per decideLeadRoute — this just tells the
+        // customer that's an option instead of leaving it implicit).
+        const recoveryMessage =
+          "Got it — we've noted everything so far, and the team will follow up with you on a price. If you're asking about something else, just describe it and we'll get you a fresh estimate.";
         await sendGuardedReply({
           admin,
           tenant,
           fromPhone,
           adapter,
           leadId: openLead.id,
-          signature: { kind: "text", text: lostPhotoMessage },
-          messageText: lostPhotoMessage,
+          signature: { kind: "text", text: recoveryMessage },
+          messageText: recoveryMessage,
+          onSent: async () => {
+            await admin
+              .from("lead_messages")
+              .insert({ lead_id: openLead.id, role: "assistant", body: recoveryMessage });
+          },
         });
         return;
       }
-    }
 
-    let clarifyResult;
-    try {
-      clarifyResult = await getQuoteEstimate({
+      if (clarifyResult.needsClarification) {
+        const question = clarifyResult.questions[0];
+        const optionsText = question?.options?.length ? `\n(${question.options.join(" / ")})` : "";
+        const questionText = `${question?.question ?? "Can you tell me a bit more?"}${optionsText}`;
+        await sendGuardedReply({
+          admin,
+          tenant,
+          fromPhone,
+          adapter,
+          leadId: openLead.id,
+          signature: { kind: "text", text: questionText },
+          messageText: questionText,
+          onSent: async () => {
+            await admin
+              .from("lead_messages")
+              .insert({ lead_id: openLead.id, role: "assistant", body: questionText });
+          },
+        });
+        return;
+      }
+
+      if (clarifyResult.outOfScope) {
+        const passAlongMessage = "I'll pass your message along to our team.";
+        // Flag update and owner notification happen regardless of guard
+        // state — if automation is paused, the owner needs to know even
+        // more, not less, so they can follow up manually. Only the
+        // customer-facing pass-along message itself is subject to the guard.
+        await admin
+          .from("leads")
+          .update({
+            status: "flagged",
+            flag_type: "outside_service_scope",
+            flag_reason: `Nothing on the price sheet covers: ${openLead.problem}`,
+          })
+          .eq("id", openLead.id);
+        await sendGuardedReply({
+          admin,
+          tenant,
+          fromPhone,
+          adapter,
+          leadId: openLead.id,
+          signature: { kind: "text", text: passAlongMessage },
+          messageText: passAlongMessage,
+          onSent: async () => {
+            await admin
+              .from("lead_messages")
+              .insert({ lead_id: openLead.id, role: "assistant", body: passAlongMessage });
+          },
+        });
+        void sendFollowUpNotificationEmail({
+          tenant: { name: tenant.name, email: tenant.email, currency: tenant.currency },
+          customerName: openLead.customer_name || profileName || "A customer",
+          body: `[Outside price sheet] ${openLead.problem}`,
+        });
+        return;
+      }
+
+      const clarifyLineItems = clarifyResult.lineItems.map((item) => ({
+        description: item.detail ? `${item.description} — ${item.detail}` : item.description,
+        qty: 1,
+        unit: "job",
+        rate: item.amount,
+        priceSheetItemId: item.priceSheetItemId ?? null,
+        hours: item.hours,
+      }));
+
+      await finalizeLeadWithQuote({
         data: {
-          tenantSlug: tenant.slug,
-          businessName: tenant.name,
-          laborRate: tenant.laborRate,
-          serviceCallFee: tenant.serviceCallFee,
-          serviceCallFeeMode: tenant.serviceCallFeeMode,
-          priceSheet: clarifyPriceSheet,
-          description: openLead.problem,
-          ...(clarifyImageBase64 !== undefined ? { imageBase64: clarifyImageBase64 } : {}),
-          ...(clarifyImageMediaType !== undefined ? { imageMediaType: clarifyImageMediaType } : {}),
-          answers,
-        },
-      });
-    } catch (err) {
-      if (err instanceof Error && err.message === UNSUPPORTED_IMAGE_MESSAGE) {
-        await sendGuardedReply({
-          admin,
-          tenant,
-          fromPhone,
-          adapter,
           leadId: openLead.id,
-          signature: { kind: "text", text: UNSUPPORTED_IMAGE_MESSAGE },
-          messageText: UNSUPPORTED_IMAGE_MESSAGE,
-        });
-        return;
-      }
-      // P2: getQuoteEstimate exhausted its retry (e.g. a validation/wording
-      // failure it couldn't self-correct) partway through an existing
-      // conversation — re-throwing here left the lead at confidence: null
-      // forever, so every future message from this phone re-entered this
-      // exact same clarification round for the rest of the 48-hour window,
-      // live-confirmed as an actual defect. Mark it terminal instead: the
-      // conversation and its history are preserved, and decideLeadRoute
-      // sends the NEXT message from this phone to fresh_quote (not back
-      // into clarification) — this message is only the one-time
-      // acknowledgment of this specific failure.
-      console.error(`WhatsApp clarification finalize failed for lead ${openLead.id}, marking needs_human_review:`, err);
-      await admin
-        .from("leads")
-        .update({ status: "flagged", flag_type: "needs_human_review", flag_reason: "AI couldn't finalize this quote automatically after clarification." })
-        .eq("id", openLead.id);
-      // Deliberately not "sent to the team for review" — reads like an
-      // escalation/complaint. Softer framing, and explicitly invites a new
-      // request in the same breath (the next message gets a genuine fresh
-      // attempt either way, per decideLeadRoute — this just tells the
-      // customer that's an option instead of leaving it implicit).
-      const recoveryMessage =
-        "Got it — we've noted everything so far, and the team will follow up with you on a price. If you're asking about something else, just describe it and we'll get you a fresh estimate.";
+          tenantSlug: tenant.slug,
+          customerName: openLead.customer_name || profileName || "WhatsApp customer",
+          phone: fromPhone,
+          channel,
+          problem: openLead.problem,
+          diagnosis: clarifyResult.diagnosis,
+          confidence: clarifyResult.confidence,
+          isEmergency: clarifyResult.isEmergency,
+          lineItems: clarifyLineItems,
+          pendingNegotiatedPrice: clarifyResult.hasNoPricedWork,
+          hasPartiallyDeferredWork: clarifyResult.hasPartiallyDeferredWork,
+        },
+      });
+
+      // The lead itself is finalized above regardless — only the WhatsApp
+      // notification of it is subject to the loop guard.
       await sendGuardedReply({
         admin,
         tenant,
         fromPhone,
         adapter,
         leadId: openLead.id,
-        signature: { kind: "text", text: recoveryMessage },
-        messageText: recoveryMessage,
-        onSent: async () => {
-          await admin.from("lead_messages").insert({ lead_id: openLead.id, role: "assistant", body: recoveryMessage });
+        signature: {
+          kind: "priced",
+          priceSheetItemIds: clarifyResult.lineItems.map((item) => item.priceSheetItemId),
+          amounts: [...clarifyResult.lineItems.map((item) => item.amount), clarifyResult.totalLow],
         },
+        messageText: `${clarifyResult.diagnosis} ${formatQuotePriceLine(clarifyResult.totalLow, tenant.currency, clarifyResult.isDiagnosisOnly, clarifyResult.hasNoPricedWork, clarifyResult.hasPartiallyDeferredWork)} This estimate is based on the photos and information provided remotely. If the actual issue or scope of work is different than what was presented, the final price may change after inspection. Want me to get this booked in?`,
       });
+
       return;
-    }
-
-    if (clarifyResult.needsClarification) {
-      const question = clarifyResult.questions[0];
-      const optionsText = question?.options?.length ? `\n(${question.options.join(" / ")})` : "";
-      const questionText = `${question?.question ?? "Can you tell me a bit more?"}${optionsText}`;
-      await sendGuardedReply({
-        admin,
-        tenant,
-        fromPhone,
-        adapter,
-        leadId: openLead.id,
-        signature: { kind: "text", text: questionText },
-        messageText: questionText,
-        onSent: async () => {
-          await admin.from("lead_messages").insert({ lead_id: openLead.id, role: "assistant", body: questionText });
-        },
-      });
-      return;
-    }
-
-    if (clarifyResult.outOfScope) {
-      const passAlongMessage = "I'll pass your message along to our team.";
-      // Flag update and owner notification happen regardless of guard
-      // state — if automation is paused, the owner needs to know even
-      // more, not less, so they can follow up manually. Only the
-      // customer-facing pass-along message itself is subject to the guard.
-      await admin
-        .from("leads")
-        .update({
-          status: "flagged",
-          flag_type: "outside_service_scope",
-          flag_reason: `Nothing on the price sheet covers: ${openLead.problem}`,
-        })
-        .eq("id", openLead.id);
-      await sendGuardedReply({
-        admin,
-        tenant,
-        fromPhone,
-        adapter,
-        leadId: openLead.id,
-        signature: { kind: "text", text: passAlongMessage },
-        messageText: passAlongMessage,
-        onSent: async () => {
-          await admin.from("lead_messages").insert({ lead_id: openLead.id, role: "assistant", body: passAlongMessage });
-        },
-      });
-      void sendFollowUpNotificationEmail({
-        tenant: { name: tenant.name, email: tenant.email, currency: tenant.currency },
-        customerName: openLead.customer_name || profileName || "A customer",
-        body: `[Outside price sheet] ${openLead.problem}`,
-      });
-      return;
-    }
-
-    const clarifyLineItems = clarifyResult.lineItems.map((item) => ({
-      description: item.detail ? `${item.description} — ${item.detail}` : item.description,
-      qty: 1,
-      unit: "job",
-      rate: item.amount,
-      priceSheetItemId: item.priceSheetItemId ?? null,
-      hours: item.hours,
-    }));
-
-    await finalizeLeadWithQuote({
-      data: {
-        leadId: openLead.id,
-        tenantSlug: tenant.slug,
-        customerName: openLead.customer_name || profileName || "WhatsApp customer",
-        phone: fromPhone,
-        channel,
-        problem: openLead.problem,
-        diagnosis: clarifyResult.diagnosis,
-        confidence: clarifyResult.confidence,
-        isEmergency: clarifyResult.isEmergency,
-        lineItems: clarifyLineItems,
-        pendingNegotiatedPrice: clarifyResult.hasNoPricedWork,
-        hasPartiallyDeferredWork: clarifyResult.hasPartiallyDeferredWork,
-      },
-    });
-
-    // The lead itself is finalized above regardless — only the WhatsApp
-    // notification of it is subject to the loop guard.
-    await sendGuardedReply({
-      admin,
-      tenant,
-      fromPhone,
-      adapter,
-      leadId: openLead.id,
-      signature: {
-        kind: "priced",
-        priceSheetItemIds: clarifyResult.lineItems.map((item) => item.priceSheetItemId),
-        amounts: [...clarifyResult.lineItems.map((item) => item.amount), clarifyResult.totalLow],
-      },
-      messageText: `${clarifyResult.diagnosis} ${formatQuotePriceLine(clarifyResult.totalLow, tenant.currency, clarifyResult.isDiagnosisOnly, clarifyResult.hasNoPricedWork, clarifyResult.hasPartiallyDeferredWork)} This estimate is based on the photos and information provided remotely. If the actual issue or scope of work is different than what was presented, the final price may change after inspection. Want me to get this booked in?`,
-    });
-
-    return;
     });
     if (!claimed) {
       console.error(
@@ -888,7 +931,8 @@ export async function handleInboundWhatsAppMessage(params: {
         .update({
           status: "flagged",
           flag_type: "needs_human_review",
-          flag_reason: "A message arrived while another was already being processed for this conversation.",
+          flag_reason:
+            "A message arrived while another was already being processed for this conversation.",
         })
         .eq("id", openLead.id)
         .is("flag_type", null);
@@ -913,12 +957,31 @@ export async function handleInboundWhatsAppMessage(params: {
     // default first move.
     await admin.from("lead_messages").insert({ lead_id: openLead.id, role: "customer", body });
 
-    // A new photo attached is itself strong, cheap-to-check evidence of a
-    // new job — a customer following up on an existing quote essentially
-    // never re-attaches a fresh photo just to ask "is that price still
-    // good?". No AI call needed for this case; fall straight through to
-    // the fresh-quote flow below, using this message's own photo/body.
-    if (!mediaRef) {
+    // Photo-intelligence Priority 2 (2026-10-19): a photo attached here used
+    // to be treated unconditionally as proof of a new job, skipping straight
+    // to the fresh-quote flow — never as additional evidence for the job
+    // already quoted. Replaced with a real classification using the photo
+    // itself plus the prior job's own context, rather than assuming either
+    // way from photo-presence alone. See handleQuotedFollowUpPhoto below.
+    if (mediaRef) {
+      const handled = await handleQuotedFollowUpPhoto({
+        tenant,
+        fromPhone,
+        body,
+        mediaRef,
+        profileName,
+        channel,
+        adapter,
+        admin,
+        openLead,
+      });
+      if (handled) return;
+      // Classified as a different job (or the photo itself didn't load/
+      // validate, already handled with its own user-facing message and an
+      // early return inside handleQuotedFollowUpPhoto — reaching here means
+      // specifically "different job") — falls through to the fresh-quote
+      // flow below, exactly like today's behavior for that case.
+    } else {
       const { sameJob } = await classifyFollowUpIntent({
         data: {
           priorProblem: openLead.problem,
@@ -928,78 +991,87 @@ export async function handleInboundWhatsAppMessage(params: {
       });
 
       if (sameJob) {
-        const claimedFollowUp = await withLeadProcessingClaim(admin, tenant.id, fromPhone, async () => {
-        const { data: lineItemRows } = await admin
-          .from("lead_line_items")
-          .select("description, rate, qty")
-          .eq("lead_id", openLead.id);
-        const lineItemsForAnswer = (lineItemRows ?? []).map((row) => ({
-          description: row.description,
-          detail: "",
-          amount: lineItemAmount(row),
-        }));
-
-        const { data: historyRows } = await admin
-          .from("lead_messages")
-          .select("role, body")
-          .eq("lead_id", openLead.id)
-          .order("created_at", { ascending: true });
-        const history = (historyRows ?? []).map((m) => ({
-          role: m.role === "customer" ? ("customer" as const) : ("desk" as const),
-          text: m.body,
-        }));
-
-        const answer = await getFollowUpAnswer({
-          data: {
-            tenantSlug: tenant.slug,
-            businessName: tenant.name,
-            diagnosis: openLead.diagnosis || "",
-            lineItems: lineItemsForAnswer,
-            question: body,
-            history,
-            // P1-B: broadened from the flag alone — a lead reviewed/dismissed
-            // without a price ever being added has the identical "nothing to
-            // state a number for" problem, and lineItemRows is already fetched
-            // above for this exact branch.
-            hasNoPricedWork: openLead.flag_type === "pending_negotiated_price" || (lineItemRows ?? []).length === 0,
-            // P2 mixed-pricing: this lead's real, priced lineItemRows are
-            // only part of what was originally described — another issue is
-            // still deferred, so a "how much total?" follow-up must not
-            // treat the listed items as the complete picture.
-            hasPartiallyDeferredWork: openLead.flag_type === "partially_priced",
-          },
-        });
-
-        // lead_line_items has no priceSheetItemId column (a real,
-        // pre-existing schema limitation, not introduced here) — item
-        // descriptions stand in as the identity key for this specific
-        // site's signature, a stated precision reduction. Dollar amounts
-        // actually stated in the answer text are extracted directly
-        // (getFollowUpAnswer already validates every "$" figure traces to
-        // a real known amount — see its own allowedAmounts invariant),
-        // which is what mainly differentiates "still $194?" from
-        // "can you come at 3pm?" for the same already-quoted job, since
-        // the latter typically states no dollar figure at all.
-        const mentionedAmounts = [...answer.matchAll(/\$([\d,]+(?:\.\d{2})?)/g)].map((m) =>
-          Number(m[1]!.replace(/,/g, "")),
-        );
-        await sendGuardedReply({
+        const claimedFollowUp = await withLeadProcessingClaim(
           admin,
-          tenant,
+          tenant.id,
           fromPhone,
-          adapter,
-          leadId: openLead.id,
-          signature: {
-            kind: "priced",
-            priceSheetItemIds: lineItemsForAnswer.map((item) => item.description),
-            amounts: mentionedAmounts,
+          async () => {
+            const { data: lineItemRows } = await admin
+              .from("lead_line_items")
+              .select("description, rate, qty")
+              .eq("lead_id", openLead.id);
+            const lineItemsForAnswer = (lineItemRows ?? []).map((row) => ({
+              description: row.description,
+              detail: "",
+              amount: lineItemAmount(row),
+            }));
+
+            const { data: historyRows } = await admin
+              .from("lead_messages")
+              .select("role, body")
+              .eq("lead_id", openLead.id)
+              .order("created_at", { ascending: true });
+            const history = (historyRows ?? []).map((m) => ({
+              role: m.role === "customer" ? ("customer" as const) : ("desk" as const),
+              text: m.body,
+            }));
+
+            const answer = await getFollowUpAnswer({
+              data: {
+                tenantSlug: tenant.slug,
+                businessName: tenant.name,
+                diagnosis: openLead.diagnosis || "",
+                lineItems: lineItemsForAnswer,
+                question: body,
+                history,
+                // P1-B: broadened from the flag alone — a lead reviewed/dismissed
+                // without a price ever being added has the identical "nothing to
+                // state a number for" problem, and lineItemRows is already fetched
+                // above for this exact branch.
+                hasNoPricedWork:
+                  openLead.flag_type === "pending_negotiated_price" ||
+                  (lineItemRows ?? []).length === 0,
+                // P2 mixed-pricing: this lead's real, priced lineItemRows are
+                // only part of what was originally described — another issue is
+                // still deferred, so a "how much total?" follow-up must not
+                // treat the listed items as the complete picture.
+                hasPartiallyDeferredWork: openLead.flag_type === "partially_priced",
+              },
+            });
+
+            // lead_line_items has no priceSheetItemId column (a real,
+            // pre-existing schema limitation, not introduced here) — item
+            // descriptions stand in as the identity key for this specific
+            // site's signature, a stated precision reduction. Dollar amounts
+            // actually stated in the answer text are extracted directly
+            // (getFollowUpAnswer already validates every "$" figure traces to
+            // a real known amount — see its own allowedAmounts invariant),
+            // which is what mainly differentiates "still $194?" from
+            // "can you come at 3pm?" for the same already-quoted job, since
+            // the latter typically states no dollar figure at all.
+            const mentionedAmounts = [...answer.matchAll(/\$([\d,]+(?:\.\d{2})?)/g)].map((m) =>
+              Number(m[1]!.replace(/,/g, "")),
+            );
+            await sendGuardedReply({
+              admin,
+              tenant,
+              fromPhone,
+              adapter,
+              leadId: openLead.id,
+              signature: {
+                kind: "priced",
+                priceSheetItemIds: lineItemsForAnswer.map((item) => item.description),
+                amounts: mentionedAmounts,
+              },
+              messageText: answer,
+              onSent: async () => {
+                await admin
+                  .from("lead_messages")
+                  .insert({ lead_id: openLead.id, role: "assistant", body: answer });
+              },
+            });
           },
-          messageText: answer,
-          onSent: async () => {
-            await admin.from("lead_messages").insert({ lead_id: openLead.id, role: "assistant", body: answer });
-          },
-        });
-        });
+        );
         if (!claimedFollowUp) {
           console.error(
             `Could not claim lead slot for tenant ${tenant.id}, phone ${fromPhone} for a same-job follow-up — another message is already being processed for this lead; skipping automated reply for this round.`,
@@ -1031,9 +1103,8 @@ export async function handleInboundWhatsAppMessage(params: {
       customerName: openLead.customer_name || profileName || "A customer",
       body,
     });
-    // Falls through to the fresh-quote flow below — either a photo was
-    // attached (strong new-job signal), or the classifier above decided
-    // this describes a different problem.
+    // Falls through to the fresh-quote flow below — a photo classified as a
+    // genuinely different job, or a text-only reply classified the same way.
   }
 
   // A genuinely new job — either a first-time conversation, or a returning
@@ -1100,6 +1171,337 @@ export async function handleInboundWhatsAppMessage(params: {
   }
 }
 
+// Photo-intelligence Priority 2 (2026-10-19). Handles a photo attached to
+// an already-quoted lead's follow-up message — classifies it as additional
+// evidence for the SAME job, a genuinely DIFFERENT job, or too AMBIGUOUS to
+// tell, using the photo itself plus the prior job's own context, rather
+// than assuming either way from photo-presence alone (the prior, now-
+// replaced behavior always assumed "new job"). Returns true when this
+// function fully handled the message — same job reassessed, an ambiguous
+// clarifying question sent, or a photo-load/format error already replied
+// to — the caller must not fall through to the fresh-quote flow in any of
+// those cases. Returns false only for "different job," where the caller's
+// existing fresh-quote fallthrough is exactly the right, unchanged
+// behavior.
+async function handleQuotedFollowUpPhoto(params: {
+  tenant: InboundWhatsAppTenant;
+  fromPhone: string;
+  body: string;
+  mediaRef: string;
+  profileName: string | undefined;
+  channel: "WhatsApp";
+  adapter: ChannelAdapter;
+  admin: ReturnType<typeof getAdminClient>;
+  openLead: {
+    id: string;
+    customer_name: string | null;
+    photo_url: string | null;
+    problem: string;
+    confidence: string | null;
+    diagnosis: string | null;
+    flag_type: string | null;
+  };
+}): Promise<boolean> {
+  const { tenant, fromPhone, body, mediaRef, profileName, adapter, admin, openLead } = params;
+
+  let imageBase64: string;
+  let imageMediaType: string;
+  try {
+    const media = await adapter.fetchMedia(mediaRef);
+    imageBase64 = media.base64;
+    imageMediaType = media.mediaType;
+  } catch (err) {
+    console.error(
+      `Could not download WhatsApp photo for follow-up classification, lead ${openLead.id}:`,
+      err,
+    );
+    const photoLoadFailedMessage = "I couldn't load that photo — could you try sending it again?";
+    await sendGuardedReply({
+      admin,
+      tenant,
+      fromPhone,
+      adapter,
+      leadId: openLead.id,
+      signature: { kind: "text", text: photoLoadFailedMessage },
+      messageText: photoLoadFailedMessage,
+    });
+    return true;
+  }
+
+  if (!isSupportedImageBase64(imageBase64)) {
+    await sendGuardedReply({
+      admin,
+      tenant,
+      fromPhone,
+      adapter,
+      leadId: openLead.id,
+      signature: { kind: "text", text: UNSUPPORTED_IMAGE_MESSAGE },
+      messageText: UNSUPPORTED_IMAGE_MESSAGE,
+    });
+    return true;
+  }
+
+  const { classification } = await classifyFollowUpPhotoIntent({
+    data: {
+      priorProblem: openLead.problem,
+      priorDiagnosis: openLead.diagnosis || "",
+      customerReply: body,
+      imageBase64,
+      imageMediaType,
+    },
+  });
+
+  if (classification === "different_job") {
+    return false;
+  }
+
+  if (classification === "ambiguous") {
+    const disambiguationQuestion =
+      "Is this photo about the job I already quoted, or something different you'd like priced? If it's the same job, go ahead and resend the photo so I can take a closer look.";
+    await sendGuardedReply({
+      admin,
+      tenant,
+      fromPhone,
+      adapter,
+      leadId: openLead.id,
+      signature: { kind: "text", text: disambiguationQuestion },
+      messageText: disambiguationQuestion,
+      onSent: async () => {
+        await admin
+          .from("lead_messages")
+          .insert({ lead_id: openLead.id, role: "assistant", body: disambiguationQuestion });
+      },
+    });
+    void sendFollowUpNotificationEmail({
+      tenant: { name: tenant.name, email: tenant.email, currency: tenant.currency },
+      customerName: openLead.customer_name || profileName || "A customer",
+      body,
+    });
+    return true;
+  }
+
+  // classification === "same_job": reassess using the original problem plus
+  // this new photo, compare against what was already quoted, and only ever
+  // tell the customer something changed if it genuinely did.
+  const claimedReassessment = await withLeadProcessingClaim(
+    admin,
+    tenant.id,
+    fromPhone,
+    async () => {
+      const { data: priceSheetRows } = await admin
+        .from("price_sheet_items")
+        .select(
+          "id, task, category, keywords, pricing_type, price_min, price_max, hours, bundleable, materials_policy, diagnosis_pricing_type, diagnosis_fee, ai_notes",
+        )
+        .eq("tenant_id", tenant.id);
+      const priceSheet: PriceSheetItem[] = (priceSheetRows ?? []).map((row) => ({
+        id: row.id,
+        task: row.task,
+        category: row.category,
+        keywords: row.keywords,
+        pricingType: row.pricing_type,
+        priceMin: row.price_min,
+        priceMax: row.price_max,
+        hours: row.hours,
+        bundleable: row.bundleable,
+        materialsPolicy: row.materials_policy,
+        diagnosisFee: row.diagnosis_pricing_type
+          ? { pricingType: row.diagnosis_pricing_type, amount: row.diagnosis_fee }
+          : null,
+        aiNotes: row.ai_notes,
+      }));
+
+      const { data: lineItemRows } = await admin
+        .from("lead_line_items")
+        .select("description, rate, qty")
+        .eq("lead_id", openLead.id);
+      const existingLineItems = (lineItemRows ?? []).map((row) => ({
+        description: row.description,
+        amount: lineItemAmount(row),
+      }));
+      const existingTotal = existingLineItems.reduce((sum, i) => sum + i.amount, 0);
+      const existingHasNoPricedWork =
+        openLead.flag_type === "pending_negotiated_price" || existingLineItems.length === 0;
+      const existingHasPartiallyDeferredWork = openLead.flag_type === "partially_priced";
+
+      const updatedDescription = body
+        ? `${openLead.problem}\n\nAdditional note from customer with this new photo: ${body}`
+        : openLead.problem;
+
+      let reassessed;
+      try {
+        reassessed = await getQuoteEstimate({
+          data: {
+            tenantSlug: tenant.slug,
+            businessName: tenant.name,
+            laborRate: tenant.laborRate,
+            serviceCallFee: tenant.serviceCallFee,
+            serviceCallFeeMode: tenant.serviceCallFeeMode,
+            priceSheet,
+            description: updatedDescription || NO_DESCRIPTION_PLACEHOLDER,
+            imageBase64,
+            imageMediaType,
+          },
+        });
+      } catch (err) {
+        console.error(`Reassessment failed for lead ${openLead.id}:`, err);
+        const reassessFailedMessage =
+          "Thanks for the photo — I'll have the team take a closer look and follow up on the updated price.";
+        await sendGuardedReply({
+          admin,
+          tenant,
+          fromPhone,
+          adapter,
+          leadId: openLead.id,
+          signature: { kind: "text", text: reassessFailedMessage },
+          messageText: reassessFailedMessage,
+        });
+        return;
+      }
+
+      // Sequential, not combined — TypeScript can only narrow QuoteResult's
+      // discriminated union one member at a time (see getQuoteEstimate's own
+      // callers elsewhere in this file for the same pattern). Both lead to
+      // the same fallback here: couldn't confidently reassess even with the
+      // photo in hand, so ask rather than silently guess, change nothing, and
+      // never duplicate the lead.
+      const askToConfirmMessage =
+        "Thanks for the photo — to make sure I price this correctly, can you confirm: is this still about the same job I quoted, or has something changed?";
+      if (reassessed.needsClarification) {
+        await sendGuardedReply({
+          admin,
+          tenant,
+          fromPhone,
+          adapter,
+          leadId: openLead.id,
+          signature: { kind: "text", text: askToConfirmMessage },
+          messageText: askToConfirmMessage,
+          onSent: async () => {
+            await admin
+              .from("lead_messages")
+              .insert({ lead_id: openLead.id, role: "assistant", body: askToConfirmMessage });
+          },
+        });
+        return;
+      }
+      if (reassessed.outOfScope) {
+        await sendGuardedReply({
+          admin,
+          tenant,
+          fromPhone,
+          adapter,
+          leadId: openLead.id,
+          signature: { kind: "text", text: askToConfirmMessage },
+          messageText: askToConfirmMessage,
+          onSent: async () => {
+            await admin
+              .from("lead_messages")
+              .insert({ lead_id: openLead.id, role: "assistant", body: askToConfirmMessage });
+          },
+        });
+        return;
+      }
+
+      const newTotal = reassessed.totalLow;
+
+      // lead_line_items has no priceSheetItemId column (same pre-existing
+      // schema limitation noted elsewhere in this file) — {description,
+      // amount} is the same identity key already used for that reason.
+      const existingKey = new Set(
+        existingLineItems.map((i) => `${i.description}::${i.amount.toFixed(2)}`),
+      );
+      const newKey = new Set(
+        reassessed.lineItems.map((i) => `${i.description}::${i.amount.toFixed(2)}`),
+      );
+      const sameComposition =
+        existingKey.size === newKey.size && [...newKey].every((k) => existingKey.has(k));
+      const materiallyChanged =
+        Math.abs(existingTotal - newTotal) >= 0.01 ||
+        !sameComposition ||
+        existingHasNoPricedWork !== reassessed.hasNoPricedWork ||
+        existingHasPartiallyDeferredWork !== reassessed.hasPartiallyDeferredWork;
+
+      if (!materiallyChanged) {
+        // Silently keep the existing quote as-is — no unnecessary
+        // confirmation message, per the explicit requirement.
+        return;
+      }
+
+      // Re-enabled 2026-10-19 (0028_fix_lead_reassessment_atomicity.sql):
+      // update_lead_with_line_items now replaces (not appends) an existing
+      // lead's line items atomically, and genuinely clears a stale pricing
+      // flag while still protecting any unrelated operational flag — both
+      // proven against a real disposable Postgres instance, 35/35 checks,
+      // see scripts/pg-lead-reassessment-check.sh. This was previously
+      // disabled (flagging for manual review instead) pending exactly this
+      // fix — see SECURITY_REMEDIATION_TRACKER.md for the full incident.
+      const newLineItems = reassessed.lineItems.map((item) => ({
+        description: item.detail ? `${item.description} — ${item.detail}` : item.description,
+        qty: 1,
+        unit: "job",
+        rate: item.amount,
+        priceSheetItemId: item.priceSheetItemId ?? null,
+        hours: item.hours,
+      }));
+
+      await finalizeLeadWithQuote({
+        data: {
+          leadId: openLead.id,
+          tenantSlug: tenant.slug,
+          customerName: openLead.customer_name || profileName || "WhatsApp customer",
+          phone: fromPhone,
+          channel: "WhatsApp",
+          problem: openLead.problem,
+          diagnosis: reassessed.diagnosis,
+          confidence: reassessed.confidence,
+          isEmergency: reassessed.isEmergency,
+          lineItems: newLineItems,
+          pendingNegotiatedPrice: reassessed.hasNoPricedWork,
+          hasPartiallyDeferredWork: reassessed.hasPartiallyDeferredWork,
+        },
+      });
+
+      // No "(previously $X)" note when nothing was priced before at all —
+      // there's no real prior figure to cite, and stating "$0.00" would read
+      // as a fabricated number rather than "nothing was priced yet."
+      const previousPriceNote = existingHasNoPricedWork
+        ? ""
+        : ` (previously ${money(existingTotal, tenant.currency)}.)`;
+      const updateMessage = `Thanks for the photo! Based on what I can see, I've updated your estimate: ${reassessed.diagnosis} ${formatQuotePriceLine(newTotal, tenant.currency, reassessed.isDiagnosisOnly, reassessed.hasNoPricedWork, reassessed.hasPartiallyDeferredWork)}${previousPriceNote}`;
+      await sendGuardedReply({
+        admin,
+        tenant,
+        fromPhone,
+        adapter,
+        leadId: openLead.id,
+        signature: {
+          kind: "priced",
+          priceSheetItemIds: reassessed.lineItems.map((item) => item.priceSheetItemId),
+          amounts: [...reassessed.lineItems.map((item) => item.amount), newTotal],
+        },
+        messageText: updateMessage,
+        onSent: async () => {
+          await admin
+            .from("lead_messages")
+            .insert({ lead_id: openLead.id, role: "assistant", body: updateMessage });
+        },
+      });
+    },
+  );
+
+  if (!claimedReassessment) {
+    console.error(
+      `Could not claim lead slot for tenant ${tenant.id}, phone ${fromPhone} for a photo-based reassessment — another message is already being processed for this lead; skipping automated reply for this round.`,
+    );
+  }
+  void sendFollowUpNotificationEmail({
+    tenant: { name: tenant.name, email: tenant.email, currency: tenant.currency },
+    customerName: openLead.customer_name || profileName || "A customer",
+    body,
+  });
+  return true;
+}
+
 async function handleFreshQuote(params: {
   tenant: InboundWhatsAppTenant;
   fromPhone: string;
@@ -1130,7 +1532,9 @@ async function handleFreshQuote(params: {
     hours: row.hours,
     bundleable: row.bundleable,
     materialsPolicy: row.materials_policy,
-    diagnosisFee: row.diagnosis_pricing_type ? { pricingType: row.diagnosis_pricing_type, amount: row.diagnosis_fee } : null,
+    diagnosisFee: row.diagnosis_pricing_type
+      ? { pricingType: row.diagnosis_pricing_type, amount: row.diagnosis_fee }
+      : null,
     aiNotes: row.ai_notes,
   }));
 
@@ -1212,7 +1616,9 @@ async function handleFreshQuote(params: {
         problem: openingProblem,
       },
     });
-    await admin.from("lead_messages").insert({ lead_id: leadId, role: "customer", body: openingProblem });
+    await admin
+      .from("lead_messages")
+      .insert({ lead_id: leadId, role: "customer", body: openingProblem });
 
     await sendGuardedReply({
       admin,
@@ -1223,7 +1629,9 @@ async function handleFreshQuote(params: {
       signature: { kind: "text", text: questionText },
       messageText: questionText,
       onSent: async () => {
-        await admin.from("lead_messages").insert({ lead_id: leadId, role: "assistant", body: questionText });
+        await admin
+          .from("lead_messages")
+          .insert({ lead_id: leadId, role: "assistant", body: questionText });
       },
     });
     return;
@@ -1244,7 +1652,9 @@ async function handleFreshQuote(params: {
         flagReason: `Nothing on the price sheet covers: ${openingProblem}`,
       },
     });
-    await admin.from("lead_messages").insert({ lead_id: leadId, role: "customer", body: openingProblem });
+    await admin
+      .from("lead_messages")
+      .insert({ lead_id: leadId, role: "customer", body: openingProblem });
     await sendGuardedReply({
       admin,
       tenant,
@@ -1254,7 +1664,9 @@ async function handleFreshQuote(params: {
       signature: { kind: "text", text: passAlongMessage },
       messageText: passAlongMessage,
       onSent: async () => {
-        await admin.from("lead_messages").insert({ lead_id: leadId, role: "assistant", body: passAlongMessage });
+        await admin
+          .from("lead_messages")
+          .insert({ lead_id: leadId, role: "assistant", body: passAlongMessage });
       },
     });
     void sendFollowUpNotificationEmail({

@@ -3,8 +3,13 @@ import {
   validateSubmittedLineItem,
   validateQuoteAgainstPriceSheet,
   buildPrompt,
+  buildClaudeMessageContent,
   extractDollarAmounts,
   findUnexpectedAmounts,
+  isSupportedImageBase64,
+  UNSUPPORTED_IMAGE_MESSAGE,
+  IMAGE_TOO_LARGE_MESSAGE,
+  MAX_IMAGE_BASE64_CHARS,
   SERVICE_CALL_SENTINEL_ID,
   type PriceSheetItem,
   type QuoteInput,
@@ -166,7 +171,12 @@ describe("validateSubmittedLineItem", () => {
   });
 
   it("rejects a line item missing priceSheetItemId entirely", () => {
-    const failure = validateSubmittedLineItem({ description: "Made up job", amount: 999 }, priceSheet, 89, "fixed");
+    const failure = validateSubmittedLineItem(
+      { description: "Made up job", amount: 999 },
+      priceSheet,
+      89,
+      "fixed",
+    );
     expect(failure).not.toBeNull();
   });
 
@@ -197,7 +207,9 @@ describe("validateSubmittedLineItem", () => {
 // getQuoteEstimate runs Claude's own parsed JSON through before it's ever
 // returned to a customer or persisted as a lead.
 describe("validateQuoteAgainstPriceSheet", () => {
-  function base(overrides: Partial<{ matchedServices: unknown; lineItems: unknown; diagnosis: unknown }> = {}) {
+  function base(
+    overrides: Partial<{ matchedServices: unknown; lineItems: unknown; diagnosis: unknown }> = {},
+  ) {
     return {
       matchedServices: [{ customerIssue: "doorknob", priceSheetItemId: "ps-1" }],
       lineItems: [{ description: "Doorknob", detail: "", amount: 60, priceSheetItemId: "ps-1" }],
@@ -281,7 +293,11 @@ describe("validateQuoteAgainstPriceSheet", () => {
 
   it("flags a forged amount on a correctly matched item", () => {
     const failures = validateQuoteAgainstPriceSheet(
-      base({ lineItems: [{ description: "Doorknob", detail: "", amount: 9999, priceSheetItemId: "ps-1" }] }),
+      base({
+        lineItems: [
+          { description: "Doorknob", detail: "", amount: 9999, priceSheetItemId: "ps-1" },
+        ],
+      }),
       priceSheet,
       89,
       "fixed",
@@ -292,9 +308,16 @@ describe("validateQuoteAgainstPriceSheet", () => {
   it("rejects the service-call sentinel as a priced lineItem when the tenant's fee is negotiated", () => {
     const failures = validateQuoteAgainstPriceSheet(
       base({
-        matchedServices: [{ customerIssue: "diagnostic visit", priceSheetItemId: SERVICE_CALL_SENTINEL_ID }],
+        matchedServices: [
+          { customerIssue: "diagnostic visit", priceSheetItemId: SERVICE_CALL_SENTINEL_ID },
+        ],
         lineItems: [
-          { description: "Service call", detail: "", amount: 89, priceSheetItemId: SERVICE_CALL_SENTINEL_ID },
+          {
+            description: "Service call",
+            detail: "",
+            amount: 89,
+            priceSheetItemId: SERVICE_CALL_SENTINEL_ID,
+          },
         ],
       }),
       priceSheet,
@@ -312,10 +335,16 @@ describe("validateQuoteAgainstPriceSheet", () => {
           { customerIssue: "doorknob", priceSheetItemId: "ps-1" },
         ],
         lineItems: [
-          { description: "Service call", detail: "", amount: 89, priceSheetItemId: SERVICE_CALL_SENTINEL_ID },
+          {
+            description: "Service call",
+            detail: "",
+            amount: 89,
+            priceSheetItemId: SERVICE_CALL_SENTINEL_ID,
+          },
           { description: "Doorknob", detail: "", amount: 60, priceSheetItemId: "ps-1" },
         ],
-        diagnosis: "Diagnostic visit plus a doorknob fix — no mention of how the fee relates to the repair.",
+        diagnosis:
+          "Diagnostic visit plus a doorknob fix — no mention of how the fee relates to the repair.",
       }),
       priceSheet,
       89,
@@ -332,10 +361,16 @@ describe("validateQuoteAgainstPriceSheet", () => {
           { customerIssue: "doorknob", priceSheetItemId: "ps-1" },
         ],
         lineItems: [
-          { description: "Service call", detail: "", amount: 89, priceSheetItemId: SERVICE_CALL_SENTINEL_ID },
+          {
+            description: "Service call",
+            detail: "",
+            amount: 89,
+            priceSheetItemId: SERVICE_CALL_SENTINEL_ID,
+          },
           { description: "Doorknob", detail: "", amount: 60, priceSheetItemId: "ps-1" },
         ],
-        diagnosis: "The service call fee goes toward the approved repair if you proceed with the doorknob fix.",
+        diagnosis:
+          "The service call fee goes toward the approved repair if you proceed with the doorknob fix.",
       }),
       priceSheet,
       89,
@@ -351,7 +386,9 @@ describe("validateQuoteAgainstPriceSheet", () => {
     const failures = validateQuoteAgainstPriceSheet(
       base({
         matchedServices: [{ customerIssue: "doorknob", priceSheetItemId: "ps-parts" }],
-        lineItems: [{ description: "Doorknob", detail: "", amount: 60, priceSheetItemId: "ps-parts" }],
+        lineItems: [
+          { description: "Doorknob", detail: "", amount: 60, priceSheetItemId: "ps-parts" },
+        ],
         diagnosis: "The doorknob is loose and needs a new part.",
       }),
       partsPriceSheet,
@@ -415,6 +452,146 @@ describe("buildPrompt", () => {
     expect(prompt).toContain("Is there a photo?");
     expect(prompt).toContain("No photo available");
   });
+
+  // Priority 3 of the 2026-10-19 photo-intelligence investigation: the
+  // confidence field used to be defined ONLY as "confidence in reading the
+  // photo" — incoherent, and risked implying a visual read that never
+  // happened, whenever no photo was ever sent. Fixed to be evidence-general.
+  it("never defines confidence solely as 'reading the photo' — the old, photo-only wording is gone", () => {
+    expect(buildPrompt(baseInput())).not.toContain("confidence in reading the photo");
+    expect(buildPrompt(baseInput({ imageBase64: "x" }))).not.toContain(
+      "confidence in reading the photo",
+    );
+  });
+
+  it("instructs the model never to imply it saw a photo it never received", () => {
+    const prompt = buildPrompt(baseInput()); // no imageBase64 at all
+    expect(prompt).toContain("never phrase or imply confidence as if you saw one");
+  });
+
+  it("instructs the model that a clear text description can fully support High confidence with no photo", () => {
+    const prompt = buildPrompt(baseInput());
+    expect(prompt).toContain("can still fully support High confidence on its own");
+  });
+
+  it("instructs the model that a missing photo is never by itself a reason to lower confidence", () => {
+    const prompt = buildPrompt(baseInput());
+    expect(prompt).toContain("a missing photo is never by itself a reason to lower confidence");
+  });
+});
+
+// Photo-intelligence investigation (2026-10-19): the user asked whether the
+// AI actually "sees" a photo or merely gets told one was attached. Traced
+// end to end: getQuoteEstimate's handler builds this exact content array
+// and passes it straight into callClaude, which JSON.stringifies the body
+// with zero filtering before POSTing to the Anthropic Messages API — so
+// buildClaudeMessageContent's output IS the real request shape, not a
+// proxy for it. These tests prove the image reaches the request in the
+// format Anthropic's Messages API requires for a vision input.
+describe("buildClaudeMessageContent — proving the image actually reaches the model", () => {
+  function baseInput(overrides: Partial<QuoteInput> = {}): QuoteInput {
+    return {
+      businessName: "Cabos Handyman",
+      laborRate: 60,
+      serviceCallFee: 89,
+      serviceCallFeeMode: "fixed",
+      priceSheet,
+      description: "My kitchen faucet needs replacing.",
+      ...overrides,
+    };
+  }
+
+  const FAKE_JPEG_BASE64 = "/9j/4AAQSkZJRgABAQAAAQABAAD"; // decodes to FF D8 FF ...
+
+  it("includes a real Anthropic vision content block when a photo is attached — not just a text mention", () => {
+    const content = buildClaudeMessageContent(
+      baseInput({ imageBase64: FAKE_JPEG_BASE64, imageMediaType: "image/jpeg" }),
+    );
+    const imageBlock = content.find((c) => c["type"] === "image") as
+      { type: string; source: { type: string; media_type: string; data: string } } | undefined;
+    expect(imageBlock).toBeDefined();
+    expect(imageBlock!.source).toEqual({
+      type: "base64",
+      media_type: "image/jpeg",
+      data: FAKE_JPEG_BASE64,
+    });
+  });
+
+  it("places the image block before the text block — Anthropic's own recommended ordering", () => {
+    const content = buildClaudeMessageContent(
+      baseInput({ imageBase64: FAKE_JPEG_BASE64, imageMediaType: "image/jpeg" }),
+    );
+    expect(content[0]?.["type"]).toBe("image");
+    expect(content[1]?.["type"]).toBe("text");
+  });
+
+  it("defaults media_type to image/jpeg when the caller didn't specify one", () => {
+    const content = buildClaudeMessageContent(baseInput({ imageBase64: FAKE_JPEG_BASE64 }));
+    const imageBlock = content.find((c) => c["type"] === "image") as {
+      source: { media_type: string };
+    };
+    expect(imageBlock.source.media_type).toBe("image/jpeg");
+  });
+
+  it("sends only the text block, with no image content at all, when no photo was attached", () => {
+    const content = buildClaudeMessageContent(baseInput());
+    expect(content).toHaveLength(1);
+    expect(content[0]?.["type"]).toBe("text");
+    expect(content.some((c) => c["type"] === "image")).toBe(false);
+  });
+
+  it("the text block itself still describes the customer's request (sanity check the two aren't swapped)", () => {
+    const content = buildClaudeMessageContent(
+      baseInput({ imageBase64: FAKE_JPEG_BASE64, imageMediaType: "image/jpeg" }),
+    );
+    const textBlock = content.find((c) => c["type"] === "text") as { text: string };
+    expect(textBlock.text).toContain("My kitchen faucet needs replacing.");
+  });
+});
+
+// The magic-byte validation gate that runs BEFORE buildClaudeMessageContent
+// is ever called (getQuoteEstimate's handler: `if (data.imageBase64 &&
+// !isSupportedImageBase64(...)) throw ...`) — proving these cases reject
+// correctly closes the loop: an unsupported/invalid image can never reach
+// buildClaudeMessageContent, so it can never reach the model either.
+describe("isSupportedImageBase64 — the gate that must pass before any photo reaches the model", () => {
+  it("accepts a real JPEG signature (FF D8 FF)", () => {
+    expect(isSupportedImageBase64("/9j/4AAQSkZJRgABAQAAAQABAAD")).toBe(true);
+  });
+
+  it("accepts a real PNG signature (89 50 4E 47 0D 0A 1A 0A)", () => {
+    expect(isSupportedImageBase64("iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB")).toBe(true);
+  });
+
+  it("rejects a HEIC file even if mislabeled as image/jpeg — checks magic bytes, never the caller-supplied mediaType", () => {
+    // HEIC's real signature ("....ftypheic") base64-encoded — the function
+    // never even looks at imageMediaType, so a HEIC file claiming to be a
+    // JPEG is still rejected on its actual bytes.
+    const heicBase64 = Buffer.from("....ftypheic", "latin1").toString("base64");
+    expect(isSupportedImageBase64(heicBase64)).toBe(false);
+  });
+
+  it("rejects garbage/non-image data", () => {
+    expect(isSupportedImageBase64("not-valid-base64-image-data")).toBe(false);
+  });
+
+  it("rejects an empty string", () => {
+    expect(isSupportedImageBase64("")).toBe(false);
+  });
+});
+
+describe("MAX_IMAGE_BASE64_CHARS — the size ceiling applied before any photo reaches the model", () => {
+  it("is set to a real, positive bound (regression guard against an accidental 0/undefined)", () => {
+    expect(MAX_IMAGE_BASE64_CHARS).toBeGreaterThan(1_000_000);
+  });
+
+  it("exposes a customer-facing message for the format gate", () => {
+    expect(UNSUPPORTED_IMAGE_MESSAGE.length).toBeGreaterThan(0);
+  });
+
+  it("exposes a customer-facing message for the size gate", () => {
+    expect(IMAGE_TOO_LARGE_MESSAGE.length).toBeGreaterThan(0);
+  });
 });
 
 // Audit finding, 2026-10-10: getFollowUpAnswer's reply was entirely free
@@ -428,7 +605,9 @@ describe("extractDollarAmounts", () => {
   });
 
   it("extracts multiple amounts in one string", () => {
-    expect(extractDollarAmounts("The faucet is $120 and the service call is $60.")).toEqual([120, 60]);
+    expect(extractDollarAmounts("The faucet is $120 and the service call is $60.")).toEqual([
+      120, 60,
+    ]);
   });
 
   it("extracts amounts with cents", () => {
@@ -446,7 +625,9 @@ describe("extractDollarAmounts", () => {
 
 describe("findUnexpectedAmounts", () => {
   it("returns nothing when every mentioned amount is allowed", () => {
-    expect(findUnexpectedAmounts("The faucet is $120 and the total is $180.", [120, 60, 180])).toEqual([]);
+    expect(
+      findUnexpectedAmounts("The faucet is $120 and the total is $180.", [120, 60, 180]),
+    ).toEqual([]);
   });
 
   it("flags a dollar figure that doesn't match any real amount", () => {
@@ -462,6 +643,8 @@ describe("findUnexpectedAmounts", () => {
   });
 
   it("returns nothing when the answer states no dollar figure at all", () => {
-    expect(findUnexpectedAmounts("The business will confirm the price when they're in touch.", [120])).toEqual([]);
+    expect(
+      findUnexpectedAmounts("The business will confirm the price when they're in touch.", [120]),
+    ).toEqual([]);
   });
 });
