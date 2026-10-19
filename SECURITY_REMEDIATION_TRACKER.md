@@ -47,14 +47,38 @@ Last updated: 2026-10-18.
   `app_metadata` kept only as a best-effort, non-authoritative mirror.
 - **Tests**: `scripts/pg-migration-verification.sh`,
   `scripts/pg-concurrency-check.sh` against a real disposable Postgres.
-- **Migration dependency**: `0021`/`0022`/`0023` — shipped in this same
-  commit, already applied (the commit includes the migration files
-  themselves and this repo's migrations run via the normal deploy-time
-  path — confirm with the team's actual migration-apply process if that's
-  separate from app deploy; not re-verified against the live DB from here).
-- **Production verification needed**: confirm `subscription_state` table
-  exists in production with expected rows for existing subscribers.
-- **Remaining risk**: none known.
+- **Migration dependency**: `0021`/`0022`/`0023` — **CRITICAL GAP FOUND
+  AND FIXED 2026-10-19**: these migrations were shipped in commit `2cce874`
+  (2026-10-15) but had NEVER actually been applied to production, despite
+  this tracker previously (incorrectly) treating that as done. Discovered
+  when a live WhatsApp smoke test failed with "This business's estimate
+  service is currently unavailable" for every tenant —
+  `hasActiveSubscriptionForOwner` fails closed on a missing-table error, so
+  every single tenant's public quote/widget/WhatsApp intake had been
+  rejecting all customers for ~4 days. Verified missing via a 9-point
+  existence check (all `false`), applied via the Supabase SQL Editor,
+  re-verified (all 9 `true`). Separately discovered during the same
+  incident: the Stripe account's **live-mode secret key and webhook
+  endpoint had never been created at all** — `STRIPE_SECRET_KEY`/
+  `STRIPE_WEBHOOK_SECRET` in Vercel were pointing at test-mode or missing
+  values. Both created fresh in Stripe's Live mode (secret key scoped to
+  the "Recurring subscriptions and billing" template; webhook endpoint
+  added for `checkout.session.completed`, `customer.subscription.created`,
+  `customer.subscription.updated`, `customer.subscription.deleted`,
+  `invoice.payment_failed`), set in Vercel, redeployed. A reconciliation
+  dry-run (`scripts/reconcile-subscription-metadata.ts`, no `--apply`)
+  indexed 0 distinct Stripe customers tied to a Supabase user id,
+  consistent with the live Stripe account never having processed a real
+  transaction before today — i.e. this gap very likely cost no actual
+  paying customers, though it was a genuine, severe architectural failure
+  that needed fixing regardless.
+- **Production verification**: done — see above. Reconciliation dry-run
+  pending final re-run/review now that the table exists and real live
+  Stripe credentials are in place.
+- **Remaining risk**: none from the schema itself. Still open: confirm the
+  reconciliation dry-run's final output once re-run, and re-run the
+  WhatsApp live-traffic smoke test to confirm the full chain (routing →
+  entitlement check → real AI quote) now works end to end.
 
 ### 1.3 — Price-sheet backup/restore + negative-`hours` validation fix
 - **Commit**: `e24e664`
@@ -243,7 +267,7 @@ Last updated: 2026-10-18.
 - **Finding**: no opt-out handling existed anywhere in the WhatsApp
   pipeline — a customer texting STOP had no effect; both the automated
   and operator-initiated send paths would keep messaging them.
-- **Files changed/added** (12 total, all currently uncommitted):
+- **Files changed/added** (12 total, pushed as `8a2f49e`):
   - New `supabase/migrations/0025_whatsapp_opt_outs.sql` — one table
     (`whatsapp_opt_outs`, same `(tenant_id, phone)` key shape and
     zero-access RLS posture as `whatsapp_loop_guards`), five
@@ -425,6 +449,126 @@ Last updated: 2026-10-18.
   issue, not introduced by this work; `tsc` and the full test suite are
   both clean.
 
+### 1.13 — Photo Intelligence (WhatsApp photo-aware reassessment) + a critical lead-persistence defect found and fixed along the way 🟠 implemented + tested locally, not yet committed/pushed/applied anywhere
+
+**Feature context**: a dedicated investigation (2026-10-19) into whether the AI
+"sees" photos correctly (confirmed working, proven via tests rather than
+assumed) led to building Priority 2 — a photo sent on an already-quoted
+WhatsApp lead is now classified as evidence for the *same* job, a genuinely
+*different* job, or *ambiguous*, instead of always being assumed to be a new
+job. New: `classifyFollowUpPhotoIntent` (estimate-server.ts),
+`handleQuotedFollowUpPhoto` (whatsapp-conversation-server.ts). Also fixed in
+the same pass: the `confidence` field's prompt wording used to say "your
+confidence in reading the photo" unconditionally, risking the model implying
+it saw a photo that was never sent — reworded to be evidence-general.
+
+**Critical defect found, not assumed — proven against two separate real
+disposable Postgres instances**: building the reassessment path required
+calling `finalizeLeadWithQuote`/`update_lead_with_line_items`
+(`0019_lead_write_atomicity.sql`) a **second** time on an already-finalized
+lead — something no existing caller (QuoteFlow.tsx, the WhatsApp
+clarification-finalize path) had ever done. This surfaced two real,
+previously-undetected bugs in that function, neither ever covered by any
+existing test (mocked or real-Postgres — confirmed by `grep`, zero hits):
+1. **Line-item duplication**: the function only ever `INSERT`ed line items,
+   never deleted the lead's existing ones first — a reassessment left BOTH
+   old and new line items persisted (proven: 2 rows where 1 was expected).
+2. **Stale flags never clearing**: `p_status = null` meant "leave
+   flag_type/flag_reason untouched," so a lead that became fully priced
+   after being flagged `pending_negotiated_price`/`partially_priced` kept
+   that stale flag forever.
+
+Initially mitigated (temporary, local-only): disabled the unsafe call,
+routed a materially-changed reassessment to a manual-review flag instead
+(plain, tenant-scoped, error/zero-row-checked `leads` UPDATE — never the
+buggy RPC), with a conservative customer message. Verified with dedicated
+tests (flag-update success, error, and zero-rows cases).
+
+**Permanent fix implemented**: `supabase/migrations/0028_fix_lead_reassessment_atomicity.sql`
+— `update_lead_with_line_items` now deletes existing line items before
+inserting the new set (same transaction, still atomic), and requires every
+caller to state the lead's real target status/flag_type/flag_reason
+explicitly (no more null-means-leave-alone). Critically, the fix also
+protects **unrelated operational flags** (`needs_human_review`,
+`outside_service_scope`, `loop_suspected`, `conflicting_information`) from
+ever being cleared by a pricing-driven reassessment — only the two flags
+this function actually owns (`pending_negotiated_price`, `partially_priced`)
+can be set/cleared by it; any other existing flag leaves status/flag_type/
+flag_reason completely untouched. `performFinalizeLeadWithQuote`
+(public-lead-server.ts) updated to pass `status: "new"` instead of `null`
+for the normal, non-flagged case. The mitigation's manual-review-flag code
+was removed; the reassessment path now calls the (now-fixed)
+`finalizeLeadWithQuote` directly again.
+
+**New permanent regression coverage**: `scripts/pg-lead-reassessment-check.sh`
+— applies every real migration file from disk (0001–0027) against a
+throwaway, disposable local Postgres cluster, runs both defect
+reproductions against the ORIGINAL function (confirmed **red** — both
+fail, as predicted), applies `0028` on the same live cluster, and re-runs
+the identical scenarios (confirmed **green**). Also covers: initial
+creation unaffected; added/removed/repriced items in one call; all four
+unrelated operational flags surviving a pricing reassessment; a legitimate
+pricing-flag transition; a forced real error rolling back completely
+(diagnosis and line items unchanged); a wrong-tenant call matching zero
+rows with the other tenant's data untouched; two genuinely separate `psql`
+connections racing the same lead serializing to exactly one consistent
+row; the exact existing-caller call shape producing identical output to
+before. **35/35 passed**, never previously run before this work (confirmed:
+`grep -rl "update_lead_with_line_items" scripts/*.sh` was empty before this
+migration existed).
+
+**🟢 Deployment-ordering hazard — FIXED locally (2026-10-19), not yet
+applied anywhere.** A final adversarial review of this fix found (not a
+logic bug in the function itself — a deployment-ordering hazard) that if
+migration `0028` were applied to production **before** the corresponding
+`public-lead-server.ts` code change deploys, every call to
+`finalizeLeadWithQuote`'s normal/non-flagged branch from the **still-live
+old code** (which passes `status: null`) would throw a real
+`null value in column "status" ... violates not-null constraint` error —
+breaking both the WhatsApp clarification-finalize path and the public
+QuoteFlow.tsx widget's quote completion for every tenant until the new code
+deployed. (The reverse order — new code against the old function — was
+already proven safe.) **Fixed**: `0028` now uses
+`coalesce(p_status, 'new')` specifically for the `status` column (the one
+NOT NULL column affected) — `flag_type`/`flag_reason` needed no such
+change, they're nullable and `null` already correctly means "no flag"
+under both the old and new caller. The migration is now safely deployable
+in **either order** relative to the application code deploy — no longer an
+exception to this project's usual migration-first workflow. Proven, not
+assumed: a new, dedicated real-Postgres check calls the FIXED function with
+`p_status = NULL` (the exact shape the still-live old code produces) and
+confirms it succeeds, resolves `status` to `'new'`, and writes the correct
+line items — 4 new checks, all passing.
+
+**Verification results**: `scripts/pg-lead-reassessment-check.sh` **39/39**
+(35 from the original fix + 4 new for this deployment-ordering scenario;
+every original scenario — red→green, rollback, tenant isolation, unrelated-
+flag preservation, pricing-flag transitions, concurrency, existing-caller
+compatibility — re-confirmed still passing against the doubly-fixed
+function) · targeted Vitest (`whatsapp-conversation-server.test.ts` +
+`public-lead-server.test.ts`) 51/51 · full suite 310/310 · `tsc --noEmit`
+clean · lint: zero new findings in production code touched
+(`public-lead-server.ts`, `whatsapp-conversation-server.ts`, both
+unchanged from before — this fix only touched the SQL migration and the
+test script); the test file's findings are the same pre-existing
+`any`-mock-casting convention already used throughout it (unchanged count)
+· `bun run build` clean.
+
+**Explicitly not yet done**: the live Supabase environment has not been
+inspected or migrated in any way — every check above ran against disposable
+local Postgres instances only, never this project's real database. Nothing
+in this entry has been committed, staged, pushed, or deployed.
+
+**Separate, pre-existing, out-of-scope observation surfaced along the
+way**: `leads-server.ts`'s `saveLeadLineItems` (the dashboard's own manual
+"owner edits line items" mutation) already does the identical
+delete-then-insert pattern this fix uses — but as two separate,
+non-atomic Supabase client calls, not inside one transaction/function call.
+Same theoretical crash-window gap `0019` was originally written to close
+for the other two paths, never addressed for this one. Flagged as a
+genuine follow-up item for a later, separate task — not expanded into this
+one's scope.
+
 ---
 
 ## 2. Preserved, untouched (not part of any commit above)
@@ -522,23 +666,71 @@ added on top (would need its own design — this repo doesn't have a
 generic IP-rate-limit helper for non-tenant-scoped endpoints like auth).
 **Dependencies**: (a) blocks a real answer on (b).
 
-### 3.4 — Audit logging 🔵 scope approved, not yet built
-**Confirmed still absent** (re-verified 2026-10-18 — checked all 25
-current migrations directly, including this session's new ones): no
-`audit_log`/`audit_trail` table exists anywhere.
+### 3.4 — Audit logging 🟠 implemented + tested locally, awaiting migration review/apply
 **Scope approved (2026-10-18)**: subscription/billing state changes,
-WhatsApp connect/disconnect (Meta credential handling), and lead
-deletion — the last one specifically because `deleteLead`/`deleteLeads`
-(the bulk-delete feature added this session) currently leave zero trace,
-a hard delete with cascade and no record of who deleted what or when.
-**Not yet implemented** — this is a separate build from the opt-out work
-in §1.10, not started yet. Next step when you're ready: a migration
-proposal (table shape, same discipline as every prior migration this
-session — shown for review before being written to disk) covering those
-three action categories.
+WhatsApp (Meta) connect/disconnect, and lead deletion — the last one
+specifically because `deleteLead`/`deleteLeads` currently leave zero
+trace, a hard delete with cascade and no record of who deleted what or
+when.
+**Files changed/added** (6 total, all currently uncommitted):
+- New `supabase/migrations/0027_audit_log.sql` — one append-only table
+  (`audit_log`: `tenant_id`, `actor_type` in `('owner','system')`,
+  `actor_user_id` nullable, `action` in `('subscription.state_changed',
+  'whatsapp.connected','whatsapp.disconnected','lead.deleted')`,
+  `target_type`, `target_id` text (not a polymorphic FK — see the
+  migration's own comment), `metadata` jsonb, `created_at`), two indexes
+  (`(tenant_id, created_at desc)`, `(action, created_at desc)`), same
+  zero-access RLS posture as `whatsapp_connections`/`whatsapp_opt_outs`
+  (service-role only, nothing readable/writable from a tenant's own
+  session).
+- New `src/lib/audit-log-server.ts` — `recordAuditLog`, the single shared
+  writer all three call sites use. **Deliberately fails OPEN, not
+  closed** — unlike the opt-out/loop-guard pattern, a failed or missing-
+  table audit insert is caught, logged, and never blocks, undoes, or
+  surfaces as an error for the real action it's recording. This means
+  (unlike §1.10/§1.7) shipping this code before the migration is applied
+  would not break anything — it would just silently no-op the audit
+  insert until `0027` is live. Still following the same
+  review-then-apply-then-verify-then-push gate as every other migration
+  this session, just noting the risk profile is lower.
+- `src/routes/api.stripe.webhook.tsx` — `writeSubscriptionState` (the one
+  chokepoint both the live webhook and `reconcile-subscription-metadata.ts`
+  already go through) now resolves the owning tenant and records
+  `subscription.state_changed` after the authoritative write succeeds.
+  `actor_type` is always `'system'` here — no human is in the loop for
+  either caller.
+- `src/lib/meta-whatsapp-server.ts` — `completeMetaWhatsAppSignup` records
+  `whatsapp.connected` after the connection reaches `'online'`;
+  `disconnectMetaWhatsApp` records `whatsapp.disconnected` after the
+  update succeeds. Both `actor_type: 'owner'`, `actor_user_id:
+  context.userId` (the authenticated tenant owner who triggered it).
+- `src/lib/leads-server.ts` — `deleteLead` records one `lead.deleted` row;
+  `deleteLeads` records one row per deleted lead (not one row for the
+  whole batch — keeps per-lead history queryable the same way regardless
+  of whether it was deleted individually or in bulk), tagged
+  `metadata: {bulk: true, batchSize}`.
+**Tests**: `api.stripe.webhook.test.ts` gained 5 new tests against the
+real, exported `writeSubscriptionState` (not a reimplementation) — the
+audit row's shape, that the Stripe customer id never appears in
+`metadata`, that a missing tenant row or a missing `audit_log` table
+never affects the authoritative write, and that repeat writes each log
+their own row (append-only, not upserted). `meta-whatsapp-server.ts` and
+`leads-server.ts`'s new call sites have **no executable test** — same
+pre-existing limitation noted in §1.3/§3.2 (bare `createServerFn` handlers
+can't be invoked outside TanStack Start's server runtime in this test
+environment) — verified only by direct source reading. Full suite
+284/284 passing (up from 279), `tsc` clean, `bun run build` clean,
+`bun run lint` clean (no new findings in the changed files after a
+`prettier --write` pass incidentally fixed some pre-existing formatting
+issues in files this touched).
+**Migration dependency**: `0027_audit_log.sql` — **not yet applied to
+production**. Written for your review below; once you've run it in the
+Supabase SQL Editor and pasted back the verification query's result,
+this gets committed and pushed, same gate as every migration this
+session.
 **Dependencies**: none, but worth doing before Meta Advanced Access goes
 fully live, given WhatsApp credential handling is one of the more
-sensitive areas with zero audit trail today.
+sensitive areas that had zero audit trail until now.
 
 ### 3.5 — Session-token storage and XSS exposure ⚪ (architectural fact, not a new vulnerability)
 **Re-confirmed 2026-10-18.** `src/integrations/supabase/client.ts` uses a
@@ -579,10 +771,18 @@ change, not proposed for implementation now.
 2. Check Supabase's actual dashboard Auth rate-limit settings, then decide
    if app-level throttling is also needed (§3.3) — provider-setting lookup
    + product decision.
-3. When ready, say so and I'll propose the audit-logging migration
-   (§3.4) — scope already approved (subscription changes, WhatsApp
-   connect/disconnect, lead deletion).
-4. Optional: run the WhatsApp live-traffic smoke test noted in §1.7.
+3. **Review and apply migration `0027_audit_log.sql` (§3.4)** — SQL below,
+   run the verification query after, paste the result back so this can be
+   committed and pushed.
+4. Run the WhatsApp live-traffic smoke test noted in §1.7.
+5. **Review and apply migration `0028_fix_lead_reassessment_atomicity.sql`
+   (§1.13)** — the deployment-ordering hazard found in the prior review is
+   now fixed locally and re-verified (39/39 real-Postgres checks); safe to
+   apply in either order relative to the application code deploy. Same
+   gated process as every other migration this session: review the SQL,
+   apply via the Supabase SQL Editor, paste back verification query
+   results, then this (and the corresponding `public-lead-server.ts`/
+   `whatsapp-conversation-server.ts` changes) gets committed and pushed.
 
 (Privacy Policy Meta disclosure — resolved, §1.9. Signup Terms/Privacy
 links — resolved, §1.8. Meta/customer consent — resolved, §3.2, no new
