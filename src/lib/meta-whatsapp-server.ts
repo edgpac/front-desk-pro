@@ -4,6 +4,7 @@ import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { getAdminClient } from "@/lib/public-lead-server";
 import { resumeLoopGuardState } from "@/lib/whatsapp-loop-guard-server";
 import { isOptedOut, normalizePhone, WhatsAppOptedOutError } from "@/lib/whatsapp-opt-out-server";
+import { recordAuditLog } from "@/lib/audit-log-server";
 import type { InboundWhatsAppTenant } from "@/lib/whatsapp-conversation-server";
 
 // Meta WhatsApp Cloud API — Stage 2B: Embedded Signup + OAuth/token
@@ -46,7 +47,13 @@ export async function describeMetaError(response: Response): Promise<string> {
   let detail = `HTTP ${response.status}`;
   try {
     const errorJson = (await response.json()) as {
-      error?: { message?: string; type?: string; code?: number; error_subcode?: number; fbtrace_id?: string };
+      error?: {
+        message?: string;
+        type?: string;
+        code?: number;
+        error_subcode?: number;
+        fbtrace_id?: string;
+      };
     };
     const e = errorJson.error;
     if (e) {
@@ -110,7 +117,9 @@ async function exchangeCodeForToken(code: string): Promise<string> {
 
   const response = await fetch(url.toString());
   if (!response.ok) {
-    throw new Error(`Meta token exchange failed (${response.status}): ${await describeMetaError(response)}`);
+    throw new Error(
+      `Meta token exchange failed (${response.status}): ${await describeMetaError(response)}`,
+    );
   }
   const json = (await response.json()) as { access_token?: string };
   if (!json.access_token) {
@@ -157,7 +166,9 @@ async function validatePhoneNumberAccess(
       `Could not verify this WhatsApp Business Account's phone numbers with the granted token (${response.status}): ${await describeMetaError(response)}`,
     );
   }
-  const json = (await response.json()) as { data?: Array<{ id?: string; display_phone_number?: string }> };
+  const json = (await response.json()) as {
+    data?: Array<{ id?: string; display_phone_number?: string }>;
+  };
   const match = (json.data ?? []).find((entry) => entry.id === phoneNumberId);
   if (!match?.display_phone_number) {
     throw new Error(
@@ -190,7 +201,14 @@ const SIGNUP_FAILED_MESSAGE = "Couldn't connect WhatsApp right now. Please try a
 
 export const completeMetaWhatsAppSignup = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .validator((input: { code: string; wabaId: string; phoneNumberId: string; consentNoticeVersion: string }) => input)
+  .validator(
+    (input: {
+      code: string;
+      wabaId: string;
+      phoneNumberId: string;
+      consentNoticeVersion: string;
+    }) => input,
+  )
   .handler(async ({ context, data }): Promise<MetaSignupResult> => {
     const code = data.code?.trim();
     const clientWabaId = data.wabaId?.trim();
@@ -207,12 +225,16 @@ export const completeMetaWhatsAppSignup = createServerFn({ method: "POST" })
     // real gate" posture already used for other enforcement in this
     // codebase (e.g. the WhatsApp opt-out check).
     if (!consentNoticeVersion) {
-      return { status: "error", message: "Missing consent acknowledgment. Please try connecting again." };
+      return {
+        status: "error",
+        message: "Missing consent acknowledgment. Please try connecting again.",
+      };
     }
     if (!clientWabaId || !clientPhoneNumberId) {
       return {
         status: "error",
-        message: "Missing WhatsApp Business Account information from the sign-in popup. Please try again.",
+        message:
+          "Missing WhatsApp Business Account information from the sign-in popup. Please try again.",
       };
     }
 
@@ -262,7 +284,11 @@ export const completeMetaWhatsAppSignup = createServerFn({ method: "POST" })
       accessToken = await exchangeCodeForToken(code);
 
       stage = "validatePhoneNumberAccess";
-      const verified = await validatePhoneNumberAccess(clientWabaId, clientPhoneNumberId, accessToken);
+      const verified = await validatePhoneNumberAccess(
+        clientWabaId,
+        clientPhoneNumberId,
+        accessToken,
+      );
       wabaId = clientWabaId;
       phoneNumberId = clientPhoneNumberId;
       displayPhoneNumber = verified.displayPhoneNumber;
@@ -301,8 +327,14 @@ export const completeMetaWhatsAppSignup = createServerFn({ method: "POST" })
       .select("id")
       .single();
     if (insertError || !connectionRow) {
-      console.error(`Could not save WhatsApp connection for tenant ${tenantId}:`, insertError?.message);
-      return { status: "error", message: "Couldn't save the WhatsApp connection. Please try again." };
+      console.error(
+        `Could not save WhatsApp connection for tenant ${tenantId}:`,
+        insertError?.message,
+      );
+      return {
+        status: "error",
+        message: "Couldn't save the WhatsApp connection. Please try again.",
+      };
     }
 
     try {
@@ -317,7 +349,10 @@ export const completeMetaWhatsAppSignup = createServerFn({ method: "POST" })
       const reason = err instanceof Error ? err.message : "Webhook subscription failed.";
       await admin
         .from("whatsapp_connections")
-        .update({ status: "failed", error_reason: `Connected to Meta but webhook subscription failed: ${reason}` })
+        .update({
+          status: "failed",
+          error_reason: `Connected to Meta but webhook subscription failed: ${reason}`,
+        })
         .eq("id", connectionRow.id);
       console.error(`[Meta WhatsApp] subscribeAppToWaba FAILED for tenant ${tenantId}: ${reason}`);
       return { status: "error", message: SIGNUP_FAILED_MESSAGE };
@@ -333,11 +368,26 @@ export const completeMetaWhatsAppSignup = createServerFn({ method: "POST" })
       // just not yet reflecting full success. Reconciling a 'verifying' row
       // is a later-sub-stage concern (e.g. a "check connection status"
       // action), not something silently hidden here.
-      console.error(`[Meta WhatsApp] finalize-status FAILED for tenant ${tenantId}: ${updateError.message}`);
-      return { status: "error", message: "Connected, but finishing setup is taking longer than expected. Please refresh in a moment." };
+      console.error(
+        `[Meta WhatsApp] finalize-status FAILED for tenant ${tenantId}: ${updateError.message}`,
+      );
+      return {
+        status: "error",
+        message:
+          "Connected, but finishing setup is taking longer than expected. Please refresh in a moment.",
+      };
     }
 
     console.log(`[Meta WhatsApp] COMPLETE ✓ tenant=${tenantId}`);
+    await recordAuditLog(admin, {
+      tenantId,
+      actorType: "owner",
+      actorUserId: context.userId,
+      action: "whatsapp.connected",
+      targetType: "whatsapp_connection",
+      targetId: connectionRow.id as string,
+      metadata: { displayPhoneNumber, wabaId },
+    });
     return { status: "connected", displayPhoneNumber };
   });
 
@@ -492,8 +542,13 @@ export async function sendWhatsAppMessageMeta(params: {
   // confirmation send.
   allowWhileOptedOut?: boolean | undefined;
 }): Promise<void> {
-  if (!params.allowWhileOptedOut && (await isOptedOut(getAdminClient(), params.tenantId, normalizePhone(params.to)))) {
-    throw new WhatsAppOptedOutError(`Tenant ${params.tenantId}, phone ${params.to} is opted out of WhatsApp messages.`);
+  if (
+    !params.allowWhileOptedOut &&
+    (await isOptedOut(getAdminClient(), params.tenantId, normalizePhone(params.to)))
+  ) {
+    throw new WhatsAppOptedOutError(
+      `Tenant ${params.tenantId}, phone ${params.to} is opted out of WhatsApp messages.`,
+    );
   }
   const { apiVersion } = getMetaCredentials();
   const response = await fetch(graphUrl(apiVersion, `/${params.phoneNumberId}/messages`), {
@@ -534,7 +589,9 @@ export async function sendWhatsAppTemplateMessage(params: {
   tenantId: string;
 }): Promise<void> {
   if (await isOptedOut(getAdminClient(), params.tenantId, normalizePhone(params.to))) {
-    throw new WhatsAppOptedOutError(`Tenant ${params.tenantId}, phone ${params.to} is opted out of WhatsApp messages.`);
+    throw new WhatsAppOptedOutError(
+      `Tenant ${params.tenantId}, phone ${params.to} is opted out of WhatsApp messages.`,
+    );
   }
   const { apiVersion } = getMetaCredentials();
   const response = await fetch(graphUrl(apiVersion, `/${params.phoneNumberId}/messages`), {
@@ -551,13 +608,22 @@ export async function sendWhatsAppTemplateMessage(params: {
         name: params.templateName,
         language: { code: params.language },
         ...(params.bodyParams.length > 0
-          ? { components: [{ type: "body", parameters: params.bodyParams.map((text) => ({ type: "text", text })) }] }
+          ? {
+              components: [
+                {
+                  type: "body",
+                  parameters: params.bodyParams.map((text) => ({ type: "text", text })),
+                },
+              ],
+            }
           : {}),
       },
     }),
   });
   if (!response.ok) {
-    throw new Error(`Meta template send failed (${response.status}): ${await describeMetaError(response)}`);
+    throw new Error(
+      `Meta template send failed (${response.status}): ${await describeMetaError(response)}`,
+    );
   }
 }
 
@@ -575,9 +641,14 @@ export async function fetchMetaMediaAsBase64(
     headers: { Authorization: `Bearer ${accessToken}` },
   });
   if (!lookup.ok) {
-    throw new Error(`Could not look up Meta media (${lookup.status}): ${await describeMetaError(lookup)}`);
+    throw new Error(
+      `Could not look up Meta media (${lookup.status}): ${await describeMetaError(lookup)}`,
+    );
   }
-  const { url, mime_type: mimeType } = (await lookup.json()) as { url?: string; mime_type?: string };
+  const { url, mime_type: mimeType } = (await lookup.json()) as {
+    url?: string;
+    mime_type?: string;
+  };
   if (!url) {
     throw new Error("Meta media lookup returned no URL.");
   }
@@ -646,7 +717,9 @@ export async function markConnectionFailed(connectionId: string, reason: string)
 // processed."
 export async function wasMessageAlreadyProcessed(messageId: string): Promise<boolean> {
   const admin = getAdminClient();
-  const { error } = await admin.from("whatsapp_processed_messages").insert({ message_id: messageId });
+  const { error } = await admin
+    .from("whatsapp_processed_messages")
+    .insert({ message_id: messageId });
   if (!error) return false;
   if (error.code === "23505") return true;
   throw new Error(`Could not record processed message id: ${error.message}`);
@@ -668,7 +741,10 @@ export async function recordHumanTakeover(tenantId: string, phone: string): Prom
   const admin = getAdminClient();
   const { error } = await admin
     .from("whatsapp_human_takeovers")
-    .upsert({ tenant_id: tenantId, phone, last_echo_at: new Date().toISOString() }, { onConflict: "tenant_id,phone" });
+    .upsert(
+      { tenant_id: tenantId, phone, last_echo_at: new Date().toISOString() },
+      { onConflict: "tenant_id,phone" },
+    );
   if (error) {
     console.error("Could not record WhatsApp human takeover:", error.message);
   }
@@ -792,7 +868,10 @@ export const disconnectMetaWhatsApp = createServerFn({ method: "POST" })
           );
         }
       } catch (err) {
-        console.error(`[Meta WhatsApp] unsubscribe request failed for connection ${connection["id"]}:`, err);
+        console.error(
+          `[Meta WhatsApp] unsubscribe request failed for connection ${connection["id"]}:`,
+          err,
+        );
       }
     }
 
@@ -807,6 +886,16 @@ export const disconnectMetaWhatsApp = createServerFn({ method: "POST" })
     if (updateError) {
       return { status: "error", message: "Could not disconnect WhatsApp. Please try again." };
     }
+
+    await recordAuditLog(admin, {
+      tenantId: tenantRow.id as string,
+      actorType: "owner",
+      actorUserId: context.userId,
+      action: "whatsapp.disconnected",
+      targetType: "whatsapp_connection",
+      targetId: connection["id"] as string,
+      metadata: { wabaId: wabaId ?? null },
+    });
 
     return { status: "disconnected" };
   });

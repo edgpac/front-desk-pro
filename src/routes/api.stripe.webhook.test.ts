@@ -60,6 +60,15 @@ class FakeBackend {
   rpcErrorMode: "none" | "always" = "none";
   mirrorCalls: unknown[] = [];
   authoritativeWrites: unknown[] = [];
+  // Audit-log plumbing (0027_audit_log.sql / audit-log-server.ts):
+  // userId -> tenantId, seeded by individual tests that care about the
+  // audit trail. Left empty by default so every pre-existing test above
+  // (none of which sets this up) exercises the realistic "no tenant row
+  // found" path and simply skips the audit insert — proving the lookup
+  // failing never affects the authoritative write it's silently skipped
+  // around.
+  tenantsByUserId = new Map<string, string>();
+  auditLogInserts: Record<string, unknown>[] = [];
 
   claimUserSlot(userId: string, token: string, staleSeconds: number): boolean {
     const existing = this.claims.get(userId);
@@ -205,6 +214,29 @@ function fakeAdmin(backend: FakeBackend): SupabaseClient {
         return { data: ok, error: null };
       }
       return { data: null, error: { message: `unexpected rpc: ${name}` } };
+    },
+    from: (table: string) => {
+      if (table === "tenants") {
+        return {
+          select: (_cols: string) => ({
+            eq: (_col: string, userId: string) => ({
+              maybeSingle: async () => {
+                const tenantId = backend.tenantsByUserId.get(userId);
+                return { data: tenantId ? { id: tenantId } : null, error: null };
+              },
+            }),
+          }),
+        };
+      }
+      if (table === "audit_log") {
+        return {
+          insert: async (row: Record<string, unknown>) => {
+            backend.auditLogInserts.push(row);
+            return { data: null, error: null };
+          },
+        };
+      }
+      throw new Error(`fakeAdmin: unexpected table "${table}"`);
     },
     auth: {
       admin: {
@@ -516,5 +548,96 @@ describe("writeSubscriptionState — fencing at the write boundary, closed struc
 
     expect(backend.subscriptionState.get("user-1")?.subscriptionStatus).toBe("active"); // authoritative write still succeeded
     expect(backend.mirrorCalls).toHaveLength(0); // mirror never got far enough to write, and that's fine
+  });
+});
+
+// 0027_audit_log.sql / audit-log-server.ts. These exercise the real,
+// exported writeSubscriptionState — not a reimplementation of the audit
+// insert — so a regression in the actual call site shows up here.
+describe("writeSubscriptionState — audit log side effect", () => {
+  it("records a subscription.state_changed row once the tenant is resolvable, after the authoritative write already succeeded", async () => {
+    const backend = new FakeBackend();
+    backend.tenantsByUserId.set("user-1", "tenant-1");
+    const admin = fakeAdmin(backend);
+
+    await writeSubscriptionState(admin, "user-1", async () => ({
+      plan: "crew",
+      subscriptionStatus: "active",
+      stripeCustomerId: "cus_123",
+    }));
+
+    expect(backend.auditLogInserts).toHaveLength(1);
+    expect(backend.auditLogInserts[0]).toMatchObject({
+      tenant_id: "tenant-1",
+      actor_type: "system",
+      actor_user_id: null,
+      action: "subscription.state_changed",
+      target_type: "subscription",
+      target_id: "user-1",
+      metadata: { plan: "crew", subscriptionStatus: "active" },
+    });
+  });
+
+  it("never logs the Stripe customer id in audit metadata (not a secret, but not needed either — keep the row minimal)", async () => {
+    const backend = new FakeBackend();
+    backend.tenantsByUserId.set("user-1", "tenant-1");
+    const admin = fakeAdmin(backend);
+
+    await writeSubscriptionState(admin, "user-1", async () => ({
+      subscriptionStatus: "active",
+      stripeCustomerId: "cus_should_not_appear",
+    }));
+
+    expect(JSON.stringify(backend.auditLogInserts[0]?.["metadata"])).not.toContain(
+      "cus_should_not_appear",
+    );
+  });
+
+  it("skips the audit insert cleanly (no throw) when the tenant can't be resolved — the authoritative write still succeeds", async () => {
+    const backend = new FakeBackend(); // tenantsByUserId left empty on purpose
+    const admin = fakeAdmin(backend);
+
+    await writeSubscriptionState(admin, "user-1", async () => ({ subscriptionStatus: "active" }));
+
+    expect(backend.subscriptionState.get("user-1")?.subscriptionStatus).toBe("active");
+    expect(backend.auditLogInserts).toHaveLength(0);
+  });
+
+  it("an audit_log insert failure (e.g. migration 0027 not applied yet) does not affect the authoritative write", async () => {
+    const backend = new FakeBackend();
+    backend.tenantsByUserId.set("user-1", "tenant-1");
+    const admin = fakeAdmin(backend);
+    const realFrom = admin.from.bind(admin);
+    (admin as unknown as { from: typeof admin.from }).from = (table: string) => {
+      if (table === "audit_log") {
+        return {
+          insert: async () => ({
+            data: null,
+            error: { message: 'relation "audit_log" does not exist' },
+          }),
+        } as never;
+      }
+      return realFrom(table);
+    };
+
+    await writeSubscriptionState(admin, "user-1", async () => ({ subscriptionStatus: "active" }));
+
+    expect(backend.subscriptionState.get("user-1")?.subscriptionStatus).toBe("active");
+  });
+
+  it("logs one audit row per write, including repeat writes for the same user (append-only, not upserted)", async () => {
+    const backend = new FakeBackend();
+    backend.tenantsByUserId.set("user-1", "tenant-1");
+    const admin = fakeAdmin(backend);
+
+    await writeSubscriptionState(admin, "user-1", async () => ({ subscriptionStatus: "active" }));
+    await writeSubscriptionState(admin, "user-1", async () => ({ subscriptionStatus: "canceled" }));
+
+    expect(backend.auditLogInserts).toHaveLength(2);
+    expect(
+      backend.auditLogInserts.map(
+        (r) => (r["metadata"] as { subscriptionStatus: string }).subscriptionStatus,
+      ),
+    ).toEqual(["active", "canceled"]);
   });
 });

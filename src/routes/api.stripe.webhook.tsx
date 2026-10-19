@@ -4,6 +4,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
 
 import { resolvePlanFromSubscription } from "@/lib/stripe-server";
+import { recordAuditLog } from "@/lib/audit-log-server";
 
 type Plan = "solo" | "crew";
 
@@ -88,7 +89,10 @@ export async function acquireClaimOrThrow(admin: SupabaseClient, userId: string)
       p_claim_token: claimToken,
     });
     if (error) {
-      console.error(`Stripe webhook: claim_stripe_webhook_slot error (attempt ${attempt}/${CLAIM_MAX_ATTEMPTS}):`, error.message);
+      console.error(
+        `Stripe webhook: claim_stripe_webhook_slot error (attempt ${attempt}/${CLAIM_MAX_ATTEMPTS}):`,
+        error.message,
+      );
     } else if (data) {
       return claimToken;
     }
@@ -99,8 +103,15 @@ export async function acquireClaimOrThrow(admin: SupabaseClient, userId: string)
   );
 }
 
-export async function releaseClaim(admin: SupabaseClient, userId: string, claimToken: string): Promise<void> {
-  const { error } = await admin.rpc("release_stripe_webhook_slot", { p_user_id: userId, p_claim_token: claimToken });
+export async function releaseClaim(
+  admin: SupabaseClient,
+  userId: string,
+  claimToken: string,
+): Promise<void> {
+  const { error } = await admin.rpc("release_stripe_webhook_slot", {
+    p_user_id: userId,
+    p_claim_token: claimToken,
+  });
   if (error) {
     console.error("Stripe webhook: release_stripe_webhook_slot failed:", error.message);
   }
@@ -125,7 +136,11 @@ async function writeAuthoritativeSubscriptionState(
   admin: SupabaseClient,
   userId: string,
   claimToken: string,
-  current: { plan?: Plan | null; subscriptionStatus: string; stripeCustomerId?: string | undefined },
+  current: {
+    plan?: Plan | null;
+    subscriptionStatus: string;
+    stripeCustomerId?: string | undefined;
+  },
 ): Promise<boolean> {
   const { data, error } = await admin.rpc("write_authoritative_subscription_state", {
     p_user_id: userId,
@@ -135,7 +150,9 @@ async function writeAuthoritativeSubscriptionState(
     p_stripe_customer_id: current.stripeCustomerId ?? null,
   });
   if (error) {
-    throw new AuthoritativeWriteError(`write_authoritative_subscription_state failed for user ${userId}: ${error.message}`);
+    throw new AuthoritativeWriteError(
+      `write_authoritative_subscription_state failed for user ${userId}: ${error.message}`,
+    );
   }
   return Boolean(data);
 }
@@ -160,12 +177,19 @@ export class AuthoritativeWriteError extends Error {}
 async function mirrorToAppMetadata(
   admin: SupabaseClient,
   userId: string,
-  current: { plan?: Plan | null; subscriptionStatus: string; stripeCustomerId?: string | undefined },
+  current: {
+    plan?: Plan | null;
+    subscriptionStatus: string;
+    stripeCustomerId?: string | undefined;
+  },
 ): Promise<void> {
   try {
     const { data: existing, error: readError } = await admin.auth.admin.getUserById(userId);
     if (readError || !existing?.user) {
-      console.error(`Stripe webhook: compatibility mirror could not read user ${userId} (non-authoritative, ignored):`, readError);
+      console.error(
+        `Stripe webhook: compatibility mirror could not read user ${userId} (non-authoritative, ignored):`,
+        readError,
+      );
       return;
     }
     const { error } = await admin.auth.admin.updateUserById(userId, {
@@ -177,10 +201,16 @@ async function mirrorToAppMetadata(
       },
     });
     if (error) {
-      console.error(`Stripe webhook: compatibility mirror write failed for user ${userId} (non-authoritative, ignored):`, error.message);
+      console.error(
+        `Stripe webhook: compatibility mirror write failed for user ${userId} (non-authoritative, ignored):`,
+        error.message,
+      );
     }
   } catch (err) {
-    console.error(`Stripe webhook: compatibility mirror threw unexpectedly for user ${userId} (non-authoritative, ignored):`, err);
+    console.error(
+      `Stripe webhook: compatibility mirror threw unexpectedly for user ${userId} (non-authoritative, ignored):`,
+      err,
+    );
   }
 }
 
@@ -195,7 +225,11 @@ async function mirrorToAppMetadata(
 export async function writeSubscriptionState(
   admin: SupabaseClient,
   userId: string,
-  fetchCurrentTruth: () => Promise<{ plan?: Plan | null; subscriptionStatus: string; stripeCustomerId?: string | undefined }>,
+  fetchCurrentTruth: () => Promise<{
+    plan?: Plan | null;
+    subscriptionStatus: string;
+    stripeCustomerId?: string | undefined;
+  }>,
 ): Promise<void> {
   const claimToken = await acquireClaimOrThrow(admin, userId); // throws LockUnavailableError — never fails open
   try {
@@ -215,8 +249,48 @@ export async function writeSubscriptionState(
     // after the real write already succeeded, and can never undo it or
     // block on it.
     await mirrorToAppMetadata(admin, userId, current);
+    await recordSubscriptionAuditLog(admin, userId, current);
   } finally {
     await releaseClaim(admin, userId, claimToken);
+  }
+}
+
+// Same best-effort, non-blocking posture as mirrorToAppMetadata: resolves
+// the owning tenant (subscription_state is keyed by Supabase userId, audit_log
+// by tenant_id — see 0027's own comment for why) and records the change.
+// Every failure here is caught and logged, never thrown — a missing tenant
+// row or an unapplied 0027 migration must never affect the real,
+// authoritative write that already succeeded above it.
+async function recordSubscriptionAuditLog(
+  admin: SupabaseClient,
+  userId: string,
+  current: {
+    plan?: Plan | null;
+    subscriptionStatus: string;
+    stripeCustomerId?: string | undefined;
+  },
+): Promise<void> {
+  try {
+    const { data: tenantRow } = await admin
+      .from("tenants")
+      .select("id")
+      .eq("user_id", userId)
+      .maybeSingle();
+    const tenantId = (tenantRow as { id: string } | null)?.id;
+    if (!tenantId) return;
+    await recordAuditLog(admin, {
+      tenantId,
+      actorType: "system",
+      action: "subscription.state_changed",
+      targetType: "subscription",
+      targetId: userId,
+      metadata: { plan: current.plan ?? null, subscriptionStatus: current.subscriptionStatus },
+    });
+  } catch (err) {
+    console.error(
+      `[audit_log] tenant lookup for subscription change failed for user ${userId}:`,
+      err,
+    );
   }
 }
 
@@ -240,8 +314,15 @@ export async function writeSubscriptionState(
 // authoritative one.
 export type StripeEventClaimResult = "claimed" | "duplicate_completed" | "duplicate_processing";
 
-export async function claimStripeEvent(admin: SupabaseClient, eventId: string, leaseToken: string): Promise<StripeEventClaimResult> {
-  const { data, error } = await admin.rpc("claim_stripe_event", { p_event_id: eventId, p_lease_token: leaseToken });
+export async function claimStripeEvent(
+  admin: SupabaseClient,
+  eventId: string,
+  leaseToken: string,
+): Promise<StripeEventClaimResult> {
+  const { data, error } = await admin.rpc("claim_stripe_event", {
+    p_event_id: eventId,
+    p_lease_token: leaseToken,
+  });
   if (error) {
     throw new Error(`Could not claim Stripe event ${eventId}: ${error.message}`);
   }
@@ -254,8 +335,15 @@ export async function claimStripeEvent(admin: SupabaseClient, eventId: string, l
 // the event; the caller must not report success to Stripe in that case.
 // Throws on a genuine RPC error (can't even confirm whether it succeeded),
 // which the caller should treat as a processing failure, not a success.
-export async function completeStripeEvent(admin: SupabaseClient, eventId: string, leaseToken: string): Promise<boolean> {
-  const { data, error } = await admin.rpc("complete_stripe_event", { p_event_id: eventId, p_lease_token: leaseToken });
+export async function completeStripeEvent(
+  admin: SupabaseClient,
+  eventId: string,
+  leaseToken: string,
+): Promise<boolean> {
+  const { data, error } = await admin.rpc("complete_stripe_event", {
+    p_event_id: eventId,
+    p_lease_token: leaseToken,
+  });
   if (error) {
     throw new Error(`Could not mark Stripe event ${eventId} completed: ${error.message}`);
   }
@@ -274,8 +362,15 @@ export async function completeStripeEvent(admin: SupabaseClient, eventId: string
 // call correctly has no effect. Never throws — this is already inside the
 // route's outermost failure handling, and a secondary error here must not
 // prevent returning a response.
-export async function failStripeEvent(admin: SupabaseClient, eventId: string, leaseToken: string): Promise<boolean> {
-  const { data, error } = await admin.rpc("fail_stripe_event", { p_event_id: eventId, p_lease_token: leaseToken });
+export async function failStripeEvent(
+  admin: SupabaseClient,
+  eventId: string,
+  leaseToken: string,
+): Promise<boolean> {
+  const { data, error } = await admin.rpc("fail_stripe_event", {
+    p_event_id: eventId,
+    p_lease_token: leaseToken,
+  });
   if (error) {
     console.error(`Stripe webhook: fail_stripe_event failed for ${eventId}:`, error.message);
     return false;
@@ -291,7 +386,10 @@ function retryableResponse(errorCode: string): Response {
 }
 
 function okResponse(body: Record<string, unknown> = { received: true }): Response {
-  return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
 }
 
 // Used at every "we're done, nothing more to do" point — success, or an
@@ -302,7 +400,12 @@ function okResponse(body: Record<string, unknown> = { received: true }): Respons
 // that would falsely claim an outcome this attempt no longer has the
 // authority to report. Asking Stripe to retry in that case defers to
 // whichever attempt (the reclaiming one) actually finalizes the event.
-async function finishEvent(admin: SupabaseClient, eventId: string, leaseToken: string, eventType: string): Promise<Response> {
+async function finishEvent(
+  admin: SupabaseClient,
+  eventId: string,
+  leaseToken: string,
+  eventType: string,
+): Promise<Response> {
   const completed = await completeStripeEvent(admin, eventId, leaseToken);
   if (!completed) {
     console.error(
@@ -323,7 +426,9 @@ export const Route = createFileRoute("/api/stripe/webhook")({
         const stripeSecretKey = process.env["STRIPE_SECRET_KEY"];
         const webhookSecret = process.env["STRIPE_WEBHOOK_SECRET"];
         if (!stripeSecretKey || !webhookSecret) {
-          console.error("Stripe webhook received but STRIPE_SECRET_KEY/STRIPE_WEBHOOK_SECRET aren't set.");
+          console.error(
+            "Stripe webhook received but STRIPE_SECRET_KEY/STRIPE_WEBHOOK_SECRET aren't set.",
+          );
           return new Response("Webhook not configured", { status: 500 });
         }
 
@@ -348,7 +453,9 @@ export const Route = createFileRoute("/api/stripe/webhook")({
           // dropped every webhook forever in a misconfigured deployment.
           // Fails safe instead: Stripe retries once the deployment is
           // fixed.
-          console.error(`Stripe webhook (${event.type}) received but Supabase admin client isn't configured — asking Stripe to retry.`);
+          console.error(
+            `Stripe webhook (${event.type}) received but Supabase admin client isn't configured — asking Stripe to retry.`,
+          );
           return retryableResponse("admin_client_unavailable");
         }
 
@@ -363,12 +470,17 @@ export const Route = createFileRoute("/api/stripe/webhook")({
         try {
           claimResult = await claimStripeEvent(admin, event.id, leaseToken);
         } catch (err) {
-          console.error(`Stripe webhook (${event.type}): event claim failed, asking Stripe to retry:`, err);
+          console.error(
+            `Stripe webhook (${event.type}): event claim failed, asking Stripe to retry:`,
+            err,
+          );
           return retryableResponse("event_claim_failed");
         }
 
         if (claimResult === "duplicate_completed") {
-          console.error(`Stripe webhook (${event.type}): event ${event.id} already completed, skipping.`);
+          console.error(
+            `Stripe webhook (${event.type}): event ${event.id} already completed, skipping.`,
+          );
           return okResponse({ received: true, duplicate: true });
         }
         if (claimResult === "duplicate_processing") {
@@ -380,7 +492,9 @@ export const Route = createFileRoute("/api/stripe/webhook")({
           // delivery reclaims and retries it). Either way, recovery comes
           // from Stripe's own redelivery of this SAME event id, never
           // from some unrelated future event.
-          console.error(`Stripe webhook (${event.type}): event ${event.id} already being processed, asking Stripe to retry.`);
+          console.error(
+            `Stripe webhook (${event.type}): event ${event.id} already being processed, asking Stripe to retry.`,
+          );
           return retryableResponse("event_already_processing");
         }
 
@@ -398,7 +512,9 @@ export const Route = createFileRoute("/api/stripe/webhook")({
             const sessionPlan = session.metadata?.["plan"] as Plan | undefined;
 
             if (!userId) {
-              console.error("Checkout completed but no userId on the session — can't attach a plan.");
+              console.error(
+                "Checkout completed but no userId on the session — can't attach a plan.",
+              );
               return await finishEvent(admin, event.id, leaseToken, event.type); // unfixable by retrying — nothing more to do
             }
 
@@ -417,19 +533,30 @@ export const Route = createFileRoute("/api/stripe/webhook")({
               return {
                 plan,
                 subscriptionStatus: status,
-                stripeCustomerId: typeof session.customer === "string" ? session.customer : undefined,
+                stripeCustomerId:
+                  typeof session.customer === "string" ? session.customer : undefined,
               };
             });
-          } else if (event.type === "customer.subscription.updated" || event.type === "customer.subscription.created") {
+          } else if (
+            event.type === "customer.subscription.updated" ||
+            event.type === "customer.subscription.created"
+          ) {
             // Covers renewals settling back to "active", a failed renewal
             // moving to "past_due"/"unpaid", a plan change (Solo <-> Crew,
             // made via the Stripe billing portal), and a cancellation
             // scheduled for period end (status stays "active" until it
             // actually ends — see .deleted).
             const subscription = event.data.object as Stripe.Subscription;
-            const userId = await resolveUserId(stripe, subscription.customer, subscription.metadata?.["userId"]);
+            const userId = await resolveUserId(
+              stripe,
+              subscription.customer,
+              subscription.metadata?.["userId"],
+            );
             if (!userId) {
-              console.error(`Stripe webhook (${event.type}): could not resolve a userId for subscription`, subscription.id);
+              console.error(
+                `Stripe webhook (${event.type}): could not resolve a userId for subscription`,
+                subscription.id,
+              );
               return await finishEvent(admin, event.id, leaseToken, event.type);
             }
 
@@ -447,9 +574,16 @@ export const Route = createFileRoute("/api/stripe/webhook")({
             // entitlements-server.ts), so this alone is enough to revoke
             // access.
             const subscription = event.data.object as Stripe.Subscription;
-            const userId = await resolveUserId(stripe, subscription.customer, subscription.metadata?.["userId"]);
+            const userId = await resolveUserId(
+              stripe,
+              subscription.customer,
+              subscription.metadata?.["userId"],
+            );
             if (!userId) {
-              console.error("Stripe webhook (subscription.deleted): could not resolve a userId for subscription", subscription.id);
+              console.error(
+                "Stripe webhook (subscription.deleted): could not resolve a userId for subscription",
+                subscription.id,
+              );
               return await finishEvent(admin, event.id, leaseToken, event.type);
             }
 
@@ -465,7 +599,10 @@ export const Route = createFileRoute("/api/stripe/webhook")({
             const invoice = event.data.object as Stripe.Invoice;
             const userId = await resolveUserId(stripe, invoice.customer);
             if (!userId) {
-              console.error("Stripe webhook (invoice.payment_failed): could not resolve a userId for invoice", invoice.id);
+              console.error(
+                "Stripe webhook (invoice.payment_failed): could not resolve a userId for invoice",
+                invoice.id,
+              );
               return await finishEvent(admin, event.id, leaseToken, event.type);
             }
 
@@ -474,7 +611,8 @@ export const Route = createFileRoute("/api/stripe/webhook")({
             // invoice.subscription field (which doesn't exist on this SDK
             // version's Invoice type — tsc caught this during review).
             const linkedSubscription = invoice.parent?.subscription_details?.subscription;
-            const subscriptionId = typeof linkedSubscription === "string" ? linkedSubscription : linkedSubscription?.id;
+            const subscriptionId =
+              typeof linkedSubscription === "string" ? linkedSubscription : linkedSubscription?.id;
 
             await writeSubscriptionState(admin, userId, async () => {
               // Prefer the subscription's own current status over hard-
@@ -513,12 +651,24 @@ export const Route = createFileRoute("/api/stripe/webhook")({
           try {
             await failStripeEvent(admin, event.id, leaseToken);
           } catch (failErr) {
-            console.error(`Stripe webhook (${event.type}): also failed to mark event ${event.id} as failed:`, failErr);
+            console.error(
+              `Stripe webhook (${event.type}): also failed to mark event ${event.id} as failed:`,
+              failErr,
+            );
           }
-          if (err instanceof LockUnavailableError || err instanceof ClaimLostError || err instanceof AuthoritativeWriteError) {
-            console.error(`Stripe webhook (${event.type}): ${err.message} — asking Stripe to retry.`);
+          if (
+            err instanceof LockUnavailableError ||
+            err instanceof ClaimLostError ||
+            err instanceof AuthoritativeWriteError
+          ) {
+            console.error(
+              `Stripe webhook (${event.type}): ${err.message} — asking Stripe to retry.`,
+            );
           } else {
-            console.error(`Stripe webhook (${event.type}) processing failed, asking Stripe to retry:`, err);
+            console.error(
+              `Stripe webhook (${event.type}) processing failed, asking Stripe to retry:`,
+              err,
+            );
           }
           return retryableResponse("processing_failed");
         }

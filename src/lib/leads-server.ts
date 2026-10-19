@@ -2,6 +2,8 @@ import { createServerFn } from "@tanstack/react-start";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { myPlanHasFeature } from "@/lib/entitlements-server";
+import { getAdminClient } from "@/lib/public-lead-server";
+import { recordAuditLog } from "@/lib/audit-log-server";
 import { lineItemAmount, type Lead, type LeadStatus, type LineItem } from "@/lib/mock-data";
 
 const NO_PHOTO =
@@ -44,7 +46,11 @@ function formatRequested(createdAt: string) {
 }
 
 async function getTenantId(supabase: SupabaseClient, userId: string) {
-  const { data, error } = await supabase.from("tenants").select("id").eq("user_id", userId).single();
+  const { data, error } = await supabase
+    .from("tenants")
+    .select("id")
+    .eq("user_id", userId)
+    .single();
   if (error) throw new Error(`Could not load your business: ${error.message}`);
   return data.id as string;
 }
@@ -55,7 +61,9 @@ export const listMyLeads = createServerFn({ method: "GET" })
     const tenantId = await getTenantId(context.supabase, context.userId);
     const { data: leads, error } = await context.supabase
       .from("leads")
-      .select("id, customer_name, phone, address, channel, status, photo_url, problem, diagnosis, confidence, ai_line_items_snapshot, created_at, flag_reason, flag_type")
+      .select(
+        "id, customer_name, phone, address, channel, status, photo_url, problem, diagnosis, confidence, ai_line_items_snapshot, created_at, flag_reason, flag_type",
+      )
       .eq("tenant_id", tenantId)
       .order("created_at", { ascending: false });
     if (error) throw new Error(`Could not load leads: ${error.message}`);
@@ -75,7 +83,13 @@ export const listMyLeads = createServerFn({ method: "GET" })
     const itemsByLead = new Map<string, LineItem[]>();
     for (const item of items as Array<LineItemRow & { lead_id: string }>) {
       const list = itemsByLead.get(item.lead_id) ?? [];
-      list.push({ id: item.id, description: item.description, qty: item.qty, unit: item.unit, rate: item.rate });
+      list.push({
+        id: item.id,
+        description: item.description,
+        qty: item.qty,
+        unit: item.unit,
+        rate: item.rate,
+      });
       itemsByLead.set(item.lead_id, list);
     }
 
@@ -105,57 +119,61 @@ export const listMyLeads = createServerFn({ method: "GET" })
 export const getMyLead = createServerFn({ method: "GET" })
   .validator((id: string) => id)
   .middleware([requireSupabaseAuth])
-  .handler(async ({ context, data: id }): Promise<Lead & { aiLineItemsSnapshot: LineItem[] | null }> => {
-    const tenantId = await getTenantId(context.supabase, context.userId);
+  .handler(
+    async ({ context, data: id }): Promise<Lead & { aiLineItemsSnapshot: LineItem[] | null }> => {
+      const tenantId = await getTenantId(context.supabase, context.userId);
 
-    const { data: row, error } = await context.supabase
-      .from("leads")
-      .select("id, customer_name, phone, address, channel, status, photo_url, problem, diagnosis, confidence, ai_line_items_snapshot, created_at, flag_reason, flag_type")
-      .eq("tenant_id", tenantId)
-      .eq("id", id)
-      .single();
-    if (error) throw new Error(`Lead not found: ${error.message}`);
-    const lead = row as LeadRow;
+      const { data: row, error } = await context.supabase
+        .from("leads")
+        .select(
+          "id, customer_name, phone, address, channel, status, photo_url, problem, diagnosis, confidence, ai_line_items_snapshot, created_at, flag_reason, flag_type",
+        )
+        .eq("tenant_id", tenantId)
+        .eq("id", id)
+        .single();
+      if (error) throw new Error(`Lead not found: ${error.message}`);
+      const lead = row as LeadRow;
 
-    const { data: items, error: itemsError } = await context.supabase
-      .from("lead_line_items")
-      .select("id, description, qty, unit, rate")
-      .eq("lead_id", id)
-      .order("sort_order", { ascending: true });
-    if (itemsError) throw new Error(`Could not load line items: ${itemsError.message}`);
+      const { data: items, error: itemsError } = await context.supabase
+        .from("lead_line_items")
+        .select("id, description, qty, unit, rate")
+        .eq("lead_id", id)
+        .order("sort_order", { ascending: true });
+      if (itemsError) throw new Error(`Could not load line items: ${itemsError.message}`);
 
-    const { data: messages, error: messagesError } = await context.supabase
-      .from("lead_messages")
-      .select("role, body")
-      .eq("lead_id", id)
-      .order("created_at", { ascending: true });
-    if (messagesError) throw new Error(`Could not load messages: ${messagesError.message}`);
+      const { data: messages, error: messagesError } = await context.supabase
+        .from("lead_messages")
+        .select("role, body")
+        .eq("lead_id", id)
+        .order("created_at", { ascending: true });
+      if (messagesError) throw new Error(`Could not load messages: ${messagesError.message}`);
 
-    return {
-      id: lead.id,
-      customer: lead.customer_name,
-      phone: lead.phone,
-      address: lead.address,
-      requested: formatRequested(lead.created_at),
-      channel: lead.channel,
-      status: lead.status,
-      photo: lead.photo_url || NO_PHOTO,
-      problem: lead.problem,
-      diagnosis: lead.diagnosis,
-      confidence: lead.confidence ?? "Medium",
-      lineItems: (items as LineItemRow[]).map((i) => ({
-        id: i.id,
-        description: i.description,
-        qty: i.qty,
-        unit: i.unit,
-        rate: i.rate,
-      })),
-      followUps: (messages as MessageRow[]).map((m) => ({ role: m.role, text: m.body })),
-      aiLineItemsSnapshot: lead.ai_line_items_snapshot,
-      flagReason: lead.flag_reason,
-      flagType: lead.flag_type,
-    };
-  });
+      return {
+        id: lead.id,
+        customer: lead.customer_name,
+        phone: lead.phone,
+        address: lead.address,
+        requested: formatRequested(lead.created_at),
+        channel: lead.channel,
+        status: lead.status,
+        photo: lead.photo_url || NO_PHOTO,
+        problem: lead.problem,
+        diagnosis: lead.diagnosis,
+        confidence: lead.confidence ?? "Medium",
+        lineItems: (items as LineItemRow[]).map((i) => ({
+          id: i.id,
+          description: i.description,
+          qty: i.qty,
+          unit: i.unit,
+          rate: i.rate,
+        })),
+        followUps: (messages as MessageRow[]).map((m) => ({ role: m.role, text: m.body })),
+        aiLineItemsSnapshot: lead.ai_line_items_snapshot,
+        flagReason: lead.flag_reason,
+        flagType: lead.flag_type,
+      };
+    },
+  );
 
 // CSV escaping — wrap in quotes if the value contains a comma, quote, or
 // newline; double any internal quotes. Every field here is customer-
@@ -221,7 +239,16 @@ export const exportMyLeadsCsv = createServerFn({ method: "GET" })
       totalByLead.set(item.lead_id, (totalByLead.get(item.lead_id) ?? 0) + lineItemAmount(item));
     }
 
-    const header = ["Name", "Phone", "Address", "Channel", "Problem", "Estimate", "Status", "Created"];
+    const header = [
+      "Name",
+      "Phone",
+      "Address",
+      "Channel",
+      "Problem",
+      "Estimate",
+      "Status",
+      "Created",
+    ];
     const rows = leadRows.map((l) =>
       [
         l.customer_name,
@@ -275,8 +302,20 @@ export const deleteLead = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context, data: id }) => {
     const tenantId = await getTenantId(context.supabase, context.userId);
-    const { error } = await context.supabase.from("leads").delete().eq("tenant_id", tenantId).eq("id", id);
+    const { error } = await context.supabase
+      .from("leads")
+      .delete()
+      .eq("tenant_id", tenantId)
+      .eq("id", id);
     if (error) throw new Error(`Could not delete lead: ${error.message}`);
+    await recordAuditLog(getAdminClient(), {
+      tenantId,
+      actorType: "owner",
+      actorUserId: context.userId,
+      action: "lead.deleted",
+      targetType: "lead",
+      targetId: id,
+    });
     return { ok: true as const };
   });
 
@@ -299,6 +338,23 @@ export const deleteLeads = createServerFn({ method: "POST" })
       .eq("tenant_id", tenantId)
       .in("id", ids);
     if (error) throw new Error(`Could not delete leads: ${error.message}`);
+    // One row per deleted lead, same action/shape as the single-delete path
+    // above — keeps the audit trail queryable per-lead regardless of
+    // whether it was deleted individually or as part of a bulk selection.
+    const admin = getAdminClient();
+    await Promise.all(
+      ids.map((leadId) =>
+        recordAuditLog(admin, {
+          tenantId,
+          actorType: "owner",
+          actorUserId: context.userId,
+          action: "lead.deleted",
+          targetType: "lead",
+          targetId: leadId,
+          metadata: { bulk: true, batchSize: ids.length },
+        }),
+      ),
+    );
     return { ok: true as const, deleted: count ?? 0 };
   });
 
@@ -334,8 +390,10 @@ export const updateLeadContact = createServerFn({ method: "POST" })
 // row itself, not per line item, so this can't accidentally lose it.
 export const saveLeadLineItems = createServerFn({ method: "POST" })
   .validator(
-    (input: { leadId: string; items: Array<{ description: string; qty: number; unit: string; rate: number }> }) =>
-      input,
+    (input: {
+      leadId: string;
+      items: Array<{ description: string; qty: number; unit: string; rate: number }>;
+    }) => input,
   )
   .middleware([requireSupabaseAuth])
   .handler(async ({ context, data }) => {
