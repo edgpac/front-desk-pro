@@ -74,9 +74,10 @@ function PrivacyPolicy() {
 
           <h2 className="text-xl font-semibold">How long we keep it</h2>
           <p>Business account and lead data is kept for as long as the account is active. Photos sent over
-            WhatsApp are subject to Twilio's own media retention window. If you'd like your data deleted,
-            contact us using the details below and we'll remove it, except where we're required to keep
-            records (e.g. billing history) for legal or accounting reasons.</p>
+            WhatsApp are subject to the sending platform's own media retention practices — Twilio's or
+            Meta's, depending on which one a business has connected. If you'd like your data deleted, contact
+            us using the details below and we'll remove it, except where we're required to keep records
+            (e.g. billing history) for legal or accounting reasons.</p>
 
           <h2 className="text-xl font-semibold">Your choices</h2>
           <p>Business accounts can review and update their own information from the dashboard at any time.
