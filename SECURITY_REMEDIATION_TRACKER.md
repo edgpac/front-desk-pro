@@ -219,7 +219,20 @@ Last updated: 2026-10-18.
   confirm the line renders correctly once live.
 - **Remaining risk**: none. Note this resolves only the signup-links half
   of the original combined finding — the Privacy Policy's separate
-  missing-Meta-as-processor gap is still open, see §3.3.
+  missing-Meta-as-processor gap is resolved separately, see §1.9.
+
+### 1.9 — Privacy Policy omits Meta as a processor 🟢 PUSHED
+- **Commit**: `b1aa1a6`
+- **Finding**: `privacy.tsx` listed Anthropic, Twilio, Stripe, and
+  Supabase as processors but never mentioned Meta, despite a full Meta
+  WhatsApp Cloud API integration already built.
+- **Fix**: added a Meta entry to the processor list, matching the
+  existing format/tone, noting messages for Cloud-API-connected tenants
+  go through Meta's platform instead of Twilio's. Bumped the "Last
+  updated" date.
+- **Tests**: markup-only, `tsc` clean, full suite unaffected.
+- **Migration dependency**: none. **Production verification**: none
+  beyond the deploy.
 
 ---
 
@@ -301,19 +314,7 @@ code alone.
 **Dependencies**: none on other open items, but should be decided before
 Meta Advanced Access traffic scales up.
 
-### 3.3 — Privacy Policy omits Meta as a processor 🔵
-**Confirmed still open** (re-verified 2026-10-18). `src/routes/privacy.tsx`
-lists Anthropic, Twilio, Stripe, and Supabase as processors but **never
-mentions Meta**, despite a full Meta WhatsApp Cloud API integration
-already built (`meta-whatsapp-server.ts`, `ConnectWhatsAppMeta.tsx`,
-`api.whatsapp.meta-webhook.tsx`).
-**Decision needed from you**: whether to add Meta to the processor list,
-and exact wording — legal-text decision, not implemented here per the
-read-only constraint.
-**Dependencies**: none. (Signup Terms/Privacy links — the other half of
-this finding — resolved, see §1.8.)
-
-### 3.4 — Supabase Auth rate limits / app-level protection 🔵
+### 3.3 — Supabase Auth rate limits / app-level protection 🔵
 **Confirmed still open** (re-verified 2026-10-18). Login (`login.tsx:43`),
 signup (`signup.tsx:43-47`), password-reset request
 (`forgot-password.tsx:42-44`), and password-reset completion
@@ -331,7 +332,7 @@ added on top (would need its own design — this repo doesn't have a
 generic IP-rate-limit helper for non-tenant-scoped endpoints like auth).
 **Dependencies**: (a) blocks a real answer on (b).
 
-### 3.5 — Audit logging 🔵
+### 3.4 — Audit logging 🔵
 **Confirmed still absent** (re-verified 2026-10-18 — checked all 24
 current migrations directly, including the two new ones from this
 session): no `audit_log`/`audit_trail` table exists anywhere.
@@ -343,7 +344,7 @@ scoping question, not something I can resolve unilaterally.
 Advanced Access goes fully live, given WhatsApp credential handling is
 one of the more sensitive areas with zero audit trail today.
 
-### 3.6 — Session-token storage and XSS exposure ⚪ (architectural fact, not a new vulnerability)
+### 3.5 — Session-token storage and XSS exposure ⚪ (architectural fact, not a new vulnerability)
 **Re-confirmed 2026-10-18.** `src/integrations/supabase/client.ts` uses a
 custom storage adapter: Supabase's session (access+refresh JWT) goes to
 `localStorage` if "Remember me" is checked (default), `sessionStorage`
@@ -360,7 +361,7 @@ standing architectural fact. If this tool's security surface grows
 session storage would remove this exposure class entirely — a larger
 change, not proposed for implementation now.
 
-### 3.7 — Other findings, resolved this session ⚪
+### 3.6 — Other findings, resolved this session ⚪
 - **Twilio webhook dedup** — was missing, fixed and now live as part of
   §1.7 (the WhatsApp commit, pushed as `d1d1ef0`): `MessageSid`-based
   dedup added, matching Meta's route.
@@ -375,11 +376,12 @@ change, not proposed for implementation now.
 
 1. Opt-out semantics for WhatsApp (§3.1) — product decision.
 2. Consent model for Meta WhatsApp connections (§3.2) — product/legal.
-3. Whether to add Meta to the Privacy Policy's processor list (§3.3) —
-   product/legal. (Signup Terms/Privacy links — resolved, §1.8.)
-4. Check Supabase's actual dashboard Auth rate-limit settings, then decide
-   if app-level throttling is also needed (§3.4) — provider-setting lookup
+3. Check Supabase's actual dashboard Auth rate-limit settings, then decide
+   if app-level throttling is also needed (§3.3) — provider-setting lookup
    + product decision.
-5. Scope what needs audit logging before any schema design starts (§3.5)
+4. Scope what needs audit logging before any schema design starts (§3.4)
    — product/compliance.
-6. Optional: run the WhatsApp live-traffic smoke test noted in §1.7.
+5. Optional: run the WhatsApp live-traffic smoke test noted in §1.7.
+
+(Privacy Policy Meta disclosure — resolved, §1.9. Signup Terms/Privacy
+links — resolved, §1.8.)
