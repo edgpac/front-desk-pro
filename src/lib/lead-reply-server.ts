@@ -11,6 +11,7 @@ import {
 import { getApprovedWhatsAppTemplate, fillTemplateBody } from "@/lib/whatsapp-templates-server";
 import { getAdminClient } from "@/lib/public-lead-server";
 import { resumeLoopGuardState, normalizePhone } from "@/lib/whatsapp-loop-guard-server";
+import { WhatsAppOptedOutError } from "@/lib/whatsapp-opt-out-server";
 
 // Resolves which of the two independent WhatsApp channels a tenant actually
 // has active (Twilio's concierge-connected number, or their own Meta
@@ -23,10 +24,15 @@ import { resumeLoopGuardState, normalizePhone } from "@/lib/whatsapp-loop-guard-
 // channel they're using — so having visibility into both is the correct
 // shape here, not a violation of that same reasoning.
 
-// "outside_window" is its own variant, not folded into "error" — the UI
-// needs to reliably branch to "offer a template instead" without string-
-// matching an error message, which would break the moment the copy changes.
-type SendResult = { status: "sent" } | { status: "error"; message: string } | { status: "outside_window" };
+// "outside_window" and "opted_out" are their own variants, not folded into
+// "error" — the UI needs to reliably branch (offer a template instead;
+// explain the customer opted out) without string-matching an error
+// message, which would break the moment the copy changes.
+type SendResult =
+  | { status: "sent" }
+  | { status: "error"; message: string }
+  | { status: "outside_window" }
+  | { status: "opted_out" };
 
 export const sendLeadReply = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
@@ -70,8 +76,11 @@ export const sendLeadReply = createServerFn({ method: "POST" })
       const twilioNumber = tenantRow.whatsapp_number as string | null;
       if (twilioNumber) {
         try {
-          await sendWhatsAppMessage({ to, body });
+          await sendWhatsAppMessage({ to, body, tenantId });
         } catch (err) {
+          if (err instanceof WhatsAppOptedOutError) {
+            return { status: "opted_out" };
+          }
           return {
             status: "error",
             message: err instanceof Error ? err.message : "Could not send the WhatsApp message.",
@@ -88,8 +97,12 @@ export const sendLeadReply = createServerFn({ method: "POST" })
             accessToken: metaConnection.accessToken,
             to,
             body,
+            tenantId,
           });
         } catch (err) {
+          if (err instanceof WhatsAppOptedOutError) {
+            return { status: "opted_out" };
+          }
           if (err instanceof MetaOutsideWindowError) {
             return { status: "outside_window" };
           }
@@ -181,8 +194,12 @@ export const sendLeadReplyWithTemplate = createServerFn({ method: "POST" })
         templateName: template.name,
         language: template.language,
         bodyParams: data.bodyParams,
+        tenantId,
       });
     } catch (err) {
+      if (err instanceof WhatsAppOptedOutError) {
+        return { status: "opted_out" };
+      }
       await markConnectionFailed(metaConnection.connectionId, err instanceof Error ? err.message : "Template send failed.");
       return { status: "error", message: err instanceof Error ? err.message : "Could not send the template." };
     }

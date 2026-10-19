@@ -42,6 +42,7 @@ import {
   type InboundWhatsAppTenant,
 } from "./whatsapp-conversation-server";
 import { claimLoopNotice } from "./whatsapp-loop-guard-server";
+import { isOptedOut, normalizePhone } from "./whatsapp-opt-out-server";
 import { getAdminClient } from "@/lib/public-lead-server";
 import { getQuoteEstimate, classifyFollowUpIntent, getFollowUpAnswer } from "@/lib/estimate-server";
 import { sendFollowUpNotificationEmail } from "@/lib/notify-server";
@@ -51,22 +52,25 @@ import { sendFollowUpNotificationEmail } from "@/lib/notify-server";
 // most send sites bypassed the guard entirely). Rather than hand-write an
 // integration test per branch — expensive to maintain and easy to miss a
 // NEW branch added later — this asserts directly against the source that
-// there are exactly two raw adapter.sendMessage(...) call sites left in
-// the whole file: the one inside handleLoopGuardPause itself (the actual
-// pause-notice send, gated by the atomic notice claim) and the one inside
-// sendGuardedReply itself (the actual guarded send, reached only after the
-// guard check passes). Every other outbound message in this file — the
+// there are exactly four raw adapter.sendMessage(...) call sites left in
+// the whole file, each inside its own atomically-gated chokepoint:
+// handleLoopGuardPause (the pause-notice send, gated by the atomic notice
+// claim), sendGuardedReply (the actual guarded send, reached only after
+// the loop-guard check passes), handleOptOutConfirmation (the opt-out
+// confirmation, gated by the atomic confirmation claim), and
+// sendOptInConfirmation (the opt-in confirmation, reached only after
+// resumeOptOut succeeds). Every other outbound message in this file — the
 // clarifying question, the final quote, the follow-up answer, the
 // pre-lead greeting, every error/unsupported-image/out-of-scope fallback
 // — must call sendGuardedReply instead. Adding a new direct
 // adapter.sendMessage(...) call anywhere else in this file will fail this
 // test immediately.
 describe("every outbound WhatsApp send goes through the guard (structural check)", () => {
-  it("has exactly two raw adapter.sendMessage(...) call sites — both inside the guard's own chokepoints", () => {
+  it("has exactly four raw adapter.sendMessage(...) call sites — all inside their own atomically-gated chokepoints", () => {
     const sourcePath = fileURLToPath(new URL("./whatsapp-conversation-server.ts", import.meta.url));
     const source = readFileSync(sourcePath, "utf-8");
     const matches = source.match(/adapter\.sendMessage\(/g) ?? [];
-    expect(matches).toHaveLength(2);
+    expect(matches).toHaveLength(4);
   });
 });
 
@@ -211,9 +215,23 @@ function fakeLoopGuardAdmin(config: {
         guardState.notice_status = "sent";
         return { data: true, error: null };
       }
+      // Opt-out is a separate concern from this file's own loop-guard
+      // tests — none of them send an opt-out keyword, so this is never
+      // expected to actually fire, just present so isOptedOut's read
+      // doesn't throw "unexpected table" below for an unrelated feature.
+      if (name === "record_whatsapp_opt_out") {
+        return { data: [{ just_opted_out: true }], error: null };
+      }
       throw new Error(`fakeLoopGuardAdmin: unexpected rpc "${name}"`);
     },
     from: (table: string) => {
+      if (table === "whatsapp_opt_outs") {
+        return {
+          select: () => ({
+            eq: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null, error: null }) }) }),
+          }),
+        };
+      }
       if (table === "leads") {
         return {
           update: () => ({
@@ -652,9 +670,19 @@ function fakeInboundAdmin(config: {
         calls.releaseAttempts++;
         return { data: null, error: null };
       }
+      // Opt-out is a separate concern from this file's own lead-routing
+      // tests — none of them send an opt-out keyword, so this is never
+      // expected to actually fire, just present so isOptedOut's read
+      // doesn't throw "unexpected table" below for an unrelated feature.
+      if (name === "record_whatsapp_opt_out") {
+        return { data: [{ just_opted_out: true }], error: null };
+      }
       throw new Error(`fakeInboundAdmin: unexpected rpc "${name}"`);
     },
     from: (table: string) => {
+      if (table === "whatsapp_opt_outs") {
+        return { select: () => chainableRead({ data: null, error: null }) };
+      }
       if (table === "leads") {
         return {
           select: () => chainableRead({ data: { ...leadState }, error: null }),
@@ -925,5 +953,367 @@ describe("handleInboundWhatsAppMessage — a lost lead-slot claim must not silen
     expect(sent).toEqual([{ to: TEST_PHONE, body: "Yes, still the same price." }]);
     expect(sendFollowUpNotificationEmail).toHaveBeenCalledTimes(1); // exactly once, not duplicated
     expect(calls.releaseAttempts).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------
+// WhatsApp opt-out — handleInboundWhatsAppMessage's own state machine
+// (handleOptOutState), checked BEFORE the loop guard. Real-Postgres
+// coverage of the underlying atomic RPCs (record_whatsapp_opt_out's own
+// concurrency fix, the claim/send/confirm sequence) lives in
+// scripts/pg-whatsapp-opt-out-check.sh, not here — these tests exercise
+// the TypeScript-level orchestration against a stateful fake admin.
+// ---------------------------------------------------------------------
+
+type FakeOptOutRow = { opted_out_at: string | null; resumed_at: string | null; confirmation_status: string | null };
+
+function fakeOptOutAdmin(config: { row?: FakeOptOutRow } = {}) {
+  const row: FakeOptOutRow = config.row ?? { opted_out_at: null, resumed_at: null, confirmation_status: null };
+  const calls = {
+    recordOptOutCalls: 0,
+    claimConfirmationCalls: 0,
+    markSentCalls: 0,
+    resumeCalls: 0,
+    // Every phone-key string actually reached the database layer with,
+    // across every RPC/read call this fake handles below — the
+    // regression test for the phone-normalization fix asserts against
+    // this directly, independent of the fake's own internal state
+    // matching, so it still catches a regression even if some other part
+    // of the fake were "accidentally" lenient about key matching.
+    phoneKeysUsed: [] as string[],
+  };
+  const currentlyOptedOut = () => Boolean(row.opted_out_at) && (!row.resumed_at || row.resumed_at < row.opted_out_at!);
+
+  const admin = {
+    rpc: async (name: string, rpcParams?: Record<string, unknown>) => {
+      if (rpcParams && typeof rpcParams["p_phone"] === "string") {
+        calls.phoneKeysUsed.push(rpcParams["p_phone"]);
+      }
+      if (name === "record_whatsapp_opt_out") {
+        calls.recordOptOutCalls++;
+        const wasOptedOut = currentlyOptedOut();
+        if (!wasOptedOut) {
+          row.opted_out_at = new Date().toISOString();
+          row.confirmation_status = "pending";
+          row.resumed_at = null;
+          return { data: [{ just_opted_out: true }], error: null };
+        }
+        return { data: [{ just_opted_out: false }], error: null };
+      }
+      if (name === "claim_whatsapp_opt_out_confirmation") {
+        calls.claimConfirmationCalls++;
+        if (row.confirmation_status === "pending") {
+          row.confirmation_status = "sending";
+          return { data: true, error: null };
+        }
+        return { data: false, error: null };
+      }
+      if (name === "release_whatsapp_opt_out_confirmation") {
+        if (row.confirmation_status === "sending") {
+          row.confirmation_status = "pending";
+          return { data: true, error: null };
+        }
+        return { data: false, error: null };
+      }
+      if (name === "mark_whatsapp_opt_out_confirmation_sent") {
+        calls.markSentCalls++;
+        if (row.confirmation_status === "sending") {
+          row.confirmation_status = "sent";
+          return { data: true, error: null };
+        }
+        return { data: false, error: null };
+      }
+      if (name === "resume_whatsapp_opt_out") {
+        calls.resumeCalls++;
+        if (currentlyOptedOut()) {
+          row.resumed_at = new Date().toISOString();
+          return { data: true, error: null };
+        }
+        return { data: false, error: null };
+      }
+      // Loop-guard RPCs are a separate concern from these opt-out tests —
+      // handled here, permissively ("never tripped"), only so a test that
+      // deliberately falls PAST the opt-out check (proving opt-out did
+      // NOT short-circuit) can exercise the rest of the real pipeline
+      // without crashing on an RPC this fake was never meant to simulate
+      // in detail. See whatsapp-conversation-server.test.ts's own
+      // fakeLoopGuardAdmin for real loop-guard coverage.
+      if (name === "record_whatsapp_interaction") {
+        return {
+          data: [
+            {
+              tripped: false,
+              just_tripped: false,
+              trip_reason: null,
+              is_duplicate_content: false,
+              duplicate_content_count: 0,
+              repeat_count: 0,
+              recent_event_count: 0,
+            },
+          ],
+          error: null,
+        };
+      }
+      throw new Error(`fakeOptOutAdmin: unexpected rpc "${name}"`);
+    },
+    from: (table: string) => {
+      if (table === "whatsapp_opt_outs") {
+        return {
+          select: () => ({
+            eq: () => ({
+              // isOptedOut's real call shape is .eq("tenant_id", t).eq("phone", p) —
+              // this second .eq is the phone key, captured the same way the
+              // rpc() dispatcher above captures p_phone.
+              eq: (_col: string, phoneValue: string) => {
+                calls.phoneKeysUsed.push(phoneValue);
+                return {
+                  maybeSingle: async () => ({
+                    data: row.opted_out_at ? { opted_out_at: row.opted_out_at, resumed_at: row.resumed_at } : null,
+                    error: null,
+                  }),
+                };
+              },
+            }),
+          }),
+        };
+      }
+      // "leads" is only reached by the one test that deliberately falls
+      // PAST the opt-out check into the real pipeline — a minimal
+      // "no open lead" stub so handleFreshQuote's pre-lead-greeting path
+      // can complete without crashing. Not meant to simulate real lead
+      // routing; see fakeInboundAdmin above for that.
+      if (table === "leads") {
+        const chain: Record<string, unknown> = {
+          eq: () => chain,
+          gte: () => chain,
+          order: () => chain,
+          limit: () => chain,
+          maybeSingle: async () => ({ data: null, error: null }),
+        };
+        return { select: () => chain };
+      }
+      throw new Error(`fakeOptOutAdmin: unexpected table "${table}"`);
+    },
+  };
+  return { admin: admin as unknown as SupabaseClient, row, calls };
+}
+
+describe("WhatsApp opt-out — handleInboundWhatsAppMessage's state machine", () => {
+  it("a STOP message records the opt-out and sends exactly one confirmation, with no AI/reply pipeline touched", async () => {
+    const { admin, row, calls } = fakeOptOutAdmin();
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "STOP",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(row.opted_out_at).not.toBeNull();
+    expect(row.confirmation_status).toBe("sent");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body).toMatch(/unsubscribed/i);
+    expect(calls.claimConfirmationCalls).toBe(1);
+    expect(calls.markSentCalls).toBe(1);
+  });
+
+  // Regression test for a High-severity finding from an adversarial
+  // review: handleOptOutState used to pass the RAW, unnormalized
+  // fromPhone to recordOptOut/isOptedOut/resumeOptOut, while the actual
+  // enforcement check inside sendWhatsAppMessage/sendWhatsAppMessageMeta/
+  // sendWhatsAppTemplateMessage always normalized via normalizePhone.
+  // If a provider ever delivered a phone number in a form that wasn't
+  // already normalize-idempotent, the write key (raw) and the
+  // enforcement-check key (normalized) would silently diverge — a
+  // customer's STOP could be recorded under one string and never found
+  // by the check that's supposed to block their next message, or an
+  // owner's dashboard resume (which does normalize, like everything
+  // else) could fail to find a row stored under the raw form. This test
+  // supplies a deliberately non-canonical phone (spaces, parens, a dash —
+  // exactly the kind of formatting normalizePhone exists to strip) and
+  // asserts every single whatsapp_opt_outs key that reaches the database
+  // layer is the fully normalized form, never the raw input. Written to
+  // fail against the pre-fix code (which pushed the raw string straight
+  // through) and pass against the corrected version.
+  it("REGRESSION: a non-canonical inbound phone is normalized before being used as the whatsapp_opt_outs key — for the opt-out write, the confirmation claim, AND the mark-sent call", async () => {
+    const NON_CANONICAL_PHONE = "+1 (555) 123-4567";
+    const EXPECTED_NORMALIZED = "+15551234567";
+    const { admin, calls } = fakeOptOutAdmin();
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: NON_CANONICAL_PHONE,
+      body: "STOP",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    // Every DB-layer call this flow makes (record_whatsapp_opt_out,
+    // claim_whatsapp_opt_out_confirmation, mark_whatsapp_opt_out_confirmation_sent)
+    // must have used the identical normalized key — not the raw input,
+    // and not inconsistent forms across the three calls.
+    expect(calls.phoneKeysUsed.length).toBeGreaterThan(0);
+    for (const key of calls.phoneKeysUsed) {
+      expect(key).toBe(EXPECTED_NORMALIZED);
+      expect(key).not.toBe(NON_CANONICAL_PHONE);
+    }
+
+    // The actual provider-facing SEND still goes to the ORIGINAL,
+    // unnormalized address — normalization is a DB-key concern only,
+    // never applied to where the message is actually delivered.
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.to).toBe(NON_CANONICAL_PHONE);
+  });
+
+  it("REGRESSION: an opt-out written under one raw phone format is found by a later check using a DIFFERENT raw format of the same number", async () => {
+    // Simulates the exact failure mode the bug risked: the customer's
+    // number arrives formatted one way on the STOP message, and a
+    // differently-formatted (but logically identical) value is used for
+    // a later lookup — e.g. a dashboard resume attempt, or any other
+    // caller that doesn't happen to receive the exact byte-identical
+    // string. Proven here at the isOptedOut level directly, which is
+    // what every enforcement check and the dashboard resume path both
+    // call through normalizePhone(...) already.
+    const { admin, calls } = fakeOptOutAdmin({
+      row: { opted_out_at: new Date().toISOString(), resumed_at: null, confirmation_status: "sent" },
+    });
+    const WRITE_FORM = "+1 555 123 4567"; // how it might have been stored
+    const READ_FORM = "+1-555-123-4567"; // a differently-punctuated form of the SAME number
+    const found = await isOptedOut(admin, TEST_TENANT.id, normalizePhone(READ_FORM));
+    expect(normalizePhone(WRITE_FORM)).toBe(normalizePhone(READ_FORM)); // both forms normalize identically
+    expect(found).toBe(true); // the read finds the row regardless of which raw form was used
+    expect(calls.phoneKeysUsed).toContain(normalizePhone(READ_FORM));
+  });
+
+  it("a repeated STOP from an already-opted-out number does NOT send a second confirmation", async () => {
+    const { admin, row, calls } = fakeOptOutAdmin({
+      row: { opted_out_at: new Date(Date.now() - 60_000).toISOString(), resumed_at: null, confirmation_status: "sent" },
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "stop",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(0); // no second confirmation
+    expect(calls.claimConfirmationCalls).toBe(0); // never even attempted — just_opted_out was false
+    expect(row.confirmation_status).toBe("sent"); // unchanged
+  });
+
+  it("an ordinary message from a currently-opted-out number gets NO reply at all — no auto-resume on a bare message", async () => {
+    const { admin, row } = fakeOptOutAdmin({
+      row: { opted_out_at: new Date().toISOString(), resumed_at: null, confirmation_status: "sent" },
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "actually I still need that faucet fixed",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(0);
+    expect(row.resumed_at).toBeNull(); // still opted out — not auto-resumed
+  });
+
+  it("START from a currently-opted-out number resumes and sends exactly one opt-in confirmation", async () => {
+    const { admin, row } = fakeOptOutAdmin({
+      row: { opted_out_at: new Date().toISOString(), resumed_at: null, confirmation_status: "sent" },
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "START",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(row.resumed_at).not.toBeNull();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body).toMatch(/resubscribed/i);
+  });
+
+  it("START from a number that is NOT currently opted out is a no-op (not treated as an opt-out/opt-in control message at all) and falls through to normal processing", async () => {
+    const { admin } = fakeOptOutAdmin(); // never opted out
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    // "start" isn't an opt-out keyword, and isOptedOut() is false, so
+    // handleOptOutState's { stop: false } lets this fall through to the
+    // normal pipeline — proven here by observing it does NOT short-circuit
+    // with an opt-in confirmation (which only ever fires while opted out).
+    const { adapter, sent } = fakeAdapter();
+    // No lead exists and the message is short, so the real fallback here
+    // is the thin-description greeting — confirms normal processing ran,
+    // not the opt-in path.
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "start",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+    expect(sent.some((m) => /resubscribed/i.test(m.body))).toBe(false);
+  });
+
+  it("two concurrent STOP messages only ever produce one confirmation send (the atomic claim, not a race)", async () => {
+    const { admin, calls } = fakeOptOutAdmin();
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    const { adapter, sent } = fakeAdapter();
+
+    const send = () =>
+      handleInboundWhatsAppMessage({
+        tenant: TEST_TENANT,
+        fromPhone: TEST_PHONE,
+        body: "STOP",
+        mediaRef: undefined,
+        providerMessageId: undefined,
+        profileName: undefined,
+        channel: "WhatsApp",
+        adapter,
+      });
+
+    // The fake admin's rpc calls are synchronous-resolving promises, so
+    // Promise.all here still serializes at each `await` inside the real
+    // code path — this proves the LOGIC (only one just_opted_out: true)
+    // rather than true OS-thread concurrency, which the real atomic SQL
+    // UPDATE (proven separately in pg-whatsapp-opt-out-check.sh) is what
+    // actually guarantees under genuine concurrent connections.
+    await Promise.all([send(), send()]);
+
+    expect(sent).toHaveLength(1);
+    expect(calls.claimConfirmationCalls).toBe(1);
   });
 });

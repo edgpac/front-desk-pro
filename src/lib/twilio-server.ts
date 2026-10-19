@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+import { getAdminClient } from "@/lib/public-lead-server";
+import { isOptedOut, normalizePhone, WhatsAppOptedOutError } from "@/lib/whatsapp-opt-out-server";
 
 // Real Twilio calls, no SDK — Twilio's API is a plain form-encoded POST with
 // Basic Auth, and the signature check is documented HMAC-SHA1. Ported the
@@ -16,7 +18,32 @@ function getCredentials() {
   return { accountSid, authToken, fromNumber };
 }
 
-export async function sendWhatsAppMessage(params: { to: string; body: string }): Promise<void> {
+// tenantId is required specifically so this one place — the actual HTTP
+// call to Twilio, which every outbound WhatsApp send in this codebase
+// eventually funnels through — can enforce the opt-out check itself
+// rather than trusting every caller to have checked first. A deliberate
+// exception to this file otherwise being a pure API wrapper with no
+// database awareness: the explicit requirement is that no caller can
+// bypass this check, and the only way to guarantee that is to make it
+// impossible to call this function at all without it running.
+export async function sendWhatsAppMessage(params: {
+  to: string;
+  body: string;
+  tenantId: string;
+  // NEVER set this to true except from whatsapp-opt-out-server.ts's own
+  // opt-out CONFIRMATION send — the one message that must legitimately
+  // reach a number the instant it transitions to opted-out (compliance
+  // requires confirming the opt-out itself), sent immediately after
+  // recordOptOut has already written that same opted-out state. Every
+  // other caller must leave this unset/false so the check below applies.
+  allowWhileOptedOut?: boolean | undefined;
+}): Promise<void> {
+  // Fails CLOSED: if this check itself can't be verified, do not send —
+  // see OptOutCheckFailed's own comment for why this is the safer
+  // direction for a compliance check specifically.
+  if (!params.allowWhileOptedOut && (await isOptedOut(getAdminClient(), params.tenantId, normalizePhone(params.to)))) {
+    throw new WhatsAppOptedOutError(`Tenant ${params.tenantId}, phone ${params.to} is opted out of WhatsApp messages.`);
+  }
   const { accountSid, authToken, fromNumber } = getCredentials();
   const auth = Buffer.from(`${accountSid}:${authToken}`).toString("base64");
 

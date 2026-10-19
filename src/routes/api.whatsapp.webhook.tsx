@@ -14,10 +14,20 @@ import { handleInboundWhatsAppMessage, sendGuardedReply, type ChannelAdapter } f
 // Raw HTTP handler, not createServerFn — Twilio's signature verification
 // needs the exact raw form-encoded body, same reason the Stripe webhook
 // (api.stripe.webhook.tsx) isn't a createServerFn either.
-const twilioAdapter: ChannelAdapter = {
-  sendMessage: (to, body) => sendWhatsAppMessage({ to, body }),
-  fetchMedia: (ref) => fetchTwilioMediaAsBase64(ref),
-};
+//
+// Built per-request now (used to be a module-level constant with no
+// per-request tenant in closure) so sendMessage can pass tenantId through
+// to sendWhatsAppMessage — that's what lets sendWhatsAppMessage enforce
+// the WhatsApp opt-out check itself, the one place every send (this path,
+// the fallback below, lead-reply-server.ts's operator sends) actually
+// funnels through. Same per-request-adapter shape
+// api.whatsapp.meta-webhook.tsx already used.
+function buildTwilioAdapter(tenantId: string): ChannelAdapter {
+  return {
+    sendMessage: (to, body, allowWhileOptedOut) => sendWhatsAppMessage({ to, body, tenantId, allowWhileOptedOut }),
+    fetchMedia: (ref) => fetchTwilioMediaAsBase64(ref),
+  };
+}
 
 export const Route = createFileRoute("/api/whatsapp/webhook")({
   server: {
@@ -97,6 +107,7 @@ export const Route = createFileRoute("/api/whatsapp/webhook")({
           serviceCallFee: tenant.service_call_fee,
           serviceCallFeeMode: tenant.service_call_fee_mode,
         };
+        const twilioAdapter = buildTwilioAdapter(tenant.id as string);
 
         try {
           await handleInboundWhatsAppMessage({

@@ -3,6 +3,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { getAdminClient } from "@/lib/public-lead-server";
 import { resumeLoopGuardState } from "@/lib/whatsapp-loop-guard-server";
+import { isOptedOut, normalizePhone, WhatsAppOptedOutError } from "@/lib/whatsapp-opt-out-server";
 import type { InboundWhatsAppTenant } from "@/lib/whatsapp-conversation-server";
 
 // Meta WhatsApp Cloud API — Stage 2B: Embedded Signup + OAuth/token
@@ -459,12 +460,25 @@ const OUTSIDE_WINDOW_ERROR_CODE = 131047;
 
 export class MetaOutsideWindowError extends Error {}
 
+// tenantId is required specifically so this function — one of the only
+// two places (alongside sendWhatsAppTemplateMessage below and
+// twilio-server.ts's sendWhatsAppMessage) that actually make an outbound
+// WhatsApp API call — can enforce the opt-out check itself. See
+// twilio-server.ts's sendWhatsAppMessage for the full reasoning.
 export async function sendWhatsAppMessageMeta(params: {
   phoneNumberId: string;
   accessToken: string;
   to: string;
   body: string;
+  tenantId: string;
+  // See twilio-server.ts's sendWhatsAppMessage for exactly what this is
+  // for and why it must never be set anywhere except the opt-out
+  // confirmation send.
+  allowWhileOptedOut?: boolean | undefined;
 }): Promise<void> {
+  if (!params.allowWhileOptedOut && (await isOptedOut(getAdminClient(), params.tenantId, normalizePhone(params.to)))) {
+    throw new WhatsAppOptedOutError(`Tenant ${params.tenantId}, phone ${params.to} is opted out of WhatsApp messages.`);
+  }
   const { apiVersion } = getMetaCredentials();
   const response = await fetch(graphUrl(apiVersion, `/${params.phoneNumberId}/messages`), {
     method: "POST",
@@ -501,7 +515,11 @@ export async function sendWhatsAppTemplateMessage(params: {
   templateName: string;
   language: string;
   bodyParams: string[];
+  tenantId: string;
 }): Promise<void> {
+  if (await isOptedOut(getAdminClient(), params.tenantId, normalizePhone(params.to))) {
+    throw new WhatsAppOptedOutError(`Tenant ${params.tenantId}, phone ${params.to} is opted out of WhatsApp messages.`);
+  }
   const { apiVersion } = getMetaCredentials();
   const response = await fetch(graphUrl(apiVersion, `/${params.phoneNumberId}/messages`), {
     method: "POST",

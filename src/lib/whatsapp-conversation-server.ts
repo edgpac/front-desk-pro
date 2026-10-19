@@ -26,6 +26,18 @@ import {
   type FactSignatureInput,
   type LoopGuardEvaluation,
 } from "@/lib/whatsapp-loop-guard-server";
+import {
+  isOptOutKeyword,
+  isOptInKeyword,
+  isOptedOut,
+  recordOptOut,
+  claimOptOutConfirmation,
+  releaseOptOutConfirmationClaim,
+  markOptOutConfirmationSent,
+  resumeOptOut,
+  OptOutCheckFailed,
+  normalizePhone,
+} from "@/lib/whatsapp-opt-out-server";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -145,6 +157,144 @@ export async function handleLoopGuardPause(params: {
       `WhatsApp loop-pause notice was sent to tenant ${tenant.id}, phone ${fromPhone}, but could not be confirmed in the database after ${LOOP_NOTICE_MARK_SENT_RETRIES} attempts — delivery state is now uncertain; recovery will follow the existing stale-claim path, not an immediate retry.`,
     );
   }
+}
+
+export const OPT_OUT_CONFIRMATION_MESSAGE =
+  "You've been unsubscribed and won't receive further messages here. Reply START to resubscribe.";
+export const OPT_IN_CONFIRMATION_MESSAGE = "You're resubscribed — you'll receive messages here again.";
+
+// Same claim -> send -> confirm crash-safety sequence as
+// handleLoopGuardPause above (see its own comments for the full reasoning
+// — a DIFFERENT concern, deliberately not merged with it: opting out is an
+// explicit customer request, not a detected non-progressing exchange).
+// Called only after recordOptOut has already written the opted-out state,
+// so this message must bypass the normal opt-out send-block — that's
+// exactly what adapter.sendMessage's third parameter is for.
+//
+// Takes BOTH a normalizedPhone (every whatsapp_opt_outs key below — must
+// be the exact same normalized form recordOptOut just wrote under in
+// handleOptOutState, or the claim here would silently look up a
+// different key than the row that actually exists) and the original
+// fromPhone (the actual provider-routable delivery address passed to
+// adapter.sendMessage — normalization is a DB-key concern only, never
+// applied to where the message is actually sent).
+async function handleOptOutConfirmation(params: {
+  admin: ReturnType<typeof getAdminClient>;
+  tenant: InboundWhatsAppTenant;
+  fromPhone: string;
+  normalizedPhone: string;
+  adapter: ChannelAdapter;
+}): Promise<void> {
+  const { admin, tenant, fromPhone, normalizedPhone, adapter } = params;
+  const claimed = await claimOptOutConfirmation(admin, tenant.id, normalizedPhone);
+  if (!claimed) return;
+  try {
+    await adapter.sendMessage(fromPhone, OPT_OUT_CONFIRMATION_MESSAGE, true);
+  } catch (err) {
+    await releaseOptOutConfirmationClaim(admin, tenant.id, normalizedPhone);
+    console.error(
+      `Could not send WhatsApp opt-out confirmation for tenant ${tenant.id}, phone ${fromPhone} (will retry on next inbound message):`,
+      err,
+    );
+    return;
+  }
+  let confirmed = false;
+  for (let attempt = 0; attempt < LOOP_NOTICE_MARK_SENT_RETRIES && !confirmed; attempt++) {
+    if (attempt > 0) await sleep(LOOP_NOTICE_MARK_SENT_RETRY_DELAY_MS);
+    confirmed = await markOptOutConfirmationSent(admin, tenant.id, normalizedPhone);
+  }
+  if (!confirmed) {
+    console.error(
+      `WhatsApp opt-out confirmation was sent to tenant ${tenant.id}, phone ${fromPhone}, but could not be confirmed in the database after ${LOOP_NOTICE_MARK_SENT_RETRIES} attempts — delivery state is now uncertain.`,
+    );
+  }
+}
+
+// The opt-in confirmation does NOT need adapter.sendMessage's bypass —
+// by the time this runs, resumeOptOut has already cleared the opted-out
+// state, so the normal send path's own check already passes.
+async function sendOptInConfirmation(fromPhone: string, adapter: ChannelAdapter): Promise<void> {
+  try {
+    await adapter.sendMessage(fromPhone, OPT_IN_CONFIRMATION_MESSAGE);
+  } catch (err) {
+    console.error(`Could not send WhatsApp opt-in confirmation to ${fromPhone}:`, err);
+  }
+}
+
+// The opt-out/opt-in state machine — called as the very first thing in
+// handleInboundWhatsAppMessage, before even the loop guard, since an
+// opted-out customer must get NO automated reply at all regardless of
+// what the loop guard's own evidence would otherwise allow, and an
+// opt-out/opt-in control message itself is never ordinary conversation
+// content worth feeding into that evidence log. Returns true if the
+// caller should stop processing this message entirely (opted out and not
+// an opt-in message; or this message WAS the opt-out/opt-in keyword
+// itself, already fully handled here).
+async function handleOptOutState(params: {
+  admin: ReturnType<typeof getAdminClient>;
+  tenant: InboundWhatsAppTenant;
+  fromPhone: string;
+  body: string;
+  adapter: ChannelAdapter;
+}): Promise<{ stop: boolean }> {
+  const { admin, tenant, fromPhone, body, adapter } = params;
+  // Normalized ONCE here and used for every whatsapp_opt_outs key below —
+  // matches exactly what the three outbound enforcement checks already do
+  // (isOptedOut(..., normalizePhone(params.to)) inside sendWhatsAppMessage/
+  // sendWhatsAppMessageMeta/sendWhatsAppTemplateMessage) and what
+  // resumeWhatsAppOptOut's own dashboard action and the loop guard's
+  // resumeLoopGuardState callers already do. A prior review found this
+  // function used the raw, unnormalized fromPhone for its DB keys while
+  // the enforcement checks normalized theirs — if the raw and normalized
+  // forms of a number ever actually differed (not just coincidentally
+  // matched), the write and read keys would silently diverge and an opt-
+  // out could fail to enforce. adapter.sendMessage below still takes the
+  // original fromPhone, never the normalized form — normalization is only
+  // about the DB key, not the provider-routable delivery address.
+  const normalizedPhone = normalizePhone(fromPhone);
+
+  if (isOptOutKeyword(body)) {
+    let justOptedOut: boolean;
+    try {
+      ({ justOptedOut } = await recordOptOut(admin, tenant.id, normalizedPhone));
+    } catch (err) {
+      // Fails CLOSED: if the opt-out itself can't be durably recorded,
+      // do not proceed as if this were ordinary conversation — the
+      // customer explicitly asked to stop, and the safer failure here is
+      // "no reply at all" rather than risking a reply to someone who may
+      // now be opted out in intent but not yet in the database.
+      console.error(`Could not record WhatsApp opt-out for tenant ${tenant.id}, phone ${fromPhone}:`, err);
+      return { stop: true };
+    }
+    if (justOptedOut) {
+      await handleOptOutConfirmation({ admin, tenant, fromPhone, normalizedPhone, adapter });
+    }
+    return { stop: true };
+  }
+
+  let optedOut: boolean;
+  try {
+    optedOut = await isOptedOut(admin, tenant.id, normalizedPhone);
+  } catch (err) {
+    console.error(
+      `WhatsApp opt-out check failed for tenant ${tenant.id}, phone ${fromPhone} — failing closed (no automated reply):`,
+      err instanceof OptOutCheckFailed ? err.message : err,
+    );
+    return { stop: true };
+  }
+
+  if (!optedOut) return { stop: false };
+
+  if (isOptInKeyword(body)) {
+    const resumed = await resumeOptOut(admin, tenant.id, normalizedPhone, "opt_in_keyword");
+    if (resumed) await sendOptInConfirmation(fromPhone, adapter);
+    return { stop: true };
+  }
+
+  // Currently opted out, and this message is neither the opt-out nor the
+  // opt-in keyword — an ordinary message must never auto-resume
+  // messaging. No reply, no AI call, nothing.
+  return { stop: true };
 }
 
 // The one chokepoint every automated WhatsApp reply in this file sends
@@ -325,7 +475,13 @@ function formatQuotePriceLine(
 // structurally impossible for this file to reach for one channel's global
 // credentials while processing a message that arrived on another.
 export type ChannelAdapter = {
-  sendMessage: (to: string, body: string) => Promise<void>;
+  // The third parameter exists for exactly one caller — the opt-out
+  // confirmation send in this file (see handleOptOutConfirmation below) —
+  // which must reach a number the instant it transitions to opted-out.
+  // Every other caller must omit it / pass false so the normal opt-out
+  // enforcement (inside sendWhatsAppMessage/sendWhatsAppMessageMeta, the
+  // actual HTTP-call layer) applies.
+  sendMessage: (to: string, body: string, allowWhileOptedOut?: boolean) => Promise<void>;
   fetchMedia: (ref: string) => Promise<{ base64: string; mediaType: string }>;
 };
 
@@ -399,6 +555,14 @@ export async function handleInboundWhatsAppMessage(params: {
 }): Promise<void> {
   const { tenant, fromPhone, body, mediaRef, providerMessageId, profileName, channel, adapter } = params;
   const admin = getAdminClient();
+
+  // Opt-out/opt-in state — checked BEFORE the loop guard, since an
+  // opted-out customer gets no automated reply regardless of what the
+  // loop guard's own evidence would otherwise allow, and a control
+  // message (STOP/START) is never ordinary conversation worth recording
+  // as loop-guard evidence in the first place.
+  const optOutState = await handleOptOutState({ admin, tenant, fromPhone, body, adapter });
+  if (optOutState.stop) return;
 
   // Every inbound message is recorded as evidence AND evaluated in one
   // atomic call — this is both the "is this phone already paused" fast

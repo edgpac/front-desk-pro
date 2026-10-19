@@ -13,6 +13,7 @@ import {
 import { handleInboundWhatsAppMessage, sendGuardedReply, type ChannelAdapter } from "@/lib/whatsapp-conversation-server";
 import { getAdminClient } from "@/lib/public-lead-server";
 import { applyTemplateStatusUpdate } from "@/lib/whatsapp-templates-server";
+import { WhatsAppOptedOutError } from "@/lib/whatsapp-opt-out-server";
 
 // Meta-specific wire protocol only — GET handshake, POST signature
 // verification, payload parsing, tenant lookup by phone_number_id.
@@ -134,9 +135,16 @@ export const Route = createFileRoute("/api/whatsapp/meta-webhook")({
             const { connectionId, accessToken, tenant } = connection;
 
             const adapter: ChannelAdapter = {
-              sendMessage: async (to, body) => {
+              sendMessage: async (to, body, allowWhileOptedOut) => {
                 try {
-                  await sendWhatsAppMessageMeta({ phoneNumberId, accessToken, to, body });
+                  await sendWhatsAppMessageMeta({
+                    phoneNumberId,
+                    accessToken,
+                    to,
+                    body,
+                    tenantId: tenant.id,
+                    allowWhileOptedOut,
+                  });
                 } catch (err) {
                   if (err instanceof MetaOutsideWindowError) {
                     // Not a connection problem — Meta requires a
@@ -147,6 +155,15 @@ export const Route = createFileRoute("/api/whatsapp/meta-webhook")({
                     console.error(
                       `[Meta WhatsApp] send blocked by 24h window for tenant ${tenant.id}: ${err.message}`,
                     );
+                    throw err;
+                  }
+                  if (err instanceof WhatsAppOptedOutError) {
+                    // Also not a connection problem — the customer opted
+                    // out, same reasoning as the outside-window case just
+                    // above. A reconnect wouldn't fix this either, and
+                    // marking the connection failed would be actively
+                    // misleading to the tenant.
+                    console.log(`[Meta WhatsApp] send suppressed, opted out, tenant ${tenant.id}: ${err.message}`);
                     throw err;
                   }
                   // Any other send failure (not a webhook/signature

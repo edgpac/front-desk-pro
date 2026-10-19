@@ -295,6 +295,8 @@ function LeadDetail() {
             "It's been more than 24 hours since this customer's last message — WhatsApp requires a pre-approved template to reach them now, and you don't have one approved yet.",
           );
         }
+      } else if (result.status === "opted_out") {
+        toast.error("This customer has opted out of WhatsApp messages and can't be messaged.");
       } else {
         toast.error(result.message);
       }
@@ -317,6 +319,8 @@ function LeadDetail() {
         setThread((t) => [...t, { role: "assistant", text: template.bodyText }]);
         setShowTemplatePicker(false);
         toast.success("Template sent");
+      } else if (result.status === "opted_out") {
+        toast.error("This customer has opted out of WhatsApp messages and can't be messaged.");
       } else if (result.status === "error") {
         toast.error(result.message);
       }
