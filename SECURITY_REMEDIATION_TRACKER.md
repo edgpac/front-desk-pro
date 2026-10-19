@@ -7,7 +7,8 @@ move between states — do not rely on commit messages or chat history alone
 to answer "is X actually released."
 
 **Status key**: 🟢 pushed to `origin/main` (will deploy on Vercel's next
-build of that branch) · 🟡 committed locally, not pushed (blocked) · 🔵
+build of that branch) · 🟡 committed locally, not pushed (blocked) · 🟠
+implemented + tested locally, **not yet committed** (awaiting review) · 🔵
 read-only finding, no fix implemented yet · ⚪ reviewed, left as-is (not a
 bug, or not in scope)
 
@@ -234,6 +235,196 @@ Last updated: 2026-10-18.
 - **Migration dependency**: none. **Production verification**: none
   beyond the deploy.
 
+### 1.10 — WhatsApp opt-out (STOP/UNSUBSCRIBE/CANCEL, English+Spanish) 🟢 PUSHED
+- **Status**: implemented, adversarially reviewed, one High-severity
+  defect found and fixed (see below). Migration `0025` applied to
+  production and verified (7/7 checks). Pushed as `8a2f49e`, deployed,
+  no runtime errors observed.
+- **Finding**: no opt-out handling existed anywhere in the WhatsApp
+  pipeline — a customer texting STOP had no effect; both the automated
+  and operator-initiated send paths would keep messaging them.
+- **Files changed/added** (12 total, all currently uncommitted):
+  - New `supabase/migrations/0025_whatsapp_opt_outs.sql` — one table
+    (`whatsapp_opt_outs`, same `(tenant_id, phone)` key shape and
+    zero-access RLS posture as `whatsapp_loop_guards`), five
+    `SECURITY DEFINER`/`service_role`-only functions
+    (`record_whatsapp_opt_out`, `claim_whatsapp_opt_out_confirmation`,
+    `release_whatsapp_opt_out_confirmation`,
+    `mark_whatsapp_opt_out_confirmation_sent`,
+    `resume_whatsapp_opt_out`).
+  - New `src/lib/whatsapp-opt-out-server.ts` — keyword detection
+    (exact-match, not substring, after normalizing
+    punctuation/whitespace/case — see its own comment for the
+    false-positive reasoning), the RPC wrappers, `OptOutCheckFailed`
+    (fail-closed on a check error) and `WhatsAppOptedOutError`.
+  - **Enforcement added at the actual outbound-sending layer, not just
+    the callers** — `src/lib/twilio-server.ts` (`sendWhatsAppMessage`),
+    `src/lib/meta-whatsapp-server.ts` (`sendWhatsAppMessageMeta`,
+    `sendWhatsAppTemplateMessage`) each now require a `tenantId` param
+    and check opt-out status as the first line before any HTTP call —
+    this is what makes it bypass-proof: every send in the codebase,
+    present or future, funnels through one of these three functions.
+    Each gained a narrow `allowWhileOptedOut` escape hatch, used by
+    exactly one caller (the opt-out confirmation message itself, which
+    must legitimately reach a number the instant it opts out).
+  - `src/lib/whatsapp-conversation-server.ts` — `handleOptOutState` runs
+    as the first thing in `handleInboundWhatsAppMessage`, before even the
+    loop guard; `handleOptOutConfirmation`/`sendOptInConfirmation` mirror
+    the loop guard's own proven claim→send→confirm crash-safety sequence.
+    `ChannelAdapter.sendMessage` gained the `allowWhileOptedOut` param,
+    threaded through both channel adapters.
+  - `src/routes/api.whatsapp.webhook.tsx` — Twilio's adapter moved from a
+    module-level constant to per-request (needed `tenant.id` in closure
+    to pass through).
+  - `src/routes/api.whatsapp.meta-webhook.tsx` — passes `tenantId`
+    through; a `WhatsAppOptedOutError` is no longer mistaken for a broken
+    connection (same treatment as the existing 24h-window case).
+  - `src/lib/lead-reply-server.ts` — the operator send path (which had no
+    other guard at all) now passes `tenantId` and returns a new
+    `{status: "opted_out"}` result instead of a generic error.
+  - `src/routes/dashboard.leads.$id.index.tsx` — handles the new
+    `opted_out` status with a clear toast in both the reply and
+    template-send flows.
+  - `scripts/pg-whatsapp-opt-out-check.sh` — new, real-Postgres
+    verification script, mirroring `pg-whatsapp-loop-guard-check.sh`.
+- **A real concurrency bug was found and fixed during implementation**
+  (not shipped broken, caught before testing): the first draft of
+  `record_whatsapp_opt_out` tried to infer "did I just create this row"
+  by re-reading timestamps after an `INSERT ... ON CONFLICT DO NOTHING`,
+  which could let two genuinely concurrent first-ever STOP messages both
+  compute `just_opted_out = true` and both queue a confirmation.
+  Rewritten to use `RETURNING` on the insert itself to detect the winner
+  unambiguously — proven correct against real concurrent Postgres
+  connections, not just reasoned about (see below).
+- **Tests**:
+  - `whatsapp-opt-out-server.test.ts` (new) — keyword matching (all
+    English/Spanish keywords, case variations, punctuation, and
+    specifically the false-positive guard: "can you cancel the old
+    quote" / "please stop by tomorrow" do NOT match), `isOptedOut`'s
+    timestamp-comparison branches, fail-closed on a DB error.
+  - `whatsapp-conversation-server.test.ts` — 8 integration tests: STOP
+    records opt-out + exactly one confirmation; a repeat STOP sends no
+    second confirmation; an ordinary message from an opted-out number
+    gets zero reply (no auto-resume); START resumes + sends exactly one
+    opt-in confirmation; START while NOT opted out falls through to
+    normal processing; two concurrent STOP messages (simulated) only
+    ever produce one confirmation; plus two phone-normalization
+    regression tests (below). Structural "every send goes through a
+    gated chokepoint" guard updated from 2 to 4 expected call sites.
+  - `scripts/pg-whatsapp-opt-out-check.sh` — **run against a real
+    disposable local Postgres, 28/28 checks passing**, including three
+    genuine-concurrency sections (real, separate `psql` processes
+    racing `record_whatsapp_opt_out`, `claim_whatsapp_opt_out_confirmation`,
+    and — added during the adversarial review — a repeat STOP racing a
+    resume on the same already-opted-out row) that specifically prove
+    the concurrency guarantees, not just reasoned about.
+  - Full app suite: 271/271 passing. `tsc` clean. `bun run build` clean.
+- **A second defect was found by a dedicated adversarial review and
+  fixed** — HIGH severity: `handleOptOutState` used the raw,
+  unnormalized inbound phone for its `whatsapp_opt_outs` keys
+  (`recordOptOut`/`isOptedOut`/`resumeOptOut`), while the enforcement
+  checks inside the three send functions always normalized via
+  `normalizePhone`. If a raw phone format ever diverged from its
+  normalized form, the write and read keys would silently mismatch —
+  the worst-case outcome for this feature: a customer's STOP silently
+  failing to actually block future messages, or a dashboard resume
+  silently failing to find the row. Fixed by normalizing once in
+  `handleOptOutState` and threading that normalized value through
+  `handleOptOutConfirmation`'s own claim/release/mark-sent calls too
+  (which had the identical issue one step later) — `adapter.sendMessage`
+  still delivers to the original, unnormalized address; normalization is
+  a DB-key concern only. Two regression tests were written and — not
+  just asserted — **empirically proven** to fail against the pre-fix
+  code (reverted temporarily, confirmed the exact expected failure, then
+  restored) and pass against the corrected version.
+- **Known, documented limitation — not eliminated**: there's an
+  unavoidable gap between checking opt-out status and the actual HTTP
+  call to Twilio/Meta — no way to make that atomic across an external API
+  call. Documented in `whatsapp-opt-out-server.ts`'s own header comment.
+  What IS proven race-safe: the database write itself, and the
+  confirmation-send dedup, under genuine concurrent connections.
+- **Also documented, deliberately not built this round**: no dashboard UI
+  button for the owner-resume action (`resumeWhatsAppOptOut` exists as an
+  auth-gated server function, same as the loop guard's own
+  `resumeWhatsAppAutomation`, which also has no UI button yet — consistent
+  with existing precedent in this codebase, not a new gap). Opt-out
+  events aren't currently surfaced in a lead's message thread or anywhere
+  else visible to the owner — pure background enforcement state for now.
+- **Migration dependency**: `0025_whatsapp_opt_outs.sql` — applied to
+  production and verified via a 7-check query (all `true`) before this
+  was pushed. An earlier verification attempt returned all `false`
+  (the migration genuinely hadn't been applied yet despite an initial
+  belief that it had) — caught by this exact gate, re-applied correctly,
+  re-verified, then pushed.
+- **Deployment**: pushed as `8a2f49e` (`9049574..8a2f49e`). Vercel
+  production build succeeded (`dpl_2LZdb6tace6feKuUxh4xthwv7s9P`, READY).
+  No runtime errors observed in the hour after deploy.
+- **Production verification still worth doing**: a real WhatsApp STOP
+  message through a connected tenant, whenever convenient — not
+  performed as part of this push (no customer was contacted, no real
+  opt-out state was touched, per explicit instruction).
+
+### 1.11 — Privacy Policy photo-retention wording covered only Twilio 🟢 PUSHED
+- **Commit**: `c58cee4`
+- **Finding**: "How long we keep it" referenced only Twilio's media
+  retention window, despite Meta being listed elsewhere in the same
+  policy as a second real WhatsApp processor.
+- **Fix**: generalized to cover both, without inventing a specific
+  retention duration for either provider.
+- **Tests**: markup-only. `tsc` clean, full suite unaffected.
+- **Migration dependency**: none.
+
+### 1.12 — WhatsApp connect dialog didn't disclose data processing 🟢 PUSHED
+- **Commit**: `96a24b6`
+- **Finding**: the Meta Embedded Signup confirmation dialog's checkbox
+  ("I've read this and understand what to expect") only ever gated
+  acknowledgment of a walkthrough of *Meta's own screens* — never named
+  what Job It Ready itself does with WhatsApp data, never linked the
+  Privacy Policy, and the acknowledgment was never persisted anywhere.
+  Confirmed via a dedicated review of `ConnectWhatsAppMeta.tsx`,
+  `completeMetaWhatsAppSignup`, and the `whatsapp_connections` schema —
+  this closes the item previously tracked at §3.2.
+- **Fix**:
+  - `WhatsAppSetupGuide.tsx` — new opening paragraph naming Meta's
+    WhatsApp Business Platform and Anthropic's Claude API explicitly,
+    with a real `/privacy` link. Shown on both surfaces that already
+    share this content (standalone guide page + the connect dialog).
+    `WHATSAPP_CONSENT_NOTICE_VERSION` exported so a specific notice
+    version is identifiable later, not just "something was shown."
+  - `ConnectWhatsAppMeta.tsx` — checkbox label reworded to name what it
+    covers; sends the notice version to the server.
+  - `meta-whatsapp-server.ts` — `completeMetaWhatsAppSignup` requires
+    `consentNoticeVersion` and **rejects the request server-side if
+    missing** — enforced at the function that actually completes the
+    connection, not just by the dialog's disabled button.
+  - New migration `0026_whatsapp_connection_consent.sql` — two columns
+    on the *existing* `whatsapp_connections` table
+    (`consent_notice_version`, `consent_acknowledged_at`), deliberately
+    not a new dedicated `whatsapp_consents` table. Explicitly documented
+    as operational evidence only, not a complete legal consent record.
+- **Tests**: `ConnectWhatsAppMeta.test.ts` (new) — 8 structural
+  regression tests (source-text matching, no component-test
+  infrastructure exists in this codebase) proving `handleConnect()` is
+  only reachable via the gated Continue button, the checkbox resets on
+  dialog close, and the consent version is actually transmitted. Full
+  suite 279/279 passing, `tsc` clean, build clean.
+- **Migration dependency**: `0026` — applied to production and verified
+  (3/3 checks: both columns present with correct types, RLS unchanged)
+  before this was pushed.
+- **Deployment**: pushed, Vercel production build succeeded
+  (`dpl_2XVczPwEfyASSvQSasrN6wN4wnRD`, READY, aliased to
+  `jobitready.com`). No runtime errors observed.
+- **Explicitly NOT resolved by this change, stated plainly**: WABA-access
+  authorization itself still happens entirely on Meta's own screens, not
+  in this dialog — this component was never the right place to represent
+  that. Any consent the business owes its own customers is also outside
+  this component's reach. Neither is claimed to be solved here.
+- **Known limitation**: `bun run lint` hung indefinitely on this
+  project (two processes stuck at ~99% CPU for 15-20+ minutes, killed
+  manually) — could not be run as a check for this change. Pre-existing
+  issue, not introduced by this work; `tsc` and the full test suite are
+  both clean.
+
 ---
 
 ## 2. Preserved, untouched (not part of any commit above)
@@ -283,36 +474,35 @@ Re-verified against current code where noted; not re-investigated where
 nothing in this session's changes touched the relevant area (dates reflect
 when each was last confirmed against live code).
 
-### 3.1 — WhatsApp opt-out / STOP handling 🔵
-**Confirmed still open** (re-verified 2026-10-18, current code). No
-opt-out/STOP/unsubscribe keyword handling anywhere in
-`whatsapp-conversation-server.ts`, `lead-reply-server.ts`,
-`meta-whatsapp-server.ts`, or either webhook route. No
-`whatsapp_opt_outs` table. The loop-guard feature (§1.7) is confirmed
-unrelated — spam/loop detection only, no opt-out semantics.
-**Outbound chokepoints** (where an opt-out check would need to live):
-AI-automated path funnels through `sendGuardedReply`
-(`whatsapp-conversation-server.ts:160-191`, ~14 call sites); operator path
-(`lead-reply-server.ts:73,86`) has no guard at all, Twilio or Meta.
-**Decision needed from you**: what "opted out" should mean operationally
-(suppress all future sends to that phone? For that tenant only, or
-globally?) — this is a product decision, not a code one.
-**Tests required**: once a design is approved, unit tests on the
-opt-out-check function + an integration-style test confirming a flagged
-number gets no automated or operator reply.
-**Dependencies**: none on other open items.
+### ~~3.1 — WhatsApp opt-out / STOP handling~~ → implemented, see §1.10
+No longer an open finding — implemented and tested locally per your
+approved design (STOP/UNSUBSCRIBE/CANCEL/QUIT/END + Spanish
+ALTO/CANCELAR/BASTA, scoped by `(tenant_id, phone)`, enforced at the
+actual outbound-sending layer for both automated and operator paths).
+Awaiting your review and separate approval to commit/apply the
+migration/push — see §1.10 for the complete writeup.
 
-### 3.2 — Meta/customer consent and authorization 🔵
-**Confirmed still open** (re-verified 2026-10-18). Grepped
-`ConnectWhatsAppMeta.tsx`, `meta-whatsapp-server.ts`, and
-`dashboard.settings.business.tsx` for consent/opt-in language: zero hits.
-The Meta Embedded Signup flow connects a WABA and stores credentials but
-records no customer-consent artifact anywhere.
-**Decision needed from you**: what consent model WhatsApp/Meta policy
-actually requires here — a product/legal question I can't resolve from
-code alone.
-**Dependencies**: none on other open items, but should be decided before
-Meta Advanced Access traffic scales up.
+### 3.2 — Meta/customer consent and authorization — owner-facing half resolved, see §1.12 ⚪
+**Owner-facing half (the Meta connect dialog)**: resolved, §1.12. The
+dialog now discloses what Job It Ready processes and links the Privacy
+Policy before connecting; operational evidence of the acknowledgment is
+stored on `whatsapp_connections`.
+**End-customer consent/contact-evidence half, still applies as before**:
+**Decision made (2026-10-18)**: no dedicated consent table — leaning on
+existing evidence instead. `whatsapp_interaction_events` (from the loop
+guard, `0024`) already timestamps every inbound message per
+`(tenant_id, phone)`, which can serve as evidence of when a customer
+first made contact, without building anything new.
+**Explicit limitation, not silently assumed**: a customer-initiated
+message is NOT being treated as blanket consent for every type of
+processing or communication — it only establishes the
+"customer-initiated contact" fact WhatsApp's own platform policy already
+requires before a business can message someone. If a broader, formally-
+labeled consent record is ever needed (e.g. for a specific legal
+requirement beyond that), that's a separate, later review — not resolved
+or built here.
+**Dependencies**: none on other open items, but should be revisited
+before Meta Advanced Access traffic scales up if requirements change.
 
 ### 3.3 — Supabase Auth rate limits / app-level protection 🔵
 **Confirmed still open** (re-verified 2026-10-18). Login (`login.tsx:43`),
@@ -332,17 +522,23 @@ added on top (would need its own design — this repo doesn't have a
 generic IP-rate-limit helper for non-tenant-scoped endpoints like auth).
 **Dependencies**: (a) blocks a real answer on (b).
 
-### 3.4 — Audit logging 🔵
-**Confirmed still absent** (re-verified 2026-10-18 — checked all 24
-current migrations directly, including the two new ones from this
-session): no `audit_log`/`audit_trail` table exists anywhere.
-**Decision needed from you**: scope (which actions need auditing —
-billing changes, price-sheet edits, WhatsApp connect/disconnect, auth
-events?) before any schema can be designed. Pure product/compliance
-scoping question, not something I can resolve unilaterally.
-**Dependencies**: none, but should probably be scoped before Meta
-Advanced Access goes fully live, given WhatsApp credential handling is
-one of the more sensitive areas with zero audit trail today.
+### 3.4 — Audit logging 🔵 scope approved, not yet built
+**Confirmed still absent** (re-verified 2026-10-18 — checked all 25
+current migrations directly, including this session's new ones): no
+`audit_log`/`audit_trail` table exists anywhere.
+**Scope approved (2026-10-18)**: subscription/billing state changes,
+WhatsApp connect/disconnect (Meta credential handling), and lead
+deletion — the last one specifically because `deleteLead`/`deleteLeads`
+(the bulk-delete feature added this session) currently leave zero trace,
+a hard delete with cascade and no record of who deleted what or when.
+**Not yet implemented** — this is a separate build from the opt-out work
+in §1.10, not started yet. Next step when you're ready: a migration
+proposal (table shape, same discipline as every prior migration this
+session — shown for review before being written to disk) covering those
+three action categories.
+**Dependencies**: none, but worth doing before Meta Advanced Access goes
+fully live, given WhatsApp credential handling is one of the more
+sensitive areas with zero audit trail today.
 
 ### 3.5 — Session-token storage and XSS exposure ⚪ (architectural fact, not a new vulnerability)
 **Re-confirmed 2026-10-18.** `src/integrations/supabase/client.ts` uses a
@@ -374,14 +570,20 @@ change, not proposed for implementation now.
 
 ## 4. Summary of decisions needed from you
 
-1. Opt-out semantics for WhatsApp (§3.1) — product decision.
-2. Consent model for Meta WhatsApp connections (§3.2) — product/legal.
-3. Check Supabase's actual dashboard Auth rate-limit settings, then decide
+1. **Review the WhatsApp opt-out implementation (§1.10)** and decide
+   whether to commit it, apply migration `0025`, verify it, and push —
+   same gated process as §1.7's WhatsApp loop guard. This is the most
+   consequential open item: the enforcement code already added to the
+   three outbound-send functions would break ALL WhatsApp sending
+   (not just opt-out) if it ever shipped before the migration is live.
+2. Check Supabase's actual dashboard Auth rate-limit settings, then decide
    if app-level throttling is also needed (§3.3) — provider-setting lookup
    + product decision.
-4. Scope what needs audit logging before any schema design starts (§3.4)
-   — product/compliance.
-5. Optional: run the WhatsApp live-traffic smoke test noted in §1.7.
+3. When ready, say so and I'll propose the audit-logging migration
+   (§3.4) — scope already approved (subscription changes, WhatsApp
+   connect/disconnect, lead deletion).
+4. Optional: run the WhatsApp live-traffic smoke test noted in §1.7.
 
 (Privacy Policy Meta disclosure — resolved, §1.9. Signup Terms/Privacy
-links — resolved, §1.8.)
+links — resolved, §1.8. Meta/customer consent — resolved, §3.2, no new
+table needed.)
