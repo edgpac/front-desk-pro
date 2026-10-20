@@ -9,9 +9,7 @@ export function Wordmark({ className, tone = "ink" }: { className?: string; tone
         className,
       )}
     >
-      <span className="flex h-6 w-6 items-center justify-center rounded-sm bg-primary text-[13px] font-extrabold text-primary-foreground">
-        J
-      </span>
+      <img src="/logo-mark.png" alt="" className="h-6 w-6" width={24} height={24} />
       Job It Ready
     </span>
   );
