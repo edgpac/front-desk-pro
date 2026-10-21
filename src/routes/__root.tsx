@@ -12,6 +12,10 @@ import { useEffect, type ReactNode } from "react";
 import { Toaster } from "@/components/ui/sonner";
 import appCss from "../styles.css?url";
 
+// Bump this whenever the favicon/icon files in public/ change — see the
+// icon link tags below for why.
+const FAVICON_VERSION = "2";
+
 function NotFoundComponent() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
@@ -101,11 +105,30 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
         rel: "stylesheet",
         href: "https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap",
       },
-      { rel: "icon", href: "/favicon.ico", type: "image/x-icon" },
-      { rel: "icon", href: "/favicon-16x16.png", type: "image/png", sizes: "16x16" },
-      { rel: "icon", href: "/favicon-32x32.png", type: "image/png", sizes: "32x32" },
-      { rel: "apple-touch-icon", href: "/apple-touch-icon.png", sizes: "180x180" },
-      { rel: "manifest", href: "/site.webmanifest" },
+      // Versioned query string on every icon href — browsers cache favicons
+      // extremely aggressively (often ignoring normal reload behavior), so
+      // this forces every browser to re-fetch after an icon update instead
+      // of relying on visitors to manually clear cache. Bump FAVICON_VERSION
+      // whenever these files change again.
+      { rel: "icon", href: `/favicon.ico?v=${FAVICON_VERSION}`, type: "image/x-icon" },
+      {
+        rel: "icon",
+        href: `/favicon-16x16.png?v=${FAVICON_VERSION}`,
+        type: "image/png",
+        sizes: "16x16",
+      },
+      {
+        rel: "icon",
+        href: `/favicon-32x32.png?v=${FAVICON_VERSION}`,
+        type: "image/png",
+        sizes: "32x32",
+      },
+      {
+        rel: "apple-touch-icon",
+        href: `/apple-touch-icon.png?v=${FAVICON_VERSION}`,
+        sizes: "180x180",
+      },
+      { rel: "manifest", href: `/site.webmanifest?v=${FAVICON_VERSION}` },
     ],
   }),
   shellComponent: RootShell,
