@@ -2096,6 +2096,245 @@ describe("WhatsApp conversation language localization", () => {
   });
 });
 
+describe("WhatsApp first-contact greeting", () => {
+  beforeEach(() => {
+    vi.mocked(getQuoteEstimate).mockClear();
+    vi.mocked(createLead).mockClear();
+    vi.mocked(createLead).mockResolvedValue({ id: "new-lead-1" } as any);
+  });
+
+  it("customer describes a problem immediately (English): first reply greets, then answers", async () => {
+    const { admin } = fakeFreshQuoteAdmin();
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(getQuoteEstimate).mockResolvedValue(PRICED_RESULT as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "My kitchen faucet is leaking, how much to fix it?",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body.startsWith("Hi! 👋 ")).toBe(true);
+    expect(sent[0]!.body).toContain(PRICED_RESULT.diagnosis);
+  });
+
+  it("customer sends just a simple greeting (English, thin description): first reply greets once, not twice", async () => {
+    const { admin } = fakeFreshQuoteAdmin();
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "Hi",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(1);
+    const body = sent[0]!.body;
+    expect(body.startsWith("Hi! 👋 ")).toBe(true);
+    // Exactly one wave — the thin-description welcome text itself doesn't
+    // separately say "Hi"/"Hello" (it opens with "Thanks for reaching
+    // out..."), so the prefix must not be duplicated.
+    expect(body.match(/Hi! 👋/g)?.length).toBe(1);
+    expect(body).toContain("Thanks for reaching out");
+  });
+
+  it("Spanish conversation: first reply greets with '¡Hola! 👋' and stays in Spanish throughout", async () => {
+    const { admin } = fakeFreshQuoteAdmin();
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(getQuoteEstimate).mockResolvedValue({
+      ...PRICED_RESULT,
+      diagnosis: "Reemplazo estándar de la llave de la cocina.",
+    } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "Mi llave de la cocina está goteando, ¿cuánto cuesta repararla?",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(1);
+    const body = sent[0]!.body;
+    expect(body.startsWith("¡Hola! 👋 ")).toBe(true);
+    expect(body).not.toContain("Hi! 👋");
+  });
+
+  it("follow-up message on an already-open (still-clarifying) lead does not repeat the greeting", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: {
+        id: "lead-greeting-followup",
+        customer_name: "Pat",
+        photo_url: null,
+        problem: "paint a mural",
+        confidence: null,
+        diagnosis: null,
+        flag_type: null,
+      },
+      leadSlotClaimSucceeds: true,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(getQuoteEstimate).mockClear();
+    vi.mocked(getQuoteEstimate).mockResolvedValue({
+      needsClarification: false,
+      outOfScope: true,
+    } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "paint my whole house",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(1);
+    const body = sent[0]!.body;
+    expect(body).not.toContain("Hi! 👋");
+    expect(body).not.toContain("Hello!");
+    expect(body).not.toContain("¡Hola!");
+  });
+
+  it("a different job within the existing 48-hour window does not trigger another greeting", async () => {
+    // fakeInboundAdmin's leads table reflects an existing, still-in-window
+    // row for this (tenant, phone) — the exact same openLead value
+    // handleInboundWhatsAppMessage's own 48-hour, phone+tenant-scoped
+    // lookup would return for a lead created minutes or hours ago. Since
+    // isFirstContact is now derived from that same openLead (not a
+    // separate all-time check), a "different job" fallthrough from an
+    // already-quoted lead that's still in that window must not re-greet.
+    const { admin } = fakeInboundAdmin({
+      openLead: {
+        id: "lead-returning-customer",
+        customer_name: "Lee",
+        photo_url: null,
+        problem: "install a ceiling fan",
+        confidence: "High",
+        diagnosis: "Ceiling fan installation",
+        flag_type: null,
+      },
+      leadSlotClaimSucceeds: true,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(classifyFollowUpIntent).mockClear();
+    vi.mocked(classifyFollowUpIntent).mockResolvedValue({ sameJob: false } as any);
+    vi.mocked(getQuoteEstimate).mockResolvedValue(PRICED_RESULT as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "actually, separate from that — my water heater is leaking too",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(1);
+    const body = sent[0]!.body;
+    expect(body).not.toContain("Hi! 👋");
+    expect(body).not.toContain("Hello!");
+    expect(body).not.toContain("¡Hola!");
+  });
+
+  it("a flagged/resolved lead still inside the 48-hour window routes to fresh_quote but is still not re-greeted", async () => {
+    // decideLeadRoute sends a flagged lead (confidence null, flag_type
+    // set) to "fresh_quote" even though it's still inside the 48-hour
+    // window (see decideLeadRoute's own doc comment: this governs pricing
+    // behavior — start clean — not whether the customer was already
+    // greeted in this conversation). openLead is still non-null here, so
+    // isFirstContact must correctly read false even though the route is
+    // the same "fresh_quote" path a genuinely first-time customer takes.
+    const { admin } = fakeInboundAdmin({
+      openLead: {
+        id: "lead-flagged-in-window",
+        customer_name: "Jordan",
+        photo_url: null,
+        problem: "a prior request that got flagged",
+        confidence: null,
+        diagnosis: null,
+        flag_type: "outside_service_scope",
+      },
+      leadSlotClaimSucceeds: true,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(getQuoteEstimate).mockClear();
+    vi.mocked(getQuoteEstimate).mockResolvedValue(PRICED_RESULT as any);
+    vi.mocked(createLead).mockClear();
+    vi.mocked(createLead).mockResolvedValue({ id: "new-lead-after-flag" } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "My kitchen faucet is leaking, how much to fix it?",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(1);
+    const body = sent[0]!.body;
+    expect(body).not.toContain("Hi! 👋");
+    expect(body).not.toContain("Hello!");
+    expect(body).not.toContain("¡Hola!");
+  });
+
+  it("a returning customer whose previous lead is outside the 48-hour window receives a new greeting", async () => {
+    // handleInboundWhatsAppMessage's own openLead lookup is already scoped
+    // to the last 48 hours (.gte("created_at", now - 48h)) — a lead from
+    // weeks ago simply isn't found, so this phone's DB-visible state is
+    // identical to a genuinely first-time customer's (fakeFreshQuoteAdmin
+    // models exactly that: no row comes back from the leads table). That
+    // is the intended behavior: isFirstContact must be true here, exactly
+    // as it is for a brand-new customer, because the current conversation
+    // really is new regardless of history outside the window.
+    const { admin } = fakeFreshQuoteAdmin();
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(getQuoteEstimate).mockResolvedValue(PRICED_RESULT as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "Hey, it's been a while — my water heater is leaking now, how much?",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body.startsWith("Hi! 👋 ")).toBe(true);
+  });
+});
+
 describe("WhatsApp opt-out — handleInboundWhatsAppMessage's state machine", () => {
   it("a STOP message records the opt-out and sends exactly one confirmation, with no AI/reply pipeline touched", async () => {
     const { admin, row, calls } = fakeOptOutAdmin();

@@ -524,6 +524,23 @@ function localizedGreeting(language: DetectedLanguage, businessName: string): st
     : `Thanks for reaching out to ${businessName}! To get you a fast, accurate price, send a photo along with a description of what you need — or just describe the problem in more detail and I can help without one.`;
 }
 
+// A short wave, prefixed onto whatever the real first reply turns out to be
+// (a clarifying question, an out-of-scope handoff, or an instant quote) —
+// never its own separate message, and never a fixed, generic "how can I
+// help" line, since the actual content right after it is always real,
+// AI-generated text specific to what the customer described. Callers gate
+// this behind isFirstContact (openLead == null — see
+// handleInboundWhatsAppMessage's own 48-hour, phone+tenant-scoped lookup)
+// rather than applying it unconditionally, so a message that's part of an
+// existing conversation (a flagged lead still inside the 48-hour window, or
+// a "different job" fallthrough from an already-quoted lead) never gets
+// re-greeted — only a message with no lead at all in that window does.
+// Deliberately NOT used for the thin-description case (localizedGreeting above opens warmly on
+// its own — "Hi! Thanks for reaching out..." would be redundant).
+function localizedFirstContactGreeting(language: DetectedLanguage): string {
+  return isEs(language) ? "¡Hola! 👋 " : "Hi! 👋 ";
+}
+
 function localizedLostPhotoMessage(language: DetectedLanguage): string {
   return isEs(language)
     ? "Disculpe, perdí la foto original — ¿podría reenviarla junto con su respuesta?"
@@ -1249,6 +1266,16 @@ export async function handleInboundWhatsAppMessage(params: {
   // a photo regardless of what the customer already said, which reads as a
   // broken bot repeating itself when the customer has, in fact, described
   // the job in enough detail.
+  // Reuses the exact 48-hour, phone+tenant-scoped lookup already fetched
+  // above as openLead — the same signal decideLeadRoute is built around —
+  // rather than a separate all-time check. No lead in that window means a
+  // genuinely new conversation, even if this same phone has contacted this
+  // tenant before (e.g. weeks ago, well outside the window). Computed once
+  // here and threaded into handleFreshQuote below so both the
+  // thin-description short-circuit and the full quote/clarification paths
+  // agree on one answer.
+  const isFirstContact = openLead == null;
+
   const hasSubstantialDescription = body.trim().length > 10;
   if (!mediaRef && !hasSubstantialDescription) {
     // No lead exists yet at this point — leadId: null. This is exactly the
@@ -1257,6 +1284,7 @@ export async function handleInboundWhatsAppMessage(params: {
     // either, so even the volume signal had nothing to count). The
     // evidence log is keyed on (tenant, phone), not on a lead, so this
     // now records and evaluates correctly even before any lead exists.
+    const thinDescriptionLanguage = detectLanguage(body);
     await sendGuardedReply({
       admin,
       tenant,
@@ -1264,7 +1292,7 @@ export async function handleInboundWhatsAppMessage(params: {
       adapter,
       leadId: null,
       signature: { kind: "text", text: "canned:thin-description-greeting" },
-      messageText: localizedGreeting(detectLanguage(body), tenant.name),
+      messageText: `${isFirstContact ? localizedFirstContactGreeting(thinDescriptionLanguage) : ""}${localizedGreeting(thinDescriptionLanguage, tenant.name)}`,
     });
     return;
   }
@@ -1296,6 +1324,7 @@ export async function handleInboundWhatsAppMessage(params: {
       channel,
       adapter,
       admin,
+      isFirstContact,
     });
   } finally {
     if (claimed) await releaseLeadSlot(admin, tenant.id, fromPhone);
@@ -1653,12 +1682,18 @@ async function handleFreshQuote(params: {
   channel: "WhatsApp";
   adapter: ChannelAdapter;
   admin: ReturnType<typeof getAdminClient>;
+  // Computed once by the caller (shared with the thin-description
+  // short-circuit above it) as openLead == null — the same 48-hour,
+  // phone+tenant-scoped lookup decideLeadRoute uses, not derived from
+  // whether a lead is being newly created here.
+  isFirstContact: boolean;
 }): Promise<void> {
-  const { tenant, fromPhone, body, mediaRef, profileName, channel, adapter, admin } = params;
+  const { tenant, fromPhone, body, mediaRef, profileName, channel, adapter, admin, isFirstContact } = params;
   // No prior lead/diagnosis exists yet at this point — body is the only
   // signal available, same reasoning as the thin-description greeting
   // above.
   const language = detectLanguage(body);
+  const firstContactGreeting = isFirstContact ? localizedFirstContactGreeting(language) : "";
 
   const { data: priceSheetRows } = await admin
     .from("price_sheet_items")
@@ -1742,7 +1777,7 @@ async function handleFreshQuote(params: {
   if (result.needsClarification) {
     const question = result.questions[0];
     const optionsText = question?.options?.length ? `\n(${question.options.join(" / ")})` : "";
-    const questionText = `${question?.question ?? localizedClarifyingFallbackQuestion(language)}${optionsText}`;
+    const questionText = `${firstContactGreeting}${question?.question ?? localizedClarifyingFallbackQuestion(language)}${optionsText}`;
 
     // Create the lead now, at the first clarification round, instead of
     // just replying and discarding the original photo/description — that
@@ -1786,7 +1821,7 @@ async function handleFreshQuote(params: {
 
   if (result.outOfScope) {
     const openingProblem = body || NO_DESCRIPTION_PLACEHOLDER;
-    const passAlongMessage = localizedPassAlongMessage(language);
+    const passAlongMessage = `${firstContactGreeting}${localizedPassAlongMessage(language)}`;
     const { id: leadId } = await createFlaggedLead({
       data: {
         tenantSlug: tenant.slug,
@@ -1862,6 +1897,6 @@ async function handleFreshQuote(params: {
       priceSheetItemIds: result.lineItems.map((item) => item.priceSheetItemId),
       amounts: [...result.lineItems.map((item) => item.amount), result.totalLow],
     },
-    messageText: `${result.diagnosis} ${formatQuotePriceLine(result.totalLow, tenant.currency, result.isDiagnosisOnly, result.hasNoPricedWork, result.hasPartiallyDeferredWork, language)} ${localizedEstimateBasisClosing(language, imageBase64 !== undefined)}`,
+    messageText: `${firstContactGreeting}${result.diagnosis} ${formatQuotePriceLine(result.totalLow, tenant.currency, result.isDiagnosisOnly, result.hasNoPricedWork, result.hasPartiallyDeferredWork, language)} ${localizedEstimateBasisClosing(language, imageBase64 !== undefined)}`,
   });
 }
