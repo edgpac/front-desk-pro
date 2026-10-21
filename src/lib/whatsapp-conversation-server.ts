@@ -581,10 +581,21 @@ function localizedPhotoLoadFailedMessage(language: DetectedLanguage): string {
     : "I couldn't load that photo — could you try sending it again?";
 }
 
-function localizedDisambiguationQuestion(language: DetectedLanguage): string {
+function localizedPhotoDisambiguationQuestion(language: DetectedLanguage): string {
   return isEs(language)
     ? "¿Esta foto es sobre el trabajo que ya cotizamos, o es algo diferente que le gustaría que cotizáramos? Si es el mismo trabajo, por favor reenvíe la foto para poder verla con más detalle."
     : "Is this photo about the job I already quoted, or something different you'd like priced? If it's the same job, go ahead and resend the photo so I can take a closer look.";
+}
+
+// Text equivalent of the photo disambiguation question above — same
+// "ambiguous" classification outcome (classifyFollowUpIntent now returns a
+// 3-way same_job/different_job/ambiguous result, mirroring
+// classifyFollowUpPhotoIntent), just without the "resend the photo"
+// instruction, which only makes sense for the photo path.
+function localizedTextDisambiguationQuestion(language: DetectedLanguage): string {
+  return isEs(language)
+    ? "¿Esto es sobre el trabajo que ya cotizamos, o es algo diferente que le gustaría que cotizáramos?"
+    : "Is this about the job I already quoted, or something different you'd like priced?";
 }
 
 function localizedReassessFailedMessage(language: DetectedLanguage): string {
@@ -616,17 +627,20 @@ function localizedPreviousPriceNote(language: DetectedLanguage, amount: string):
 // previously unconditional regardless of whether a photo existed. hadPhoto
 // reflects whether THIS round's message actually carried one (not whether
 // any photo exists anywhere in the lead's history).
+// Kept to ONE sentence plus the booking question — a WhatsApp reply that
+// repeats this on every single quote shouldn't spend three sentences on a
+// disclaimer every time. Still says exactly what it must (a genuinely
+// different in-person finding can change the price) and still correctly
+// distinguishes "based on what you described" from "based on the photos" —
+// that distinction is load-bearing (never claim photo evidence that was
+// never sent), not just wording, so it's preserved even in the shorter form.
 function localizedEstimateBasisClosing(language: DetectedLanguage, hadPhoto: boolean): string {
   if (isEs(language)) {
-    const basis = hadPhoto
-      ? "Este estimado se basa en las fotos e información proporcionada de forma remota."
-      : "Este estimado se basa en la información y descripción proporcionada.";
-    return `${basis} Si el problema real o el alcance del trabajo es diferente a lo presentado, el precio final podría cambiar después de una inspección en sitio. ¿Le gustaría que agendemos la visita?`;
+    const basis = hadPhoto ? "las fotos" : "lo descrito";
+    return `El precio podría cambiar si el problema real es diferente a ${basis} — ¿le gustaría que agendemos la visita?`;
   }
-  const basis = hadPhoto
-    ? "This estimate is based on the photos and information provided remotely."
-    : "This estimate is based on the information and description provided.";
-  return `${basis} If the actual issue or scope of work is different than what was presented, the final price may change after inspection. Want me to get this booked in?`;
+  const basis = hadPhoto ? "the photos" : "what you described";
+  return `Price may change if the actual issue is different from ${basis} — want me to get this booked in?`;
 }
 
 // Channel-agnostic core extracted from api.whatsapp.webhook.tsx (the
@@ -1130,7 +1144,7 @@ export async function handleInboundWhatsAppMessage(params: {
       // specifically "different job") — falls through to the fresh-quote
       // flow below, exactly like today's behavior for that case.
     } else {
-      const { sameJob } = await classifyFollowUpIntent({
+      const { classification } = await classifyFollowUpIntent({
         data: {
           priorProblem: openLead.problem,
           priorDiagnosis: openLead.diagnosis || "",
@@ -1138,7 +1152,42 @@ export async function handleInboundWhatsAppMessage(params: {
         },
       });
 
-      if (sameJob) {
+      // Genuinely unclear whether this continues the open job or starts a
+      // new one — ask rather than guess. This is the fix for a confirmed
+      // production bug: a message about a completely different job
+      // ("check for water heater" on an open kitchen-faucet lead) used to
+      // have no third option and got forced into "same job," so
+      // getFollowUpAnswer answered using the old diagnosis and $120
+      // estimate — a reply mis-attributed to the wrong job entirely.
+      // Mirrors handleQuotedFollowUpPhoto's identical "ambiguous" branch
+      // for the photo path. No lead is created, nothing is priced, and the
+      // old job's diagnosis/line items are never referenced in the reply.
+      if (classification === "ambiguous") {
+        const language = detectLanguage(openLead.problem, body);
+        const disambiguationQuestion = localizedTextDisambiguationQuestion(language);
+        await sendGuardedReply({
+          admin,
+          tenant,
+          fromPhone,
+          adapter,
+          leadId: openLead.id,
+          signature: { kind: "text", text: disambiguationQuestion },
+          messageText: disambiguationQuestion,
+          onSent: async () => {
+            await admin
+              .from("lead_messages")
+              .insert({ lead_id: openLead.id, role: "assistant", body: disambiguationQuestion });
+          },
+        });
+        void sendFollowUpNotificationEmail({
+          tenant: { name: tenant.name, email: tenant.email, currency: tenant.currency },
+          customerName: openLead.customer_name || profileName || "A customer",
+          body,
+        });
+        return;
+      }
+
+      if (classification === "same_job") {
         const claimedFollowUp = await withLeadProcessingClaim(
           admin,
           tenant.id,
@@ -1242,9 +1291,11 @@ export async function handleInboundWhatsAppMessage(params: {
         });
         return;
       }
-      // Classified as a new, different job with no photo attached — falls
-      // through to the fresh-quote flow below, which will correctly ask
-      // for a photo since none has actually been provided yet.
+      // classification === "different_job", no photo attached — falls
+      // through to the fresh-quote flow below (fresh getQuoteEstimate call,
+      // no reference to the prior lead's diagnosis/line items/estimate),
+      // which will correctly ask for a photo since none has actually been
+      // provided yet.
     }
     void sendFollowUpNotificationEmail({
       tenant: { name: tenant.name, email: tenant.email, currency: tenant.currency },
@@ -1430,7 +1481,7 @@ async function handleQuotedFollowUpPhoto(params: {
   }
 
   if (classification === "ambiguous") {
-    const disambiguationQuestion = localizedDisambiguationQuestion(language);
+    const disambiguationQuestion = localizedPhotoDisambiguationQuestion(language);
     await sendGuardedReply({
       admin,
       tenant,

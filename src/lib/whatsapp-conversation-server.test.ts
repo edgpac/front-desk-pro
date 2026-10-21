@@ -925,7 +925,7 @@ describe("handleInboundWhatsAppMessage — a lost lead-slot claim must not silen
     vi.mocked(getAdminClient).mockReturnValue(admin);
     vi.mocked(sendFollowUpNotificationEmail).mockClear();
     vi.mocked(classifyFollowUpIntent).mockClear();
-    vi.mocked(classifyFollowUpIntent).mockResolvedValue({ sameJob: true } as any);
+    vi.mocked(classifyFollowUpIntent).mockResolvedValue({ classification: "same_job" } as any);
     vi.mocked(getFollowUpAnswer).mockClear();
     const { adapter, sent } = fakeAdapter();
 
@@ -1009,7 +1009,7 @@ describe("handleInboundWhatsAppMessage — a lost lead-slot claim must not silen
     vi.mocked(getAdminClient).mockReturnValue(admin);
     vi.mocked(sendFollowUpNotificationEmail).mockClear();
     vi.mocked(classifyFollowUpIntent).mockClear();
-    vi.mocked(classifyFollowUpIntent).mockResolvedValue({ sameJob: true } as any);
+    vi.mocked(classifyFollowUpIntent).mockResolvedValue({ classification: "same_job" } as any);
     vi.mocked(getFollowUpAnswer).mockClear();
     vi.mocked(getFollowUpAnswer).mockResolvedValue("Yes, still the same price.");
     const { adapter, sent } = fakeAdapter();
@@ -1029,6 +1029,169 @@ describe("handleInboundWhatsAppMessage — a lost lead-slot claim must not silen
     expect(sent).toEqual([{ to: TEST_PHONE, body: "Yes, still the same price." }]);
     expect(sendFollowUpNotificationEmail).toHaveBeenCalledTimes(1); // exactly once, not duplicated
     expect(calls.releaseAttempts).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------
+// PRODUCTION REGRESSION (reported via screenshot): an existing, already-
+// quoted kitchen-faucet lead ($120, diagnosis "Standard kitchen faucet
+// replacement") received a follow-up text about a water heater ("Check
+// for water heater at Home Depot") — topically unrelated to the open
+// lead. classifyFollowUpIntent's old sameJob:boolean shape had no way to
+// express "I can't tell" for a terse, unrelated reply like this, so it
+// got forced into "same job," and getFollowUpAnswer answered using the
+// faucet's own diagnosis and $120 estimate — a long, confident-sounding
+// answer about completely the wrong job. These tests drive the real
+// classification outcomes a corrected classifier call should produce for
+// this situation and confirm the orchestration code never lets the old
+// job's diagnosis, line items, or price leak into the new topic.
+// ---------------------------------------------------------------------
+
+const QUOTED_FAUCET_LEAD: FakeOpenLead = {
+  id: "lead-faucet-1",
+  customer_name: "Jordan",
+  photo_url: null,
+  problem: "kitchen faucet is leaking",
+  confidence: "High",
+  diagnosis: "Standard kitchen faucet replacement",
+  flag_type: null,
+};
+
+describe("quoted_follow_up text classification — three-way (same_job / different_job / ambiguous)", () => {
+  beforeEach(() => {
+    vi.mocked(getFollowUpAnswer).mockClear();
+    vi.mocked(getQuoteEstimate).mockClear();
+    vi.mocked(classifyFollowUpIntent).mockClear();
+    vi.mocked(createLead).mockClear();
+  });
+
+  it('classification="different_job": a message about an unrelated appliance gets its own fresh quote, never the faucet\'s diagnosis or $120', async () => {
+    const { admin } = fakeInboundAdmin({ openLead: QUOTED_FAUCET_LEAD, leadSlotClaimSucceeds: true });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(classifyFollowUpIntent).mockResolvedValue({ classification: "different_job" } as any);
+    vi.mocked(getQuoteEstimate).mockResolvedValue({
+      needsClarification: false,
+      outOfScope: false,
+      isEmergency: false,
+      issueType: "Plumbing",
+      severity: "Low",
+      confidence: "High",
+      diagnosis: "Water heater replacement.",
+      isDiagnosisOnly: false,
+      hasNoPricedWork: false,
+      hasPartiallyDeferredWork: false,
+      lineItems: [
+        {
+          description: "Water heater replacement",
+          detail: "",
+          amount: 850,
+          priceSheetItemId: "ps-water-heater",
+          hours: undefined,
+        },
+      ],
+      totalLow: 850,
+      totalHigh: 850,
+    } as any);
+    vi.mocked(createLead).mockResolvedValue({ id: "new-water-heater-lead" } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "Check for water heater at Home Depot",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    // The whole point: getFollowUpAnswer (which answers USING the old
+    // lead's diagnosis/line items) must never run for a different job.
+    expect(getFollowUpAnswer).not.toHaveBeenCalled();
+    expect(getQuoteEstimate).toHaveBeenCalledTimes(1);
+    expect(sent).toHaveLength(1);
+    const body = sent[0]!.body;
+    expect(body).toContain("Water heater replacement");
+    expect(body).not.toContain("faucet");
+    expect(body).not.toContain("120");
+    expect(body).toContain("850");
+  });
+
+  it('classification="ambiguous": asks one short clarifying question instead of quoting the old job — no lead created, no AI pricing call made', async () => {
+    const { admin } = fakeInboundAdmin({ openLead: QUOTED_FAUCET_LEAD, leadSlotClaimSucceeds: true });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(classifyFollowUpIntent).mockResolvedValue({ classification: "ambiguous" } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "Check for water heater at Home Depot",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(getFollowUpAnswer).not.toHaveBeenCalled();
+    expect(getQuoteEstimate).not.toHaveBeenCalled();
+    expect(createLead).not.toHaveBeenCalled();
+    expect(sent).toHaveLength(1);
+    const body = sent[0]!.body;
+    expect(body).toBe("Is this about the job I already quoted, or something different you'd like priced?");
+    expect(body).not.toContain("faucet");
+    expect(body).not.toContain("120");
+  });
+
+  it('classification="ambiguous" in Spanish: the clarifying question is localized, never defaults to English', async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: { ...QUOTED_FAUCET_LEAD, problem: "tengo una fuga en la llave de la cocina" },
+      leadSlotClaimSucceeds: true,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(classifyFollowUpIntent).mockResolvedValue({ classification: "ambiguous" } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "¿Puede revisar el calentador de agua en Home Depot?",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body).toBe(
+      "¿Esto es sobre el trabajo que ya cotizamos, o es algo diferente que le gustaría que cotizáramos?",
+    );
+  });
+
+  it('classification="same_job" (regression guard): a genuine follow-up on the SAME job still answers normally, unaffected by the new ambiguous branch', async () => {
+    const { admin } = fakeInboundAdmin({ openLead: QUOTED_FAUCET_LEAD, leadSlotClaimSucceeds: true });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(classifyFollowUpIntent).mockResolvedValue({ classification: "same_job" } as any);
+    vi.mocked(getFollowUpAnswer).mockResolvedValue("Yes, still $120 for the faucet.");
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "is that price still good?",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(getFollowUpAnswer).toHaveBeenCalledTimes(1);
+    expect(getQuoteEstimate).not.toHaveBeenCalled();
+    expect(sent).toEqual([{ to: TEST_PHONE, body: "Yes, still $120 for the faucet." }]);
   });
 });
 
@@ -1753,13 +1916,11 @@ describe("WhatsApp conversation language localization", () => {
     });
 
     expect(sent).toHaveLength(1);
-    expect(sent[0]!.body).toContain(
-      "This estimate is based on the information and description provided.",
-    );
-    expect(sent[0]!.body).not.toContain("based on the photos");
+    expect(sent[0]!.body).toContain("Price may change if the actual issue is different from what you described");
+    expect(sent[0]!.body).not.toContain("the photos");
   });
 
-  it("instant quote, English, with photo: closing preserves the existing 'photos and information' wording", async () => {
+  it("instant quote, English, with photo: closing preserves the existing 'photos' wording", async () => {
     const { admin } = fakeFreshQuoteAdmin();
     vi.mocked(getAdminClient).mockReturnValue(admin);
     vi.mocked(getQuoteEstimate).mockResolvedValue(PRICED_RESULT as any);
@@ -1777,9 +1938,7 @@ describe("WhatsApp conversation language localization", () => {
     });
 
     expect(sent).toHaveLength(1);
-    expect(sent[0]!.body).toContain(
-      "This estimate is based on the photos and information provided remotely.",
-    );
+    expect(sent[0]!.body).toContain("Price may change if the actual issue is different from the photos");
   });
 
   it("instant quote, Spanish, no photo: entire reply is in Spanish, and never claims photo evidence that was never sent", async () => {
@@ -1805,12 +1964,12 @@ describe("WhatsApp conversation language localization", () => {
     expect(sent).toHaveLength(1);
     const body = sent[0]!.body;
     expect(body).toContain("Precio estimado:");
-    expect(body).toContain("Este estimado se basa en la información y descripción proporcionada.");
-    expect(body).toContain("¿Le gustaría que agendemos la visita?");
+    expect(body).toContain("El precio podría cambiar si el problema real es diferente a lo descrito");
+    expect(body).toContain("¿le gustaría que agendemos la visita?");
     // The evidence-language bug this regression guards against: never say
     // "based on photos" (in either language) when none was ever sent.
     expect(body).not.toContain("fotos");
-    expect(body).not.toContain("This estimate is based on");
+    expect(body).not.toContain("Price may change");
   });
 
   it("instant quote, Spanish, with photo: closing correctly claims photo evidence since one was actually sent", async () => {
@@ -1834,9 +1993,7 @@ describe("WhatsApp conversation language localization", () => {
     });
 
     expect(sent).toHaveLength(1);
-    expect(sent[0]!.body).toContain(
-      "Este estimado se basa en las fotos e información proporcionada de forma remota.",
-    );
+    expect(sent[0]!.body).toContain("El precio podría cambiar si el problema real es diferente a las fotos");
   });
 
   // Photo-reassessment update path (handleQuotedFollowUpPhoto) — a
@@ -2238,7 +2395,7 @@ describe("WhatsApp first-contact greeting", () => {
     });
     vi.mocked(getAdminClient).mockReturnValue(admin);
     vi.mocked(classifyFollowUpIntent).mockClear();
-    vi.mocked(classifyFollowUpIntent).mockResolvedValue({ sameJob: false } as any);
+    vi.mocked(classifyFollowUpIntent).mockResolvedValue({ classification: "different_job" } as any);
     vi.mocked(getQuoteEstimate).mockResolvedValue(PRICED_RESULT as any);
     const { adapter, sent } = fakeAdapter();
 
