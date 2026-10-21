@@ -14,7 +14,7 @@ import appCss from "../styles.css?url";
 
 // Bump this whenever the favicon/icon files in public/ change — see the
 // icon link tags below for why.
-const FAVICON_VERSION = "2";
+const FAVICON_VERSION = "3";
 
 function NotFoundComponent() {
   return (
