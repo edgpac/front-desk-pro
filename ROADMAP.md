@@ -2,6 +2,130 @@
 
 Legend: ✅ real and working · 🟡 built, but mocked/disconnected from a real backend · ⬜ not built yet
 
+Last updated: October 15, 2026 — **Security audit, Part 1 of 2, complete.
+One HIGH-severity finding (subscription-entitlement privilege escalation)
+found, fixed, and extensively hardened across several review passes —
+implemented and tested locally, committed, but deliberately NOT pushed,
+deployed, or applied to production yet. Rollout paused pending a separate
+decision about Stripe live-mode readiness.**
+
+**Scope note, stated explicitly because it governs what comes next**: this
+was requested and scoped as Part 1 of a two-part audit — six areas (system
+inspection, cross-tenant authorization, authentication/sessions, database/
+RLS, data leaks, roles/permissions). **Part 2 (privacy, legal-document
+review, tracking, WhatsApp-consent, compliance) has not been started** and
+will only begin on a separate, later request, per the original scope
+boundary. Nothing below should be read as touching Part 2's areas.
+
+**Part 1 findings**: the six-area audit itself found the codebase's existing
+tenant-isolation pattern (RLS everywhere, explicit `tenant_id` scoping on
+every admin-client query, no cross-tenant leak found anywhere traced) to be
+consistently sound — confirmed, not assumed, across every `*-server.ts`
+file and every migration (`0001`–`0020` at the time of the audit). One real,
+confirmed CSV-formula-injection LOW finding (`leads-server.ts`'s
+`exportMyLeadsCsv`) was found and fixed the same session (`csvField` now
+neutralizes a leading `=`/`+`/`-`/`@`, 7 regression tests).
+
+**The HIGH finding — self-service privilege escalation**: `isActiveSubscriptionMeta`
+(the single function gating paid-plan access) read `user_metadata`, which
+Supabase's own Auth API lets any signed-in user freely rewrite on
+themselves via `supabase.auth.updateUser()` — a documented, intentional
+GoTrue capability, not a bug in this app, but one that made `user_metadata`
+unusable for anything authorization-sensitive. Any user could have run one
+line in their browser console and granted themselves an active "crew" plan
+for free, or reactivated a canceled account's public quote service.
+A related, same-root-cause bug was found in the same pass:
+`createCheckoutSession`/`getMyBillingInfo`/`createBillingPortalSession`
+trusted a `stripeCustomerId` from the same client-writable metadata, which
+could have let an attacker view or open a Stripe billing portal for an
+arbitrary real customer by forging that one field.
+
+**The fix went through five review passes before landing on the current
+design**, each one finding a real gap the previous pass had either missed
+or explicitly flagged as unresolved:
+1. Moved subscription state from `user_metadata` to `app_metadata`
+   (write-protected to service-role only) — closed the original
+   escalation, but introduced a read-modify-write race in the webhook
+   (`writeSubscriptionState`) that two concurrent Stripe events could
+   exploit to silently overwrite each other's state.
+2. Added a per-user Postgres claim (`stripe_webhook_claims`,
+   `0021_stripe_webhook_claims.sql`) to serialize concurrent webhook
+   writes — found its own release-ownership bug (a stolen claim's
+   original holder could delete the new holder's legitimate claim) and
+   fixed it with a per-claim fencing token.
+3. Found the claim-based fencing check still left a gap: a successful
+   "renew" is a fact about the instant it happened, not a guarantee that
+   holds through the separate Supabase Admin API calls that followed it.
+   Also replaced brittle webhook-event-timestamp comparison with
+   always re-fetching live Stripe truth under the claim, and added
+   durable per-event deduplication with lease-based crash recovery
+   (`stripe_processed_events`, `0022_stripe_processed_events.sql`).
+4. Found `complete_stripe_event`/`fail_stripe_event` had no ownership
+   check at all — a stale, superseded worker could still stamp an
+   event's final status. Fixed with the same lease-token pattern.
+5. **Closed the remaining write-boundary race structurally, not by
+   narrowing it further**: moved authoritative subscription state into
+   its own table, `subscription_state` (`0023_subscription_state.sql`),
+   written only by `write_authoritative_subscription_state` — a single
+   Postgres function that performs the ownership check and the write
+   together, under one row lock held for the whole call, so a worker
+   that has lost its claim structurally cannot write, even if it
+   previously renewed successfully or has a delayed request in flight.
+   `app_metadata` is now kept only as a best-effort, explicitly
+   non-authoritative mirror; nothing reads it for an entitlement
+   decision anywhere in the codebase (confirmed by grep, not assumed).
+
+**Verification, kept honest about what's real vs. simulated**: 110 Vitest
+tests (in-memory simulations of the claim/lease/fencing logic, explicitly
+labeled as such) plus two from-scratch local verification scripts
+(`scripts/pg-concurrency-check.sh`, `scripts/pg-migration-verification.sh`)
+that apply the actual migration files verbatim against a real, disposable,
+local Postgres 17 instance — not a reproduction — and prove the locking/
+fencing/rollback guarantees against a live database engine: 14/14 checks
+passing, including that `anon`/`authenticated` are genuinely denied (not
+just configured) while `service_role` succeeds, that a concurrent session
+measurably blocks on the real row lock (~1.5s), and that a forced
+constraint-violation rollback leaves zero partial state.
+
+**A second, still-open gap found in review, not yet fixed**:
+`scripts/reconcile-subscription-metadata.ts` (the one-time backfill script
+that will populate `subscription_state` for existing real subscribers)
+currently writes with a plain, unconditional upsert — not through the
+claim-fenced atomic function. This means a *future* re-run of the script
+(after the new webhook code is live) could theoretically overwrite a
+subscriber's state with a stale snapshot if a webhook event lands in
+between the script's fetch and its write. The proposed fix (route the
+script's writes through the same `writeSubscriptionState`/claim/re-fetch
+path the webhook uses) is designed and documented but **not implemented**,
+pending approval. **Not a risk to this specific, still-pending initial
+rollout** — production is currently running the old code with nothing else
+writing to `subscription_state` until the new code is actually deployed,
+so the one-time backfill has no concurrent writer to race against; it only
+matters for subsequent re-runs after deployment.
+
+**Current state — nothing live yet**: all of the above is implemented,
+tested, and committed locally (`2cce874`) on `main`, **one commit ahead of
+`origin/main`**. Deliberately not pushed. Migrations `0021`–`0023` have
+**not** been applied to production. The reconciliation backfill has **not**
+been run against real Stripe/Supabase data. A full 4-step rollout runbook
+(apply migrations → dry-run then `--apply` the backfill → a one-time manual
+`subscription_state` insert for Cabos Handyman, whose account was activated
+via the now-closed `user_metadata` mechanism with no real Stripe
+subscription behind it, confirmed live via SQL — `plan: crew`,
+`subscriptionStatus: active`, no Stripe customer id at all → verify) is
+written and ready to execute.
+
+**Paused before executing it**: mid-prep, realized this rollout moment may
+coincide with whether Stripe is actually configured for live mode in
+production (live vs. test secret key, whether the webhook endpoint is
+registered with a live signing secret, whether any customer has ever
+actually paid through Stripe) — a separate, consequential business decision
+that deserves to be made deliberately, not as a side effect of landing this
+security fix. **Next step, not yet taken**: resolve the Stripe live-mode
+question, then (separately) decide when to run the 4-step rollout and push.
+
+---
+
 Last updated: October 13, 2026 — **Self-service password reset shipped,
 `saveLeadLineItems` ownership fix shipped, a real dev-only crash fixed at
 its root cause, a price-sheet display bug fixed, and production email
@@ -1051,3 +1175,162 @@ Recap of the earlier decision: this is the **owner's pocket app** — lead inbox
 17. **Push notification infrastructure** — APNs for iOS, FCM for Android — tied to a "new lead created" event (built in step 9/step 13).
 18. **A path decision**: *Trusted Web Activity* (fastest, wraps the real dashboard as an installable Android app, limited push/offline support) vs. *Flutter* (more capable, full native push/offline — there's an idle Flutter + Supabase scaffold in `resume_builder_pro` from an earlier project that could be the starting shell).
 19. **Play Store logistics** — a Google Play developer account, app icons/screenshots for the listing, and the Privacy Policy from Phase 2.
+
+---
+
+## Future Database Tables — Ideas for Later Review (Not Approved for Implementation)
+
+Added during a read-only review session (2026-10-17), at explicit request, as a
+planning note only. **None of these tables exist, none are approved for
+implementation, and nothing below authorizes writing a migration.** Checked
+against the current schema (`supabase/migrations/0001`–`0023`) and this file
+before writing this section — no existing table or in-progress design already
+covers any of these; nothing proposed here duplicates existing work. Unverified
+assumptions are flagged inline as such, not stated as fact.
+
+### A. `audit_logs` — Application audit trail
+
+**Status**: Future idea; not approved.
+
+**Problem it would solve**: Today, sensitive administrative actions — a
+tenant's own settings changes, a WhatsApp disconnect, a capability added/
+removed, a lead deleted — leave no trail beyond whatever Supabase's own
+platform-level Postgres logs capture (unverified from this repo what those
+retain or for how long). If a business owner disputes an action, or
+suspicious activity needs investigating, there's nothing at the application
+level to check.
+
+**Why a dedicated table might be warranted**: An audit trail needs to survive
+the deletion/modification of the thing it's describing (e.g. a lead that was
+deleted, or a capability that was removed) — bolting "last changed by/when"
+columns onto each existing table can't represent that, and can't represent a
+sequence of changes to the same row over time the way an append-only log can.
+
+**Likely ownership/access-control requirements**: Tenant-scoped (each row tied
+to the acting tenant), but likely **not** readable by the tenant through
+ordinary RLS the way `leads`/`price_sheet_items` are — an audit log a bad
+actor could edit or read freely isn't much of an audit log. Most likely
+service-role-write-only, with either no direct read path yet or a narrowly
+scoped one.
+
+**Privacy/retention/deletion considerations**: Must not log passwords,
+access tokens, full message bodies, or more personal information than the
+investigation purpose actually needs — a log entry for "price sheet edited"
+needs the fact and timestamp, not necessarily a full before/after dump of
+customer-adjacent data. Retention period and whether/how old entries are
+purged need an explicit decision, not an unbounded table.
+
+**Prerequisites and decisions needed before implementation**: Which events
+actually need logging (this should come from a real list of security-
+sensitive actions, not "everything"); whether append-only/tamper-evidence is
+required (e.g. no `UPDATE`/`DELETE` grant on the table at all, enforced the
+same `revoke`-based way the zero-access tables in this schema already use);
+who can read entries and through what interface; retention/deletion policy.
+
+### B. `whatsapp_consents` — consent-record structure
+
+**Status**: Future idea; not approved.
+
+**Problem it would solve**: The current WhatsApp Embedded Signup connection
+flow (`ConnectWhatsAppMeta.tsx`) has a required checkbox, but — per a prior
+review this engagement — it's a UX walkthrough acknowledgment ("I've read
+this and understand what to expect"), not a data-processing consent record:
+it never names what's processed, never links the Privacy Policy, and is
+never persisted anywhere. If the product's eventual consent design needs a
+durable record of what a tenant agreed to and when, nothing today stores
+that.
+
+**Why a dedicated table might be warranted**: Consent needs to be
+attributable to a specific version of whatever notice was shown — a tenant's
+current `tenants` row can't represent "agreed to v1 of the notice in March,
+v2 in September" without becoming its own append-only log by another name.
+
+**Likely ownership/access-control requirements**: Tenant/user-scoped,
+written server-side only (the client should never be able to assert its own
+consent record), readable by the tenant for their own records.
+
+**Privacy/retention/deletion considerations**: Record only what's needed —
+who, what was agreed to, which notice version, when — not excess personal
+data collected "just in case." Needs an explicit answer for consent
+withdrawal/changed-notice handling before the schema is finalized, not
+after.
+
+**Prerequisites and decisions needed before implementation**: First and
+most important — decide exactly who is consenting, to what, and which
+specific actions actually require a separate consent record versus being
+covered by the general Privacy Policy. **A checkbox alone does not resolve
+this** (this is the same finding the prior review already made about the
+current flow) — this table doesn't fix that gap by existing; the consent
+*design* has to be settled first, and the table only needs to durably record
+whatever that design turns out to require.
+
+### C. `data_deletion_requests` — deletion-workflow structure
+
+**Status**: Future idea; not approved.
+
+**Problem it would solve**: Today, account/data deletion is entirely manual
+— the Privacy Policy says "contact us using the details below and we'll
+remove it," with no code path backing that promise (confirmed by a prior
+review this engagement — `grep` for any deletion function returns nothing).
+If a future self-service deletion flow needs to track a request across
+multiple tables and possibly external providers (Stripe, Twilio, Meta) with
+retries and verification, a single `DELETE` can't represent that — but
+**this table is not needed just to add a delete button**; it's only
+justified if the workflow genuinely spans multiple systems asynchronously.
+
+**Why a dedicated table might be warranted**: Deletion that fans out across
+several data stores and third-party providers needs somewhere to track "what
+has been deleted so far, what's still pending, did provider X confirm" —
+state a simple synchronous delete-on-request doesn't need to persist at all.
+
+**Likely ownership/access-control requirements**: Scoped to the requesting
+user/tenant, written by the authenticated session initiating it (or an
+admin acting on a support request), read access limited to the
+requester and whatever internal process executes the deletion.
+
+**Privacy/retention/deletion considerations**: Genuinely subtle — the table
+exists to prove deletion happened, but storing more personal data than
+necessary "to prove what was deleted" undermines the entire point. Minimal
+evidence only (e.g. an id and a timestamp, not a copy of the deleted data).
+
+**Prerequisites and decisions needed before implementation**: First confirm
+whether this is actually needed — Supabase itself, or a given provider, may
+already offer an adequate built-in mechanism for parts of this (unverified
+from this repo either way). Authorization model, retry/completion
+verification, and retention of the minimal proof-of-deletion record all need
+deciding before any schema is written.
+
+### D. `whatsapp_opt_outs` — message-eligibility tracking
+
+**Status**: Future idea; not approved.
+
+**Problem it would solve**: A prior review this engagement found that
+neither the AI conversation loop (`whatsapp-conversation-server.ts`) nor the
+operator-initiated reply path (`lead-reply-server.ts`) has any concept of "this
+phone number asked to stop" — there is no STOP-keyword handling or opt-out
+storage anywhere in the codebase today (confirmed by `grep`, not assumed).
+This is listed separately from candidate B above because it's a distinct
+concept — an opt-**out** a customer can trigger mid-conversation, not a
+business owner's upfront opt-**in** consent record.
+
+**Why a dedicated table might be warranted**: An opt-out needs to be checked
+from two independent send paths (AI-generated and operator-initiated) before
+every outbound message, and needs to persist independently of any single
+lead or conversation — a customer's opt-out should likely survive past the
+one lead where they sent it.
+
+**Likely ownership/access-control requirements**: Keyed by (tenant, phone
+number), checked server-side before any outbound send in either path;
+unlikely to need client/dashboard write access at all — the only writer
+should be the inbound-message handler recognizing an opt-out keyword, and
+possibly an owner-facing read view.
+
+**Privacy/retention/deletion considerations**: Minimal by nature — phone
+number, tenant, timestamp is plausibly sufficient; no need to retain message
+content to honor an opt-out.
+
+**Prerequisites and decisions needed before implementation**: Which keywords
+count as an opt-out (and whether that needs to be configurable per
+jurisdiction/language); how opt-back-in is handled, if at all; whether this
+should be built together with the consent-record work in candidate B or
+independently, since they're related but answer different questions.
