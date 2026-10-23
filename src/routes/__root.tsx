@@ -96,6 +96,10 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       // jobitready.com — not temporary, keep this indefinitely (Meta
       // periodically re-checks it).
       { name: "facebook-domain-verification", content: "mmcl7wmuxmq3pcw3q1q7qui94sof79" },
+      // Google Search Console domain-ownership verification for
+      // jobitready.com — same reasoning as the Meta tag above, keep
+      // indefinitely.
+      { name: "google-site-verification", content: "_D8was2GSrdqJp1hMiQ16FsFWwGC2H8dbzPh-frCbdA" },
     ],
     links: [
       { rel: "stylesheet", href: appCss },
