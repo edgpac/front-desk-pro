@@ -17,14 +17,14 @@ const SOFTWARE_SCHEMA = {
     {
       "@type": "Offer",
       name: "Solo",
-      price: "8",
+      price: "19.99",
       priceCurrency: "USD",
       description: "One person, one truck.",
     },
     {
       "@type": "Offer",
       name: "Crew",
-      price: "19",
+      price: "39.99",
       priceCurrency: "USD",
       description: "Two to five techs.",
     },

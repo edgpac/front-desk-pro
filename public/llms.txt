@@ -1,6 +1,6 @@
 # Job It Ready
 
-> Job It Ready is an AI-powered front desk for independent trades businesses — plumbers, electricians, HVAC, and appliance repair. A customer photographs a problem, Job It Ready prices it against the business's own price sheet using Claude AI, and the customer books directly onto the business's calendar. No receptionist, no missed leads, no waiting for a callback. Plans start at $19/month for a solo operator, $39/month for a crew of two to five, with custom pricing for multi-truck, multi-trade shops.
+> Job It Ready is an AI-powered front desk for independent trades businesses — plumbers, electricians, HVAC, and appliance repair. A customer photographs a problem, Job It Ready prices it against the business's own price sheet using Claude AI, and the customer books directly onto the business's calendar. No receptionist, no missed leads, no waiting for a callback. Two plans: Solo at $19.99/month (one person, one truck) and Crew at $39.99/month (two to five techs).
 
 ## Access
 
@@ -12,7 +12,7 @@
 
 - [Home](https://www.jobitready.com/): How the product works — photo in, AI-priced estimate out, booked onto the business's own calendar. The problem it solves (missed leads, slow manual quoting) and who it's for.
 - [Live demo](https://www.jobitready.com/demo): Try the actual customer-facing quote flow — a real photo gets a real Claude-generated diagnosis and price, no account needed.
-- [Pricing](https://www.jobitready.com/pricing): Solo ($19/mo, one person one truck), Crew ($39/mo, two to five techs), and Shop (custom, multi-truck/multi-trade) plans with a full feature comparison.
+- [Pricing](https://www.jobitready.com/pricing): Solo ($19.99/mo, one person one truck) and Crew ($39.99/mo, two to five techs) plans with a full feature comparison.
 
 ## What Job It Ready Does
 
