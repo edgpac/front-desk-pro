@@ -23,6 +23,7 @@ import { lineItemAmount, money } from "@/lib/mock-data";
 import {
   evaluateInboundInteraction,
   evaluateOutboundInteraction,
+  hasPriorInboundInteraction,
   claimLoopNotice,
   releaseLoopNoticeClaim,
   markLoopNoticeSent,
@@ -77,6 +78,20 @@ const LOOP_NOTICE_MARK_SENT_RETRY_DELAY_MS = 200;
 // handleInboundWhatsAppMessage for an already-tripped phone, so a notice
 // left 'pending' after a crash or timeout gets retried the next time any
 // message arrives, per the documented at-least-once guarantee.
+// flag_type values that mean the customer was ALREADY sent a real,
+// specific message about this exact situation needing a human
+// (localizedPassAlongMessage for outside_service_scope,
+// localizedRecoveryMessage for needs_human_review — both sent in the same
+// breath as the flag being set). Production regression: a customer got
+// "I'll pass your message along to our team." immediately followed, on
+// their very next message, by the loop guard's own generic "We've paused
+// automated replies... our team will follow up with you directly." — true
+// but redundant, since they were just told exactly that. Suppressing the
+// SECOND message doesn't weaken the guard itself: the trip state (and the
+// future-message pause it causes) lives entirely in whatsapp_loop_guards,
+// untouched by this — only the repeat customer-facing text is skipped.
+const ALREADY_HANDED_OFF_FLAG_TYPES = new Set(["outside_service_scope", "needs_human_review"]);
+
 export async function handleLoopGuardPause(params: {
   admin: ReturnType<typeof getAdminClient>;
   tenant: InboundWhatsAppTenant;
@@ -86,7 +101,35 @@ export async function handleLoopGuardPause(params: {
 }): Promise<void> {
   const { admin, tenant, fromPhone, adapter, leadId } = params;
 
-  if (leadId) {
+  // Resolve which lead (if any) this pause concerns and its CURRENT flag —
+  // leadId is often null here (the top-of-function inbound-trip-check call
+  // site never looks one up), so a fresh, 48-hour-windowed lookup by
+  // (tenant, phone) is the only way to see it, same scope as every other
+  // open-lead lookup in this file.
+  let relevantLeadId = leadId;
+  let currentFlagType: string | null = null;
+  if (relevantLeadId) {
+    const { data } = await admin.from("leads").select("flag_type").eq("id", relevantLeadId).maybeSingle();
+    currentFlagType = (data?.flag_type as string | undefined) ?? null;
+  } else {
+    const { data } = await admin
+      .from("leads")
+      .select("id, flag_type")
+      .eq("tenant_id", tenant.id)
+      .eq("phone", fromPhone)
+      .gte("created_at", new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString())
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    relevantLeadId = (data?.id as string | undefined) ?? null;
+    currentFlagType = (data?.flag_type as string | undefined) ?? null;
+  }
+
+  if (currentFlagType != null && ALREADY_HANDED_OFF_FLAG_TYPES.has(currentFlagType)) {
+    return;
+  }
+
+  if (relevantLeadId) {
     const { error } = await admin
       .from("leads")
       .update({
@@ -95,11 +138,11 @@ export async function handleLoopGuardPause(params: {
         flag_reason:
           "Automated replies paused — repeated or high-volume WhatsApp exchange detected.",
       })
-      .eq("id", leadId)
+      .eq("id", relevantLeadId)
       .is("flag_type", null);
     if (error) {
       console.error(
-        `Could not flag lead ${leadId} as loop_suspected (non-fatal, pause still in effect):`,
+        `Could not flag lead ${relevantLeadId} as loop_suspected (non-fatal, pause still in effect):`,
         error.message,
       );
     }
@@ -745,6 +788,27 @@ export async function handleInboundWhatsAppMessage(params: {
   const optOutState = await handleOptOutState({ admin, tenant, fromPhone, body, adapter });
   if (optOutState.stop) return;
 
+  // Captured BEFORE evaluateInboundInteraction records this message's own
+  // event below — see hasPriorInboundInteraction's own comment for why
+  // this can't be derived from lead existence alone (the pre-lead
+  // thin-description greeting path never creates one, so several short
+  // messages in a row would otherwise all look like a first contact).
+  // Read failures fail safe toward "assume prior contact" (false), the
+  // same direction as every other fail-safe default in this file that
+  // would otherwise risk an extra, unwanted greeting rather than a missing
+  // one — the opposite of the loop guard's own fail-closed posture below,
+  // which is protecting against unbounded automated cost, not a cosmetic
+  // repeat.
+  let hadPriorInboundInteraction = true;
+  try {
+    hadPriorInboundInteraction = await hasPriorInboundInteraction(admin, tenant.id, fromPhone);
+  } catch (err) {
+    console.error(
+      `Could not check prior WhatsApp interactions for tenant ${tenant.id}, phone ${fromPhone} (assuming prior contact, no extra greeting risked):`,
+      err,
+    );
+  }
+
   // Every inbound message is recorded as evidence AND evaluated in one
   // atomic call — this is both the "is this phone already paused" fast
   // path and the duplicate-content/volume detection step; neither AI nor
@@ -992,7 +1056,8 @@ export async function handleInboundWhatsAppMessage(params: {
       }
 
       if (clarifyResult.outOfScope) {
-        const passAlongMessage = localizedPassAlongMessage(language);
+        const acknowledgmentPrefix = clarifyResult.acknowledgment ? `${clarifyResult.acknowledgment} ` : "";
+        const passAlongMessage = `${acknowledgmentPrefix}${localizedPassAlongMessage(language)}`;
         // Flag update and owner notification happen regardless of guard
         // state — if automation is paused, the owner needs to know even
         // more, not less, so they can follow up manually. Only the
@@ -1317,15 +1382,21 @@ export async function handleInboundWhatsAppMessage(params: {
   // a photo regardless of what the customer already said, which reads as a
   // broken bot repeating itself when the customer has, in fact, described
   // the job in enough detail.
-  // Reuses the exact 48-hour, phone+tenant-scoped lookup already fetched
-  // above as openLead — the same signal decideLeadRoute is built around —
-  // rather than a separate all-time check. No lead in that window means a
-  // genuinely new conversation, even if this same phone has contacted this
-  // tenant before (e.g. weeks ago, well outside the window). Computed once
-  // here and threaded into handleFreshQuote below so both the
-  // thin-description short-circuit and the full quote/clarification paths
-  // agree on one answer.
-  const isFirstContact = openLead == null;
+  // Combines two signals, both scoped to the same 48-hour conversation
+  // window: no open lead (the signal decideLeadRoute is built around —
+  // still needed, since a flagged lead within the window correctly
+  // suppresses re-greeting too), AND no prior inbound interaction event
+  // recorded for this phone at all (closes the real gap lead-existence
+  // alone misses — see hasPriorInboundInteraction's own comment: the
+  // thin-description short-circuit below never creates a lead, so several
+  // short messages in a row would otherwise each look like a first
+  // contact). No activity in that window means a genuinely new
+  // conversation, even if this same phone has contacted this tenant before
+  // (e.g. weeks ago, well outside the window). Computed once here and
+  // threaded into handleFreshQuote below so both the thin-description
+  // short-circuit and the full quote/clarification paths agree on one
+  // answer.
+  const isFirstContact = openLead == null && !hadPriorInboundInteraction;
 
   const hasSubstantialDescription = body.trim().length > 10;
   if (!mediaRef && !hasSubstantialDescription) {
@@ -1872,7 +1943,8 @@ async function handleFreshQuote(params: {
 
   if (result.outOfScope) {
     const openingProblem = body || NO_DESCRIPTION_PLACEHOLDER;
-    const passAlongMessage = `${firstContactGreeting}${localizedPassAlongMessage(language)}`;
+    const acknowledgmentPrefix = result.acknowledgment ? `${result.acknowledgment} ` : "";
+    const passAlongMessage = `${firstContactGreeting}${acknowledgmentPrefix}${localizedPassAlongMessage(language)}`;
     const { id: leadId } = await createFlaggedLead({
       data: {
         tenantSlug: tenant.slug,

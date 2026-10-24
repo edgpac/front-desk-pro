@@ -58,6 +58,7 @@ import {
   getAdminClient,
   createLead,
   createFlaggedLead,
+  createClarifyingLead,
   finalizeLeadWithQuote,
 } from "@/lib/public-lead-server";
 import {
@@ -176,6 +177,12 @@ function fakeLoopGuardAdmin(config: {
   evaluateError?: { message: string };
   lead?: FakeLeadState;
   guard?: FakeGuardState;
+  // Only used by the leadId: null path (handleLoopGuardPause's own
+  // by-phone lookup, matching the top-of-handleInboundWhatsAppMessage call
+  // site). Defaults to "no lead found" — the overwhelming majority of
+  // existing tests pass a real leadId directly and never exercise this
+  // lookup at all.
+  leadForPhoneLookup?: { id: string; flag_type: string | null } | null;
   // How many of the FIRST mark-sent attempts fail (RPC error, not a
   // throw — matching markLoopNoticeSent's own never-throws contract)
   // before one finally succeeds. Infinity = never succeeds, for testing
@@ -256,6 +263,29 @@ function fakeLoopGuardAdmin(config: {
       }
       if (table === "leads") {
         return {
+          // Covers both read shapes handleLoopGuardPause now uses: the
+          // leadId-provided path (.select("flag_type").eq("id", ...)) and
+          // the leadId: null, by-phone lookup path (.select("id,
+          // flag_type").eq(...).eq(...).gte(...).order(...).limit(...)) —
+          // both resolve through the same chainable object, terminating
+          // at maybeSingle(), same pattern as chainableRead elsewhere in
+          // this file.
+          select: () => {
+            const chain: Record<string, unknown> = {
+              eq: () => chain,
+              gte: () => chain,
+              order: () => chain,
+              limit: () => chain,
+              maybeSingle: async () => ({
+                data:
+                  config.leadForPhoneLookup !== undefined
+                    ? config.leadForPhoneLookup
+                    : { flag_type: leadState.flag_type },
+                error: null,
+              }),
+            };
+            return chain;
+          },
           update: () => ({
             eq: () => ({
               // Simulates `.is("flag_type", null)` — only "applies" (and
@@ -393,8 +423,60 @@ describe("handleLoopGuardPause", () => {
     expect(calls.leadFlagUpdateApplied).toBe(1);
   });
 
-  it("never overwrites an unrelated existing flag", async () => {
+  it("never overwrites an unrelated existing flag, and the pause notice still fires for a flag that doesn't mean 'already handed off'", async () => {
+    // pending_negotiated_price — not one of the "customer was already sent
+    // a real handoff message" flags (see ALREADY_HANDED_OFF_FLAG_TYPES),
+    // so suppression must not apply here. needs_human_review is covered by
+    // its own dedicated suppression test below instead — that flag DOES
+    // suppress the notice now, which this test previously (incorrectly,
+    // per the production regression that prompted the fix) asserted it
+    // didn't.
     const { admin, leadState, calls } = fakeLoopGuardAdmin({
+      lead: { flag_type: "pending_negotiated_price" },
+      guard: { notice_status: "pending" },
+    });
+    const { adapter, sent } = fakeAdapter();
+    await handleLoopGuardPause({
+      admin,
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      adapter,
+      leadId: "lead-1",
+    });
+    expect(leadState.flag_type).toBe("pending_negotiated_price"); // untouched
+    expect(calls.leadFlagUpdateApplied).toBe(0); // the WHERE clause correctly prevented it
+    // The phone-level pause notice still fires regardless — functional
+    // safety doesn't depend on the lead-level label succeeding.
+    expect(sent).toEqual([{ to: TEST_PHONE, body: LOOP_PAUSE_MESSAGE }]);
+  });
+
+  // PRODUCTION REGRESSION: a real conversation showed "I'll pass your
+  // message along to our team." (outOfScope handoff) immediately followed,
+  // on the customer's very next message, by this same generic pause
+  // notice — redundant, since they were just told exactly that. The trip
+  // state itself (and the resulting pause on future automated replies)
+  // lives entirely in whatsapp_loop_guards, untouched by this — only the
+  // repeat customer-facing text is suppressed.
+  it("suppresses the pause notice when the lead was already flagged outside_service_scope (handoff already communicated)", async () => {
+    const { admin, calls } = fakeLoopGuardAdmin({
+      lead: { flag_type: "outside_service_scope" },
+      guard: { notice_status: "pending" },
+    });
+    const { adapter, sent } = fakeAdapter();
+    await handleLoopGuardPause({
+      admin,
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      adapter,
+      leadId: "lead-1",
+    });
+    expect(sent).toEqual([]);
+    expect(calls.claimAttempted).toBe(0); // never even attempts to claim the notice slot
+    expect(calls.markSent).toBe(0);
+  });
+
+  it("suppresses the pause notice when the lead was already flagged needs_human_review (handoff already communicated)", async () => {
+    const { admin, calls } = fakeLoopGuardAdmin({
       lead: { flag_type: "needs_human_review" },
       guard: { notice_status: "pending" },
     });
@@ -406,11 +488,47 @@ describe("handleLoopGuardPause", () => {
       adapter,
       leadId: "lead-1",
     });
-    expect(leadState.flag_type).toBe("needs_human_review"); // untouched
-    expect(calls.leadFlagUpdateApplied).toBe(0); // the WHERE clause correctly prevented it
-    // The phone-level pause notice still fires regardless — functional
-    // safety doesn't depend on the lead-level label succeeding.
+    expect(sent).toEqual([]);
+    expect(calls.claimAttempted).toBe(0);
+    expect(calls.markSent).toBe(0);
+  });
+
+  // Exercises the leadId: null path specifically (the real top-of-
+  // handleInboundWhatsAppMessage call site, which never has a lead id in
+  // hand) — confirms the by-phone lookup correctly finds the open lead and
+  // still suppresses when it's already flagged outside_service_scope.
+  it("suppresses the pause notice via the by-phone lookup when called with leadId: null and an open, already-flagged lead exists", async () => {
+    const { admin, calls } = fakeLoopGuardAdmin({
+      guard: { notice_status: "pending" },
+      leadForPhoneLookup: { id: "lead-found-by-phone", flag_type: "outside_service_scope" },
+    });
+    const { adapter, sent } = fakeAdapter();
+    await handleLoopGuardPause({
+      admin,
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      adapter,
+      leadId: null,
+    });
+    expect(sent).toEqual([]);
+    expect(calls.claimAttempted).toBe(0);
+  });
+
+  it("still sends the pause notice via the by-phone lookup when called with leadId: null and no open lead exists at all", async () => {
+    const { admin, calls } = fakeLoopGuardAdmin({
+      guard: { notice_status: "pending" },
+      leadForPhoneLookup: null,
+    });
+    const { adapter, sent } = fakeAdapter();
+    await handleLoopGuardPause({
+      admin,
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      adapter,
+      leadId: null,
+    });
     expect(sent).toEqual([{ to: TEST_PHONE, body: LOOP_PAUSE_MESSAGE }]);
+    expect(calls.claimAttempted).toBe(1);
   });
 
   it("sends the notice once when pending, and marks it sent", async () => {
@@ -752,6 +870,13 @@ function fakeInboundAdmin(config: {
       if (table === "whatsapp_opt_outs") {
         return { select: () => chainableRead({ data: null, error: null }) };
       }
+      if (table === "whatsapp_interaction_events") {
+        // Value is irrelevant here — every test using this fixture always
+        // configures a real openLead, so isFirstContact is already false
+        // from that alone (openLead == null && ...). Present only so the
+        // query doesn't throw "unexpected table".
+        return { select: () => chainableRead({ data: { id: "evt-1" }, error: null }) };
+      }
       if (table === "leads") {
         return {
           select: () => chainableRead({ data: { ...leadState }, error: null }),
@@ -991,6 +1116,93 @@ describe("handleInboundWhatsAppMessage — a lost lead-slot claim must not silen
     expect(calls.leadUpdateApplied).toBe(1);
     expect(calls.lastLeadUpdatePatch?.["flag_type"]).toBe("outside_service_scope");
     expect(calls.releaseAttempts).toBe(1); // claim released after the callback completes
+  });
+
+  // PRODUCTION REGRESSION: a real customer said "Not cooling and needs a
+  // clean" about an air conditioner the business doesn't service. The
+  // out-of-scope decision itself was correct (confirmed against the real
+  // tenant's price sheet — no AC/HVAC item exists), but the handoff reply
+  // was a cold, generic "I'll pass your message along to our team." with
+  // no acknowledgment of what was actually said. getQuoteEstimate now
+  // returns an optional "acknowledgment" alongside outOfScope: true; this
+  // confirms it's actually used when present, in the customer's own
+  // detected language, and that its absence still falls back to the exact
+  // same message as before (no regression for a model response that omits
+  // it).
+  it('out-of-scope handoff includes the AI-generated "acknowledgment" of what the customer described, when present', async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: {
+        id: "lead-ac",
+        customer_name: "Susana",
+        photo_url: null,
+        problem: "air conditioner question",
+        confidence: null,
+        diagnosis: null,
+        flag_type: null,
+      },
+      leadSlotClaimSucceeds: true,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(getQuoteEstimate).mockClear();
+    vi.mocked(getQuoteEstimate).mockResolvedValue({
+      needsClarification: false,
+      outOfScope: true,
+      acknowledgment: "Got it — AC maintenance and cleaning.",
+    } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "Not cooling and needs a clean",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toEqual([
+      {
+        to: TEST_PHONE,
+        body: "Got it — AC maintenance and cleaning. I'll pass your message along to our team.",
+      },
+    ]);
+  });
+
+  it("out-of-scope handoff falls back to the plain hand-off message when the model omits acknowledgment", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: {
+        id: "lead-ac-2",
+        customer_name: "Susana",
+        photo_url: null,
+        problem: "air conditioner question",
+        confidence: null,
+        diagnosis: null,
+        flag_type: null,
+      },
+      leadSlotClaimSucceeds: true,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(getQuoteEstimate).mockClear();
+    vi.mocked(getQuoteEstimate).mockResolvedValue({
+      needsClarification: false,
+      outOfScope: true,
+    } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "Not cooling and needs a clean",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toEqual([{ to: TEST_PHONE, body: "I'll pass your message along to our team." }]);
   });
 
   it("quoted_follow_up/sameJob: claim WON — notification fires exactly once (not duplicated now that it lives outside the claimed callback)", async () => {
@@ -1804,7 +2016,7 @@ function fakeOptOutAdmin(config: { row?: FakeOptOutRow } = {}) {
 // text. Also covers the related evidence-language defect: the closing
 // line claimed "based on the photos" even on a text-only conversation that
 // never sent one.
-function fakeFreshQuoteAdmin() {
+function fakeFreshQuoteAdmin(config: { priorInboundInteraction?: boolean } = {}) {
   const calls = {
     leadMessageInserts: [] as Array<{ lead_id: string; role: string; body: string }>,
   };
@@ -1860,6 +2072,24 @@ function fakeFreshQuoteAdmin() {
             return { error: null };
           },
         };
+      }
+      if (table === "whatsapp_interaction_events") {
+        // Defaults to "no prior interaction" — matches this fixture's own
+        // "genuinely fresh, first-ever conversation" intent. A test can
+        // opt into priorInboundInteraction: true to simulate the real gap
+        // this signal exists to close: a phone that already sent a thin,
+        // lead-less message (so "leads" above still correctly returns no
+        // open lead) but has messaged before within the window.
+        const chain: Record<string, unknown> = {
+          eq: () => chain,
+          gte: () => chain,
+          limit: () => chain,
+          maybeSingle: async () => ({
+            data: config.priorInboundInteraction ? { id: "evt-1" } : null,
+            error: null,
+          }),
+        };
+        return { select: () => chain };
       }
       throw new Error(`fakeFreshQuoteAdmin: unexpected table "${table}"`);
     },
@@ -2280,6 +2510,110 @@ describe("WhatsApp first-contact greeting", () => {
     expect(sent).toHaveLength(1);
     expect(sent[0]!.body.startsWith("Hi! 👋 ")).toBe(true);
     expect(sent[0]!.body).toContain(PRICED_RESULT.diagnosis);
+  });
+
+  // PRODUCTION REGRESSION: a real WhatsApp conversation showed "Hi! 👋"
+  // twice — once on the customer's first (thin, e.g. "Hi") message, and
+  // AGAIN on their very next message, a substantial one that triggered a
+  // real clarifying question. Root cause: the thin-description reply never
+  // creates a lead, so a second message that arrives before any lead
+  // exists still sees openLead == null and was treated as a first contact
+  // all over again. isFirstContact must also check whatsapp_interaction_
+  // events directly (hasPriorInboundInteraction), not just lead existence.
+  it("does NOT re-greet a substantial second message when the first (thin) message already got a reply but created no lead", async () => {
+    const { admin } = fakeFreshQuoteAdmin({ priorInboundInteraction: true });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(getQuoteEstimate).mockResolvedValue({
+      needsClarification: true,
+      questions: [{ question: "What's happening with the air conditioner?", options: ["Not cooling", "Noisy", "Other"] }],
+    } as any);
+    vi.mocked(createClarifyingLead).mockResolvedValue({ id: "new-clarifying-lead-1" } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "one question do you do maintenance to air conditioner",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body).not.toContain("Hi! 👋");
+    expect(sent[0]!.body).not.toContain("Hello!");
+    expect(sent[0]!.body).toContain("What's happening with the air conditioner?");
+  });
+
+  // PRODUCTION REGRESSION (companion to the one above, same screenshot):
+  // the clarifying question read "...is it not cooling, making noise,
+  // leaking water, or something else?" immediately followed by the exact
+  // same choices again as "(Not cooling / blowing warm air / Making
+  // unusual noise / Leaking water / Not turning on at all / Other issue)".
+  // The real fix is a prompt change (buildPrompt now tells the model to
+  // keep "question" a plain question with no inline example list, since
+  // "options" are shown separately) — not testable at this level. This
+  // confirms the orchestration code's own part (appending optionsText)
+  // produces a clean, single listing when the model does follow that
+  // instruction — i.e. the code never introduces duplication of its own on
+  // top of a well-formed model response.
+  it("a clean clarifying question (no inline example list) composes with its options exactly once, no duplicate listing", async () => {
+    // priorInboundInteraction: true isolates the question/options
+    // composition from the (separately-tested) greeting prefix.
+    const { admin } = fakeFreshQuoteAdmin({ priorInboundInteraction: true });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(getQuoteEstimate).mockResolvedValue({
+      needsClarification: true,
+      questions: [
+        {
+          question: "What's happening with it?",
+          options: ["Not cooling", "Making noise", "Leaking water", "Other"],
+        },
+      ],
+    } as any);
+    vi.mocked(createClarifyingLead).mockResolvedValue({ id: "new-clarifying-lead-2" } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "do you do maintenance on air conditioners",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(1);
+    const body = sent[0]!.body;
+    expect(body).toBe("What's happening with it?\n(Not cooling / Making noise / Leaking water / Other)");
+    // Each option appears exactly once — never restated inside the
+    // question sentence AND inside the parenthetical list.
+    expect(body.match(/Not cooling/g)?.length).toBe(1);
+    expect(body.match(/Making noise/g)?.length).toBe(1);
+  });
+
+  it("DOES greet a thin message that's genuinely this phone's first-ever contact (no prior interaction recorded)", async () => {
+    const { admin } = fakeFreshQuoteAdmin({ priorInboundInteraction: false });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "Hi",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body.startsWith("Hi! 👋 ")).toBe(true);
   });
 
   it("customer sends just a simple greeting (English, thin description): first reply greets once, not twice", async () => {

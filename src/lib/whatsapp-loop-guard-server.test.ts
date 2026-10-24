@@ -12,6 +12,7 @@ import {
   markLoopNoticeSent,
   resumeLoopGuardState,
   LoopGuardCheckFailed,
+  hasPriorInboundInteraction,
 } from "./whatsapp-loop-guard-server";
 
 describe("computeFactSignature — priced", () => {
@@ -323,5 +324,80 @@ describe("claimLoopNotice / releaseLoopNoticeClaim / markLoopNoticeSent / resume
     await expect(resumeLoopGuardState(admin, "tenant-1", "+15551234567", "operator_reply")).resolves.toBe(
       false,
     );
+  });
+});
+
+// Records the exact table/select/eq/gte/limit calls hasPriorInboundInteraction
+// makes, so the query SHAPE itself — not just a mocked true/false return —
+// is a provable assertion. This is the signal whatsapp-conversation-server.ts
+// combines with open-lead existence to compute isFirstContact; a wrong
+// column, a wrong direction filter, or a window wider/narrower than 48
+// hours would silently change who gets greeted without any test catching
+// it if only the return value were checked.
+function fakeInteractionEventsAdmin(row: { id: string } | null) {
+  const calls = {
+    table: "",
+    selectCols: "",
+    eqCalls: [] as Array<[string, unknown]>,
+    gte: null as [string, unknown] | null,
+    limit: null as number | null,
+  };
+  const admin = {
+    from: (table: string) => {
+      calls.table = table;
+      return {
+        select: (cols: string) => {
+          calls.selectCols = cols;
+          const chain = {
+            eq: (col: string, val: unknown) => {
+              calls.eqCalls.push([col, val]);
+              return chain;
+            },
+            gte: (col: string, val: unknown) => {
+              calls.gte = [col, val];
+              return chain;
+            },
+            limit: (n: number) => {
+              calls.limit = n;
+              return chain;
+            },
+            maybeSingle: async () => ({ data: row, error: null }),
+          };
+          return chain;
+        },
+      };
+    },
+  } as unknown as SupabaseClient;
+  return { admin, calls };
+}
+
+describe("hasPriorInboundInteraction", () => {
+  it("queries whatsapp_interaction_events scoped to this exact tenant+phone, inbound direction only, within a 48-hour window, limited to 1 row", async () => {
+    const { admin, calls } = fakeInteractionEventsAdmin(null);
+    await hasPriorInboundInteraction(admin, "tenant-1", "+15551234567");
+
+    expect(calls.table).toBe("whatsapp_interaction_events");
+    expect(calls.eqCalls).toEqual([
+      ["tenant_id", "tenant-1"],
+      ["phone", "+15551234567"],
+      ["direction", "inbound"],
+    ]);
+    expect(calls.gte?.[0]).toBe("occurred_at");
+    // Within a few seconds of exactly 48 hours ago — not exactly equal,
+    // since real time ticks between the call and this assertion.
+    const gteMs = new Date(calls.gte![1] as string).getTime();
+    const expectedMs = Date.now() - 48 * 60 * 60 * 1000;
+    expect(Math.abs(gteMs - expectedMs)).toBeLessThan(5000);
+    expect(calls.limit).toBe(1);
+  });
+
+  it("returns true when a prior inbound event exists in the window", async () => {
+    const { admin } = fakeInteractionEventsAdmin({ id: "evt-1" });
+    expect(await hasPriorInboundInteraction(admin, "tenant-1", "+15551234567")).toBe(true);
+  });
+
+  it("returns false when no prior inbound event exists in the window", async () => {
+    const { admin } = fakeInteractionEventsAdmin(null);
+    expect(await hasPriorInboundInteraction(admin, "tenant-1", "+15551234567")).toBe(false);
   });
 });

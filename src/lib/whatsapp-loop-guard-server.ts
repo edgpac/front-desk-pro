@@ -167,6 +167,36 @@ export async function evaluateInboundInteraction(
   return recordInteraction(admin, tenantId, phone, "inbound", hash, input.providerMessageId ?? null, input.leadId);
 }
 
+// Durable, lead-independent signal for "has this phone already messaged
+// this tenant within the current 48-hour conversation window" — reads
+// whatsapp_interaction_events directly rather than inferring it from
+// leads. This closes a real gap: the pre-lead thin-description greeting
+// path (whatsapp-conversation-server.ts) replies and returns without ever
+// creating a lead, so a phone can send several short messages in a row —
+// each one still correctly recorded here as its own inbound event (see
+// 0024_whatsapp_loop_guards.sql's own comment: "an inbound message
+// recorded before any lead exists yet... has no lead to attach to") —
+// while a lead-existence-only check would see every one of them as a
+// first contact and re-greet each time. MUST be called before
+// evaluateInboundInteraction records the current message's own event, or
+// it will see that row and always return true.
+export async function hasPriorInboundInteraction(
+  admin: AdminClient,
+  tenantId: string,
+  phone: string,
+): Promise<boolean> {
+  const { data } = await admin
+    .from("whatsapp_interaction_events")
+    .select("id")
+    .eq("tenant_id", tenantId)
+    .eq("phone", phone)
+    .eq("direction", "inbound")
+    .gte("occurred_at", new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString())
+    .limit(1)
+    .maybeSingle();
+  return data != null;
+}
+
 // Called from sendGuardedReply (whatsapp-conversation-server.ts) for every
 // single automated outbound send in this codebase — see that file's own
 // comment for the full list of call sites this now covers.

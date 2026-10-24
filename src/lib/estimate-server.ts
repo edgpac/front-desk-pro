@@ -119,7 +119,16 @@ export type QuoteResult =
   // price sheet is the sole source of truth for what this business charges,
   // so when it doesn't apply, the AI defers to a human instead of guessing
   // a number. See ROADMAP.md's flagged-leads slice.
-  | { needsClarification: false; outOfScope: true }
+  | {
+      needsClarification: false;
+      outOfScope: true;
+      // Short, natural acknowledgment of what the customer actually
+      // described — never a price, availability claim, or appointment
+      // confirmation (see buildPrompt's own instruction for this field).
+      // Optional because older/malformed model responses may omit it; the
+      // caller falls back to a generic hand-off line when absent.
+      acknowledgment?: string;
+    }
   | {
       needsClarification: false;
       outOfScope: false;
@@ -617,8 +626,8 @@ Each matched item's policy is independent — a request matching one "included" 
 OWNER NOTES — some price-sheet items above carry a [NOTE: ...] tag: a specific instruction the business owner wrote for that one service, about how they personally want it handled (e.g. "always needs an in-person look, don't quote from a photo alone" or "customers usually mean X when they describe it this way"). Treat a note as an authoritative instruction for that one matched item, not a suggestion — follow it even if it means giving a diagnosis-only answer instead of an instant price, or asking a different clarifying question than you otherwise would for that kind of job. A note on one item never applies to any other item, even a similar one, and an item with no [NOTE: ...] tag gets no special treatment — never invent guidance for it based on a note you saw on a different row.
 
 RULES:
-1. Before asking anything — including requesting a photo — check whether what's being described is already clearly unrelated to everything on the price sheet (a genuinely different kind of job this business doesn't do at all, not just one you need more detail about). If so, skip clarification entirely and respond with {"needsClarification": false, "outOfScope": true} immediately, in this same response — never ask for a photo of, or ask a clarifying question about, something you can already tell this business doesn't handle. Clarifying questions and photo requests exist only for a request that plausibly matches something the business does but needs more detail to price confidently — not as a way to double-check an already-clear non-match.
-2. If the photo and description together are not enough to price this confidently (and the request isn't already a clear non-match per rule 1), respond with 1-2 short clarifying questions instead of guessing. Give each question 2-4 short tappable answer options. Only ask if the answer would actually change the price. Never ask about something the customer has already been asked (see CUSTOMER'S ANSWERS TO YOUR FOLLOW-UP QUESTIONS above, if present) — a "no"/"I don't have one"/"not sure" answer is still an answer; treat it as final and move on rather than asking the same or a reworded version of the same question again. If, after that, no further price-changing question actually remains, stop asking and price the job now using what you have. ${
+1. Before asking anything — including requesting a photo — check whether what's being described is already clearly unrelated to everything on the price sheet (a genuinely different kind of job this business doesn't do at all, not just one you need more detail about). If so, skip clarification entirely and respond with {"needsClarification": false, "outOfScope": true, "acknowledgment": "..."} immediately, in this same response — never ask for a photo of, or ask a clarifying question about, something you can already tell this business doesn't handle. Clarifying questions and photo requests exist only for a request that plausibly matches something the business does but needs more detail to price confidently — not as a way to double-check an already-clear non-match. The "acknowledgment" is one short, natural sentence showing you understood what they actually described (e.g. "Got it — AC maintenance and cleaning" not a generic "noted") — never say or imply this business can do it, never state or estimate a price, never confirm or imply an appointment or visit is scheduled; it only shows you heard them before handing off.
+2. If the photo and description together are not enough to price this confidently (and the request isn't already a clear non-match per rule 1), respond with 1-2 short clarifying questions instead of guessing. Give each question 2-4 short tappable answer options — these are shown to the customer separately from the question text, as tappable choices, not as part of the sentence. Keep the "question" string itself a plain, standalone question only — do not preview, list, or give examples of the answer choices inside it (write "What's happening with it?", never "What's happening with it — is it not cooling, making noise, or something else?"), since that just restates the same options a second time right next to the actual choices. Only ask if the answer would actually change the price. Never ask about something the customer has already been asked (see CUSTOMER'S ANSWERS TO YOUR FOLLOW-UP QUESTIONS above, if present) — a "no"/"I don't have one"/"not sure" answer is still an answer; treat it as final and move on rather than asking the same or a reworded version of the same question again. If, after that, no further price-changing question actually remains, stop asking and price the job now using what you have. ${
     !isFirstRound
       ? "This is the only round of follow-up questions this customer will ever get — a second round is never permitted, no matter what is still unclear. You MUST respond with needsClarification: false now: price everything you can confidently match, and for any specific issue that's still genuinely unclear, use the negotiated/deferred-pricing treatment described elsewhere in this prompt (priceSheetItemId: null, no dollar amount stated) rather than asking again — never needsClarification: true a second time. Critical: a deferred issue gets ONLY a matchedServices entry with priceSheetItemId: null and NO corresponding lineItem at all — do not also add a lineItem for it just because you're finalizing now. Being forced to finalize is never a reason to invent a price-sheet match or price something you're not actually confident about; it only means you stop asking and use the deferred treatment instead of a further question. Only outOfScope: true if the entire request can't be handled at all. "
       : ""
@@ -631,7 +640,7 @@ RULES:
           ? "No photo was provided — a photo is almost always the single most useful thing you're missing, so make your first clarifying question a request for one (with an option for 'I don't have a photo handy' so the conversation isn't blocked) rather than asking about a detail a photo would answer faster."
           : "No photo has been provided, and the customer has already been asked about this — do NOT ask for a photo again under any circumstance, even if you still don't have one. Proceed using the description and answers already given; if a genuinely different, price-changing detail remains, ask about that instead, otherwise price the job now."
   }
-3. Once you have enough information, follow the PRICE-SHEET MATCHING RULES above exactly — starting with the matchedServices enumeration — for identifying and pricing every distinct task. If nothing on the price sheet reasonably covers what's being asked — a genuinely different kind of job the business hasn't priced at all — respond with {"needsClarification": false, "outOfScope": true} instead of guessing a number. Never estimate a price for something with no reasonable match on the price sheet, even using the labor rate.
+3. Once you have enough information, follow the PRICE-SHEET MATCHING RULES above exactly — starting with the matchedServices enumeration — for identifying and pricing every distinct task. If nothing on the price sheet reasonably covers what's being asked — a genuinely different kind of job the business hasn't priced at all — respond with {"needsClarification": false, "outOfScope": true, "acknowledgment": "..."} instead of guessing a number (see rule 1 for what belongs in "acknowledgment"). Never estimate a price for something with no reasonable match on the price sheet, even using the labor rate.
 4. When you do price it, give a plain-language summary of what's actually going on and what's being done about it (not just a restatement of the question), a severity (Low/Medium/High — High means it risks getting worse, or is a safety/wellbeing risk), your confidence in this diagnosis and price given everything you actually have, and a line-item cost breakdown drawn from matchedServices per the PRICE-SHEET MATCHING RULES above. Confidence reflects the real evidence available, never more: if a photo was sent, it can inform how clearly it shows the issue; if no photo was ever provided, never phrase or imply confidence as if you saw one — a clear, specific text description can still fully support High confidence on its own when nothing about pricing this correctly actually depends on seeing the job, and a missing photo is never by itself a reason to lower confidence below what the available information genuinely supports. If a service-call/diagnostic-style charge is one of those line items alongside real other work, this summary is where the "goes toward the approved repair" wording belongs — don't let the other structural requirements above crowd it out. Write this summary the way a real tradesperson would text it back, not a written report: one to two short sentences covering what's wrong and what you're doing about it is usually enough — only go longer than that when the required wording above (service-call credit, materials policy, diagnosis-fee framing) genuinely needs the extra sentence, never as padding or a restatement of the customer's own message.
 5. Don't pad the estimate with line items that don't make sense for what was described — but don't drop a genuinely matched task either (see PRICE-SHEET MATCHING RULES above).
 6. If this describes something urgent — an active safety risk, active damage in progress, or a real risk to a person's, pet's, or property's wellbeing if it waits — set isEmergency to true and say so plainly. What counts as urgent depends entirely on what this business actually does; reason about it rather than assuming a specific trade's examples (a repair business's emergency looks nothing like a grooming or events business's). isEmergency describes this whole response, not any one matched issue — if the customer described multiple distinct issues and even one of them is urgent, set isEmergency to true for the whole response, even if the other issues are routine. Never let a routine issue mentioned alongside an urgent one cause the urgent one to go unflagged.
@@ -643,7 +652,7 @@ Respond with ONLY valid JSON, no markdown fences, matching exactly one of these 
 
 or
 
-{"needsClarification": false, "outOfScope": true}
+{"needsClarification": false, "outOfScope": true, "acknowledgment": "..."}
 
 or
 
@@ -1350,6 +1359,17 @@ export function buildClaudeMessageContent(data: QuoteInput): Array<Record<string
   return content;
 }
 
+// Safe, defensive read of the model's outOfScope "acknowledgment" field —
+// the model's raw JSON.parse output is untyped, so this never trusts
+// anything beyond "is it a non-empty string" before letting it reach a
+// customer. A missing/malformed value becomes undefined, which the
+// WhatsApp composition layer already falls back to a generic hand-off line
+// for — never a thrown error over a cosmetic field.
+function extractAcknowledgment(parsed: Record<string, unknown>): string | undefined {
+  const value = parsed["acknowledgment"];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
 export const getQuoteEstimate = createServerFn({ method: "POST" })
   .validator((input: QuoteInput) => input)
   .handler(async ({ data }): Promise<QuoteResult> => {
@@ -1428,7 +1448,12 @@ export const getQuoteEstimate = createServerFn({ method: "POST" })
       return { needsClarification: true, questions: parsed1.questions ?? [] };
     }
     if (parsed1.outOfScope) {
-      return { needsClarification: false, outOfScope: true };
+      const acknowledgment1 = extractAcknowledgment(parsed1);
+      return {
+        needsClarification: false,
+        outOfScope: true,
+        ...(acknowledgment1 !== undefined ? { acknowledgment: acknowledgment1 } : {}),
+      };
     }
 
     const failures1 = [
@@ -1468,7 +1493,12 @@ export const getQuoteEstimate = createServerFn({ method: "POST" })
       return { needsClarification: true, questions: parsed2.questions ?? [] };
     }
     if (parsed2.outOfScope) {
-      return { needsClarification: false, outOfScope: true };
+      const acknowledgment2 = extractAcknowledgment(parsed2);
+      return {
+        needsClarification: false,
+        outOfScope: true,
+        ...(acknowledgment2 !== undefined ? { acknowledgment: acknowledgment2 } : {}),
+      };
     }
 
     const failures2 = [
