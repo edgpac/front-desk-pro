@@ -197,6 +197,38 @@ export async function hasPriorInboundInteraction(
   return data != null;
 }
 
+// Durable, lead-independent count of automated replies already sent to this
+// (tenant, phone) within the current 48-hour window — the enforcement
+// signal for the strict automated-reply cap (see
+// MAX_AUTOMATED_REPLIES_PER_CONVERSATION in whatsapp-conversation-server.ts).
+// Production regression that motivated this: decideLeadRoute routes a
+// flagged lead's next message to a brand-new, context-free lead — so a
+// conversation that got flagged partway through would keep spinning up
+// fresh leads forever, each with zero memory of what came before (wrong
+// language, same disambiguating question asked over and over). Counting
+// outbound sends here is deliberately lead-agnostic — it doesn't matter how
+// many different lead rows the conversation has churned through, only how
+// many automated messages this human has actually received. Capped at
+// `cap` via `limit()` so this never scans an unbounded number of rows just
+// to answer "has this already reached 2" — the exact count past the cap is
+// never needed.
+export async function countRecentOutboundInteractions(
+  admin: AdminClient,
+  tenantId: string,
+  phone: string,
+  cap: number,
+): Promise<number> {
+  const { data } = await admin
+    .from("whatsapp_interaction_events")
+    .select("id")
+    .eq("tenant_id", tenantId)
+    .eq("phone", phone)
+    .eq("direction", "outbound")
+    .gte("occurred_at", new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString())
+    .limit(cap);
+  return data?.length ?? 0;
+}
+
 // Called from sendGuardedReply (whatsapp-conversation-server.ts) for every
 // single automated outbound send in this codebase — see that file's own
 // comment for the full list of call sites this now covers.

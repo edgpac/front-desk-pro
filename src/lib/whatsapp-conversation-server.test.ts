@@ -50,6 +50,7 @@ import {
   withLeadProcessingClaim,
   toInboundWhatsAppTenant,
   LOOP_PAUSE_MESSAGE,
+  MAX_AUTOMATED_REPLIES_PER_CONVERSATION,
   type ChannelAdapter,
   type InboundWhatsAppTenant,
   type RawTenantRowForWhatsApp,
@@ -818,13 +819,28 @@ type FakeOpenLead = {
   flag_type: string | null;
 };
 
+// Supports two different real call shapes against the same fake data:
+// a single-row read ending in `.maybeSingle()` (resolves to `resolved`
+// as-is), and a list read that's awaited directly off `.limit()` with no
+// `.maybeSingle()` call at all (countRecentOutboundInteractions's shape) —
+// made thenable so `await chain` resolves to `{data: [...], error}`,
+// treating `resolved.data` as "one row" when truthy and "zero rows"
+// when null, which is all any existing caller of this helper needs: every
+// current use of a null/single-object `resolved` only ever needs to prove
+// "fewer than the cap" to this file's own MAX_AUTOMATED_REPLIES_PER_CONVERSATION
+// check, not a specific exact count.
 function chainableRead(resolved: { data: unknown; error: unknown }) {
+  const listResolved = {
+    data: resolved.data ? [resolved.data] : [],
+    error: resolved.error,
+  };
   const chain: Record<string, unknown> = {
     eq: () => chain,
     gte: () => chain,
     order: () => chain,
     limit: () => chain,
     maybeSingle: async () => resolved,
+    then: (resolvePromise: (v: typeof listResolved) => void) => resolvePromise(listResolved),
   };
   return chain;
 }
@@ -849,6 +865,12 @@ function fakeInboundAdmin(config: {
   // false (not tripped) — identical to every pre-existing test's implicit
   // behavior before this field existed.
   loopGuardTripped?: boolean;
+  // How many prior automated replies countRecentOutboundInteractions
+  // should report for this (tenant, phone) — defaults to 1, same "present,
+  // below MAX_AUTOMATED_REPLIES_PER_CONVERSATION" value every pre-existing
+  // test already implicitly relied on. Set to 2+ to exercise the
+  // automated-reply cap itself.
+  outboundInteractionCount?: number;
 }) {
   // Deliberately NOT the same object decideLeadRoute's initial read
   // returns — see flagTypeAtWriteTime's own comment above.
@@ -919,11 +941,24 @@ function fakeInboundAdmin(config: {
         return { select: () => chainableRead({ data: null, error: null }) };
       }
       if (table === "whatsapp_interaction_events") {
-        // Value is irrelevant here — every test using this fixture always
-        // configures a real openLead, so isFirstContact is already false
-        // from that alone (openLead == null && ...). Present only so the
-        // query doesn't throw "unexpected table".
-        return { select: () => chainableRead({ data: { id: "evt-1" }, error: null }) };
+        // Single-row (.maybeSingle()) shape: value is irrelevant — every
+        // test using this fixture always configures a real openLead, so
+        // isFirstContact is already false from that alone. List shape
+        // (awaited directly off .limit()): countRecentOutboundInteractions'
+        // own call — outboundInteractionCount controls how many rows come
+        // back, capped to whatever `n` the real code asked for.
+        const outboundCount = config.outboundInteractionCount ?? 1;
+        const chain: Record<string, unknown> = {
+          eq: () => chain,
+          gte: () => chain,
+          limit: (n: number) => ({
+            ...chain,
+            then: (resolve: (v: { data: unknown[]; error: null }) => void) =>
+              resolve({ data: Array(Math.min(outboundCount, n)).fill({ id: "evt-1" }), error: null }),
+          }),
+          maybeSingle: async () => ({ data: { id: "evt-1" }, error: null }),
+        };
+        return { select: () => chain };
       }
       if (table === "leads") {
         return {
@@ -1467,6 +1502,223 @@ describe("quoted_follow_up text classification — three-way (same_job / differe
 // classifyFollowUpPhotoIntent/getQuoteEstimate/finalizeLeadWithQuote
 // mocked so each test drives one specific classification outcome.
 // ---------------------------------------------------------------------
+
+// PRODUCTION REGRESSION (2026-10-24): a real conversation (Spanish,
+// multiple issues) got flagged needs_human_review after clarification
+// failed, then kept spinning up brand-new, context-free leads on every
+// short follow-up — decideLeadRoute routes a flagged lead's next message
+// to fresh_quote, which has no memory of anything. Two compounding
+// symptoms: the reply language flipped to English (a captionless photo/
+// one-word reply has no Spanish signal of its own), and the same
+// disambiguating question got asked over and over (each round was fed
+// only that one short message, nothing else). The customer explicitly
+// said the AI put them through "too much work" and gave up. These tests
+// cover the fix: a hard, lead-agnostic cap on automated replies.
+describe("handleInboundWhatsAppMessage — strict automated-reply cap", () => {
+  it("hands off with the fixed message, in the conversation's actual language, instead of engaging further once the cap is reached — regardless of lead/route state", async () => {
+    const { admin, calls } = fakeInboundAdmin({
+      openLead: {
+        id: "lead-1",
+        customer_name: "Julie",
+        photo_url: null,
+        problem: "varias cosas. triturador de basura roto.",
+        confidence: null,
+        diagnosis: null,
+        flag_type: "needs_human_review",
+      },
+      leadSlotClaimSucceeds: true,
+      outboundInteractionCount: MAX_AUTOMATED_REPLIES_PER_CONVERSATION,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(getQuoteEstimate).mockClear();
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "Fixed",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(getQuoteEstimate).not.toHaveBeenCalled(); // never reaches the AI pipeline at all
+    expect(sent).toEqual([
+      { to: TEST_PHONE, body: "Mensaje recibido — alguien de nuestro equipo se pondrá en contacto." },
+    ]);
+    expect(calls.leadUpdateApplied).toBe(1);
+    expect(calls.lastLeadUpdatePatch?.["flag_type"]).toBe("needs_human_review");
+  });
+
+  it("replies in English when the conversation's own history is English, not Spanish by default", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: {
+        id: "lead-2",
+        customer_name: "Sam",
+        photo_url: null,
+        problem: "the dryer stopped heating",
+        confidence: null,
+        diagnosis: null,
+        flag_type: "needs_human_review",
+      },
+      leadSlotClaimSucceeds: true,
+      outboundInteractionCount: MAX_AUTOMATED_REPLIES_PER_CONVERSATION,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "ok",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toEqual([{ to: TEST_PHONE, body: "Message received — someone from our team will reach out." }]);
+  });
+
+  it("still engages normally (reaches the AI pipeline) when fewer than the cap have been sent", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: {
+        id: "lead-1",
+        customer_name: "Jo",
+        photo_url: null,
+        problem: "leaky faucet",
+        confidence: null,
+        diagnosis: null,
+        flag_type: null,
+      },
+      leadSlotClaimSucceeds: true,
+      outboundInteractionCount: MAX_AUTOMATED_REPLIES_PER_CONVERSATION - 1,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(getQuoteEstimate).mockClear();
+    vi.mocked(getQuoteEstimate).mockResolvedValue({
+      needsClarification: true,
+      questions: [{ question: "Which one?", options: ["A", "B"] }],
+    } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "another detail",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(getQuoteEstimate).toHaveBeenCalledTimes(1);
+    expect(sent).toHaveLength(1);
+  });
+});
+
+// PRODUCTION REGRESSION companion tests (same incident as the cap tests
+// above, a round BEFORE the cap trips): language must not reset to English
+// mid-conversation. Two distinct code paths both detected language from
+// the current message alone before this fix — the thin-description
+// short-circuit (any reply ≤10 chars with no media, e.g. "Fixed") and
+// handleFreshQuote's main body (anything longer, e.g. "Thanks anywaya" —
+// the exact text that produced lead 5's English outside_service_scope
+// classification in the real incident). Both are covered here.
+describe("language stays pinned to prior context, never silently resets to English", () => {
+  it("thin-description short-circuit: a short, English-looking reply ('Fixed') after Spanish prior context still greets in Spanish", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: {
+        id: "lead-1",
+        customer_name: "Julie",
+        photo_url: null,
+        problem: "varias cosas. triturador de basura roto.",
+        confidence: null,
+        diagnosis: null,
+        flag_type: "needs_human_review",
+      },
+      leadSlotClaimSucceeds: true,
+      outboundInteractionCount: MAX_AUTOMATED_REPLIES_PER_CONVERSATION - 1,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "Fixed",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body).toContain("¡Gracias por contactar a Acme Handyman!");
+  });
+
+  it("handleFreshQuote main body: a longer English reply ('Thanks anywaya') after Spanish prior context still replies in Spanish", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: {
+        id: "lead-1",
+        customer_name: "Julie",
+        photo_url: null,
+        problem: "varias cosas. triturador de basura roto.",
+        confidence: null,
+        diagnosis: null,
+        flag_type: "needs_human_review",
+      },
+      leadSlotClaimSucceeds: true,
+      outboundInteractionCount: MAX_AUTOMATED_REPLIES_PER_CONVERSATION - 1,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(getQuoteEstimate).mockResolvedValue({
+      needsClarification: false,
+      outOfScope: true,
+    } as any);
+    vi.mocked(createFlaggedLead).mockResolvedValue({ id: "new-lead-2" } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "Thanks anywaya",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body).toBe("Voy a pasar su mensaje a nuestro equipo.");
+  });
+
+  it("without any prior context (genuinely first contact), a context-free English word still falls back to English — unchanged, pre-existing behavior", async () => {
+    const { admin } = fakeFreshQuoteAdmin();
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "Fixed",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body).toContain("Hi! 👋 Thanks for reaching out to");
+  });
+});
 
 describe("handleInboundWhatsAppMessage — quoted_follow_up with a photo (Priority 2 photo intelligence)", () => {
   const QUOTED_LEAD: FakeOpenLead = {
@@ -2034,6 +2286,15 @@ function fakeOptOutAdmin(config: { row?: FakeOptOutRow } = {}) {
             }),
           }),
         };
+      }
+      // Same reason as "leads" below — the one test that falls PAST the
+      // opt-out check reaches hasPriorInboundInteraction and the
+      // automated-reply cap check too. "No prior interactions, cap not
+      // reached" so that test actually exercises the real pipeline instead
+      // of being diverted into the greeting short-circuit or the cap
+      // handoff.
+      if (table === "whatsapp_interaction_events") {
+        return { select: () => chainableRead({ data: null, error: null }) };
       }
       // "leads" is only reached by the one test that deliberately falls
       // PAST the opt-out check into the real pipeline — a minimal

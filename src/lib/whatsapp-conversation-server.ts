@@ -24,6 +24,7 @@ import {
   evaluateInboundInteraction,
   evaluateOutboundInteraction,
   hasPriorInboundInteraction,
+  countRecentOutboundInteractions,
   claimLoopNotice,
   releaseLoopNoticeClaim,
   markLoopNoticeSent,
@@ -57,6 +58,25 @@ function sleep(ms: number): Promise<void> {
 // see markLoopNoticeSent's own comment).
 export const LOOP_PAUSE_MESSAGE =
   "We've paused automated replies here for a moment — our team will follow up with you directly.";
+
+// Strict, hard cap on automated replies per (tenant, phone) within one
+// 48-hour conversation window — see handleAutomatedReplyCapReached below
+// for the production regression that motivated this: decideLeadRoute
+// routes a flagged lead's next message to a brand-new, context-free lead,
+// so a conversation that got flagged partway through kept spinning up
+// fresh leads forever, each with zero memory of what came before (wrong
+// language, the same disambiguating question asked over and over, until
+// the customer gave up). Deliberately low and deliberately hard: once this
+// many automated replies have gone out, nothing in this file calls
+// getQuoteEstimate/classifyFollowUpIntent/etc. for this phone again until
+// a human takes over.
+export const MAX_AUTOMATED_REPLIES_PER_CONVERSATION = 2;
+
+function localizedAutomatedReplyCapMessage(language: DetectedLanguage): string {
+  return isEs(language)
+    ? "Mensaje recibido — alguien de nuestro equipo se pondrá en contacto."
+    : "Message received — someone from our team will reach out.";
+}
 
 // Bounded, in-process retry for confirming a pause notice as sent AFTER
 // the real provider send has already succeeded — see handleLoopGuardPause
@@ -783,6 +803,73 @@ export function decideLeadRoute(
   return "continue_clarification";
 }
 
+// Reached once MAX_AUTOMATED_REPLIES_PER_CONVERSATION automated replies
+// have already gone out to this phone within the 48-hour window — see that
+// constant's own comment for the regression this closes. Always the
+// terminal step for this inbound message: no quote, no clarification, no
+// further AI call of any kind, regardless of which route the message would
+// otherwise have taken.
+async function handleAutomatedReplyCapReached(params: {
+  admin: ReturnType<typeof getAdminClient>;
+  tenant: InboundWhatsAppTenant;
+  fromPhone: string;
+  adapter: ChannelAdapter;
+  body: string;
+  openLead: { id: string; problem: string; diagnosis: string | null } | null | undefined;
+}): Promise<void> {
+  const { admin, tenant, fromPhone, adapter, body, openLead } = params;
+
+  // Folds in whatever real text the conversation has produced so far — the
+  // most recent lead's original problem and diagnosis, even if that lead is
+  // flagged — so the handoff line itself never falls into the same
+  // wrong-language trap that got the conversation here in the first place
+  // (a fresh, context-free round detecting language from a single
+  // short/captionless message alone).
+  const language = detectLanguage(openLead?.problem, openLead?.diagnosis ?? undefined, body);
+
+  if (openLead) {
+    // Keep the human-readable thread complete for whoever reviews this —
+    // this message would otherwise never be recorded anywhere a dashboard
+    // reviewer actually reads, since the branch that normally saves it
+    // (continue_clarification) is exactly what this short-circuits.
+    await admin.from("lead_messages").insert({ lead_id: openLead.id, role: "customer", body });
+  }
+
+  await sendGuardedReply({
+    admin,
+    tenant,
+    fromPhone,
+    adapter,
+    leadId: openLead?.id ?? null,
+    signature: { kind: "text", text: "canned:automated-reply-cap-reached" },
+    messageText: localizedAutomatedReplyCapMessage(language),
+  });
+
+  if (openLead) {
+    // Unconditional, unlike handleLoopGuardPause's "don't clobber an
+    // unrelated flag" rule — that rule protects a DIFFERENT concern
+    // (pricing state) from an unrelated one (loop detection) stepping on
+    // it. Here there's nothing to protect: hitting the cap is itself the
+    // authoritative, final word that no further automation will run for
+    // this phone in this window, so the flag should say exactly that,
+    // regardless of whatever it was previously set to.
+    const { error } = await admin
+      .from("leads")
+      .update({
+        status: "flagged",
+        flag_type: "needs_human_review",
+        flag_reason: "Automated replies reached the per-conversation cap — needs a human follow-up.",
+      })
+      .eq("id", openLead.id);
+    if (error) {
+      console.error(
+        `Could not flag lead ${openLead.id} after reaching the automated-reply cap (non-fatal, handoff message still sent):`,
+        error.message,
+      );
+    }
+  }
+}
+
 export type InboundWhatsAppTenant = {
   id: string;
   slug: string;
@@ -929,6 +1016,35 @@ export async function handleInboundWhatsAppMessage(params: {
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();
+
+  // Hard cap, checked before any routing decision so it applies uniformly
+  // regardless of which of the three routes below this message would
+  // otherwise have taken — see MAX_AUTOMATED_REPLIES_PER_CONVERSATION's own
+  // comment for why this has to be lead-agnostic (a flagged lead keeps
+  // getting replaced by a fresh one, so counting per-lead would never
+  // actually catch it). Fails CLOSED on a read error — same direction and
+  // reasoning as sendGuardedReply's own loop-guard check: this protects
+  // against unbounded automated engagement, not a cosmetic concern, so an
+  // unknown count is treated as "cap already reached" rather than risking
+  // unlimited replies if the check itself is broken.
+  let priorOutboundCount = MAX_AUTOMATED_REPLIES_PER_CONVERSATION;
+  try {
+    priorOutboundCount = await countRecentOutboundInteractions(
+      admin,
+      tenant.id,
+      fromPhone,
+      MAX_AUTOMATED_REPLIES_PER_CONVERSATION,
+    );
+  } catch (err) {
+    console.error(
+      `Could not count prior outbound WhatsApp interactions for tenant ${tenant.id}, phone ${fromPhone} — failing closed (treating the automated-reply cap as already reached):`,
+      err,
+    );
+  }
+  if (priorOutboundCount >= MAX_AUTOMATED_REPLIES_PER_CONVERSATION) {
+    await handleAutomatedReplyCapReached({ admin, tenant, fromPhone, adapter, body, openLead });
+    return;
+  }
 
   // P2: see decideLeadRoute's own doc comment for what each outcome means
   // and why confidence alone was never enough to distinguish them. A
@@ -1477,7 +1593,14 @@ export async function handleInboundWhatsAppMessage(params: {
     // either, so even the volume signal had nothing to count). The
     // evidence log is keyed on (tenant, phone), not on a lead, so this
     // now records and evaluates correctly even before any lead exists.
-    const thinDescriptionLanguage = detectLanguage(body);
+    // Folds in the most recent lead's problem text, if one exists (even
+    // flagged — decideLeadRoute sends a flagged lead's next message
+    // through this exact function) — same reasoning and same production
+    // regression as handleFreshQuote's priorContextText: a short reply
+    // like "Fixed" or "Repaired" has no language signal of its own and
+    // would otherwise silently reset an established Spanish conversation
+    // to English.
+    const thinDescriptionLanguage = detectLanguage(openLead?.problem, body);
     await sendGuardedReply({
       admin,
       tenant,
@@ -1525,6 +1648,7 @@ export async function handleInboundWhatsAppMessage(params: {
       adapter,
       admin,
       isFirstContact,
+      priorContextText: openLead?.problem,
     });
   } finally {
     if (claimed) await releaseLeadSlot(admin, tenant.id, fromPhone);
@@ -1887,12 +2011,30 @@ async function handleFreshQuote(params: {
   // phone+tenant-scoped lookup decideLeadRoute uses, not derived from
   // whether a lead is being newly created here.
   isFirstContact: boolean;
+  // The most recent prior lead's problem text for this phone, if one
+  // exists — set even when that lead is flagged, since decideLeadRoute
+  // sends a flagged lead's next message down this exact path. Without
+  // this, a captionless photo or a one-word reply ("Fixed", "Thanks")
+  // arriving after the lead was flagged has no text of its own to detect
+  // language from and silently falls back to English mid-conversation —
+  // the production regression MAX_AUTOMATED_REPLIES_PER_CONVERSATION's
+  // own comment describes. Undefined (genuinely first contact) is fine —
+  // detectLanguage already treats a missing argument as no signal.
+  priorContextText: string | undefined;
 }): Promise<void> {
-  const { tenant, fromPhone, body, mediaRef, profileName, channel, adapter, admin, isFirstContact } = params;
-  // No prior lead/diagnosis exists yet at this point — body is the only
-  // signal available, same reasoning as the thin-description greeting
-  // above.
-  const language = detectLanguage(body);
+  const {
+    tenant,
+    fromPhone,
+    body,
+    mediaRef,
+    profileName,
+    channel,
+    adapter,
+    admin,
+    isFirstContact,
+    priorContextText,
+  } = params;
+  const language = detectLanguage(priorContextText, body);
   const firstContactGreeting = isFirstContact ? `${resolveFirstContactGreeting(tenant, language)} ` : "";
 
   const { data: priceSheetRows } = await admin
