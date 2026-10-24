@@ -59,11 +59,9 @@ function PrivacyPolicy() {
           <ul className="list-disc space-y-2 pl-6">
             <li><strong>Anthropic</strong> — a submitted photo and description are sent to Anthropic's Claude
               API to generate the diagnosis and price estimate.</li>
-            <li><strong>Twilio</strong> — WhatsApp messages (including photos) are sent and received through
-              Twilio's platform.</li>
-            <li><strong>Meta</strong> — for businesses connected via WhatsApp Business Platform (Cloud API)
-              instead of Twilio, WhatsApp messages (including photos) are sent and received through Meta's
-              platform, subject to Meta's own WhatsApp Business policies in addition to this one.</li>
+            <li><strong>Meta</strong> — WhatsApp messages (including photos) are sent and received through
+              Meta's WhatsApp Business Platform (Cloud API), subject to Meta's own WhatsApp Business
+              policies in addition to this one.</li>
             <li><strong>Stripe</strong> — subscription payments are processed by Stripe. Job It Ready never
               receives or stores full card numbers.</li>
             <li><strong>Supabase</strong> — our database and authentication provider, where account and lead
@@ -74,8 +72,7 @@ function PrivacyPolicy() {
 
           <h2 className="text-xl font-semibold">How long we keep it</h2>
           <p>Business account and lead data is kept for as long as the account is active. Photos sent over
-            WhatsApp are subject to the sending platform's own media retention practices — Twilio's or
-            Meta's, depending on which one a business has connected. If you'd like your data deleted, contact
+            WhatsApp are subject to Meta's own media retention practices. If you'd like your data deleted, contact
             us using the details below and we'll remove it, except where we're required to keep records
             (e.g. billing history) for legal or accounting reasons.</p>
 

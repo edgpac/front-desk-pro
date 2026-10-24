@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/lib/use-auth";
-import { getMyTenant, updateMyTenant, normalizeWhatsappNumber, isPlausiblePhoneNumber } from "@/lib/tenant-server";
+import { getMyTenant, updateMyTenant } from "@/lib/tenant-server";
 import { TENANT, type Tenant } from "@/lib/mock-data";
 
 export const Route = createFileRoute("/dashboard/settings/business")({
@@ -67,14 +67,11 @@ function BusinessSettings() {
   const taxIsValid = form.taxRate !== null && form.taxRate !== undefined && !Number.isNaN(form.taxRate);
   const ratesAreValid =
     Number.isFinite(form.laborRate) && form.laborRate >= 0 && Number.isFinite(form.serviceCallFee) && form.serviceCallFee >= 0;
-  const normalizedWhatsapp = normalizeWhatsappNumber(form.whatsappNumber);
-  const whatsappIsValid = !normalizedWhatsapp || isPlausiblePhoneNumber(normalizedWhatsapp);
-  const whatsappConnected = Boolean(normalizedWhatsapp) && whatsappIsValid;
-  const canSave = missing.length === 0 && taxIsValid && ratesAreValid && whatsappIsValid && !saving;
+  const canSave = missing.length === 0 && taxIsValid && ratesAreValid && !saving;
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
-    if (missing.length > 0 || !taxIsValid || !ratesAreValid || !whatsappIsValid) return;
+    if (missing.length > 0 || !taxIsValid || !ratesAreValid) return;
     if (!user) {
       toast.success("Saved (sample data — sign up to save your real business info)");
       return;
@@ -98,7 +95,6 @@ function BusinessSettings() {
           laborRate: form.laborRate,
           serviceCallFee: form.serviceCallFee,
           serviceCallFeeMode: form.serviceCallFeeMode,
-          whatsappNumber: form.whatsappNumber,
         },
       });
       toast.success("Saved");
@@ -266,43 +262,7 @@ function BusinessSettings() {
             )}
           </Field>
 
-          <Field label="WhatsApp number" className="sm:col-span-2">
-            <div className="flex items-center gap-2">
-              <Input
-                type="tel"
-                value={form.whatsappNumber}
-                onChange={(e) => set("whatsappNumber", e.target.value)}
-                placeholder="(512) 555-0110"
-                className="flex-1"
-              />
-              <span
-                className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-medium ${
-                  whatsappConnected
-                    ? "bg-green-100 text-green-800"
-                    : !whatsappIsValid
-                      ? "bg-destructive/10 text-destructive"
-                      : "bg-amber-100 text-amber-800"
-                }`}
-              >
-                {whatsappConnected ? "Requested" : !whatsappIsValid ? "Invalid" : "Not set"}
-              </span>
-            </div>
-            {!whatsappIsValid ? (
-              <span className="mt-1.5 block text-xs text-destructive">
-                That doesn't look like a real phone number — check the digits.
-              </span>
-            ) : (
-              <span className="mt-1.5 block text-xs text-muted-foreground">
-                We're still building self-serve WhatsApp connection. Save the number you want here and
-                we'll reach out to get it connected — leave blank if you're not ready yet.
-              </span>
-            )}
-          </Field>
-
-          <div className="sm:col-span-2">
-            <span className="mb-2 block text-xs text-muted-foreground">
-              Or connect automatically via Meta — no waiting on us to set it up manually.
-            </span>
+          <Field label="WhatsApp" className="sm:col-span-2">
             <ConnectWhatsAppMeta />
             <Link
               to="/dashboard/settings/whatsapp-templates"
@@ -310,21 +270,19 @@ function BusinessSettings() {
             >
               Manage message templates (for reaching a customer after 24 hours of silence)
             </Link>
-          </div>
+          </Field>
 
           <div className="sm:col-span-2">
             <Button type="submit" disabled={!canSave}>
               {saving ? "Saving…" : "Save"}
             </Button>
-            {missing.length > 0 || !taxIsValid || !ratesAreValid || !whatsappIsValid ? (
+            {missing.length > 0 || !taxIsValid || !ratesAreValid ? (
               <p className="mt-2 text-xs text-muted-foreground">
                 {missing.length > 0
                   ? `${missing.length} field${missing.length === 1 ? "" : "s"} still need${missing.length === 1 ? "s" : ""} to be filled in.`
                   : !taxIsValid
                     ? "Enter a valid tax rate (0 is fine) to continue."
-                    : !ratesAreValid
-                      ? "Enter a valid labor rate and service call fee (0 or more) to continue."
-                      : "Fix the WhatsApp number to continue."}
+                    : "Enter a valid labor rate and service call fee (0 or more) to continue."}
               </p>
             ) : null}
           </div>

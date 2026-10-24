@@ -11,10 +11,10 @@ import { normalizePhone } from "@/lib/whatsapp-loop-guard-server";
 // wrong resume path.
 //
 // KNOWN, UNELIMINATED RACE (documented, not hidden): isOptedOut's read and
-// the actual HTTP send call that follows it (inside sendWhatsAppMessage/
-// sendWhatsAppMessageMeta/sendWhatsAppTemplateMessage) are two separate
-// steps — there is no way to make "check opt-out status" and "call
-// Twilio/Meta's API" atomic across an external HTTP call. In practice this
+// the actual HTTP send call that follows it (inside sendWhatsAppMessageMeta/
+// sendWhatsAppTemplateMessage) are two separate steps — there is no way to
+// make "check opt-out status" and "call Meta's API" atomic across an
+// external HTTP call. In practice this
 // window is a single DB round-trip wide (milliseconds), and the DB write
 // itself (record_whatsapp_opt_out) IS atomic and race-safe under
 // concurrent STOP messages (see the migration's own comments and

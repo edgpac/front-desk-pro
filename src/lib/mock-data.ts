@@ -342,7 +342,6 @@ export type Tenant = {
   // estimate-server.ts's buildPrompt for how "fixed" vs "negotiated" changes
   // the AI's service-call/diagnostic-fee behavior.
   serviceCallFeeMode: "fixed" | "negotiated";
-  whatsappNumber: string;
 };
 
 export const TENANT: Tenant = {
@@ -363,7 +362,6 @@ export const TENANT: Tenant = {
   laborRate: 125,
   serviceCallFee: 89,
   serviceCallFeeMode: "fixed",
-  whatsappNumber: "",
 };
 
 // Served as a static asset from the same domain (public/widget.js) rather

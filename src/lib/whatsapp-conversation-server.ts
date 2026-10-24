@@ -691,10 +691,10 @@ function localizedEstimateBasisClosing(language: DetectedLanguage, hadPhoto: boo
 // continuation, the deterministic Q&A pairing, calling getQuoteEstimate,
 // calling createLead/createClarifyingLead/finalizeLeadWithQuote — has
 // nothing to do with which BSP delivered the message. It never imports a
-// specific transport (twilio-server.ts, or a future meta-whatsapp-server.ts)
-// directly; it only ever talks through the adapter passed in, so it's
-// structurally impossible for this file to reach for one channel's global
-// credentials while processing a message that arrived on another.
+// specific transport (meta-whatsapp-server.ts) directly; it only ever talks
+// through the adapter passed in, so it's structurally impossible for this
+// file to reach for one channel's global credentials while processing a
+// message that arrived on another.
 export type ChannelAdapter = {
   // The third parameter exists for exactly one caller — the opt-out
   // confirmation send in this file (see handleOptOutConfirmation below) —
@@ -766,11 +766,11 @@ export async function handleInboundWhatsAppMessage(params: {
   fromPhone: string;
   body: string;
   mediaRef: string | undefined;
-  // Twilio's MessageSid or Meta's wamid, where the channel supplies one —
-  // recorded as evidence (see evaluateInboundInteraction) and used for the
-  // "exact duplicate content, different id" signal. Never required: a
-  // channel/caller that can't supply one still works, just without that
-  // specific signal's benefit for this message.
+  // Meta's wamid, where the channel supplies one — recorded as evidence
+  // (see evaluateInboundInteraction) and used for the "exact duplicate
+  // content, different id" signal. Never required: a channel/caller that
+  // can't supply one still works, just without that specific signal's
+  // benefit for this message.
   providerMessageId: string | undefined;
   profileName: string | undefined;
   channel: "WhatsApp";
@@ -929,8 +929,7 @@ export async function handleInboundWhatsAppMessage(params: {
 
       // The original photo stays canonical regardless of whether this reply
       // has its own attachment — re-fetched fresh each round via the adapter
-      // (a stable Twilio media URL today; a Meta media id in a future
-      // channel) rather than a cached short-lived redirect. A text-only
+      // (a Meta media id) rather than a cached short-lived redirect. A text-only
       // original lead has no photo to re-fetch at all (see photoUrl: "" at
       // lead creation, below) — that's an expected, valid state, not a lost
       // photo, so it must not hit the "lost track of it" fallback every round.

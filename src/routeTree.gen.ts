@@ -36,7 +36,6 @@ import { Route as WidgetSlugRouteImport } from './routes/widget.$slug'
 import { Route as ApiCronKeepAliveRouteImport } from './routes/api.cron.keep-alive'
 import { Route as ApiStripeWebhookRouteImport } from './routes/api.stripe.webhook'
 import { Route as ApiWhatsappMetaWebhookRouteImport } from './routes/api.whatsapp.meta-webhook'
-import { Route as ApiWhatsappWebhookRouteImport } from './routes/api.whatsapp.webhook'
 import { Route as DashboardLeadsIndexRouteImport } from './routes/dashboard.leads.index'
 import { Route as DashboardLeadsIdRouteImport } from './routes/dashboard.leads.$id'
 import { Route as DashboardSettingsBillingRouteImport } from './routes/dashboard.settings.billing'
@@ -183,11 +182,6 @@ const ApiWhatsappMetaWebhookRoute = ApiWhatsappMetaWebhookRouteImport.update({
   path: '/api/whatsapp/meta-webhook',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiWhatsappWebhookRoute = ApiWhatsappWebhookRouteImport.update({
-  id: '/api/whatsapp/webhook',
-  path: '/api/whatsapp/webhook',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const DashboardLeadsIndexRoute = DashboardLeadsIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -272,7 +266,6 @@ export interface FileRoutesByFullPath {
   '/api/cron/keep-alive': typeof ApiCronKeepAliveRoute
   '/api/stripe/webhook': typeof ApiStripeWebhookRoute
   '/api/whatsapp/meta-webhook': typeof ApiWhatsappMetaWebhookRoute
-  '/api/whatsapp/webhook': typeof ApiWhatsappWebhookRoute
   '/dashboard/leads/$id': typeof DashboardLeadsIdRouteWithChildren
   '/dashboard/settings/billing': typeof DashboardSettingsBillingRoute
   '/dashboard/settings/business': typeof DashboardSettingsBusinessRoute
@@ -309,7 +302,6 @@ export interface FileRoutesByTo {
   '/api/cron/keep-alive': typeof ApiCronKeepAliveRoute
   '/api/stripe/webhook': typeof ApiStripeWebhookRoute
   '/api/whatsapp/meta-webhook': typeof ApiWhatsappMetaWebhookRoute
-  '/api/whatsapp/webhook': typeof ApiWhatsappWebhookRoute
   '/dashboard/settings/billing': typeof DashboardSettingsBillingRoute
   '/dashboard/settings/business': typeof DashboardSettingsBusinessRoute
   '/dashboard/settings/qualifications': typeof DashboardSettingsQualificationsRoute
@@ -349,7 +341,6 @@ export interface FileRoutesById {
   '/api/cron/keep-alive': typeof ApiCronKeepAliveRoute
   '/api/stripe/webhook': typeof ApiStripeWebhookRoute
   '/api/whatsapp/meta-webhook': typeof ApiWhatsappMetaWebhookRoute
-  '/api/whatsapp/webhook': typeof ApiWhatsappWebhookRoute
   '/dashboard/leads/$id': typeof DashboardLeadsIdRouteWithChildren
   '/dashboard/settings/billing': typeof DashboardSettingsBillingRoute
   '/dashboard/settings/business': typeof DashboardSettingsBusinessRoute
@@ -391,7 +382,6 @@ export interface FileRouteTypes {
     | '/api/cron/keep-alive'
     | '/api/stripe/webhook'
     | '/api/whatsapp/meta-webhook'
-    | '/api/whatsapp/webhook'
     | '/dashboard/leads/$id'
     | '/dashboard/settings/billing'
     | '/dashboard/settings/business'
@@ -428,7 +418,6 @@ export interface FileRouteTypes {
     | '/api/cron/keep-alive'
     | '/api/stripe/webhook'
     | '/api/whatsapp/meta-webhook'
-    | '/api/whatsapp/webhook'
     | '/dashboard/settings/billing'
     | '/dashboard/settings/business'
     | '/dashboard/settings/qualifications'
@@ -467,7 +456,6 @@ export interface FileRouteTypes {
     | '/api/cron/keep-alive'
     | '/api/stripe/webhook'
     | '/api/whatsapp/meta-webhook'
-    | '/api/whatsapp/webhook'
     | '/dashboard/leads/$id'
     | '/dashboard/settings/billing'
     | '/dashboard/settings/business'
@@ -501,7 +489,6 @@ export interface RootRouteChildren {
   ApiCronKeepAliveRoute: typeof ApiCronKeepAliveRoute
   ApiStripeWebhookRoute: typeof ApiStripeWebhookRoute
   ApiWhatsappMetaWebhookRoute: typeof ApiWhatsappMetaWebhookRoute
-  ApiWhatsappWebhookRoute: typeof ApiWhatsappWebhookRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -695,13 +682,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiWhatsappMetaWebhookRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/api/whatsapp/webhook': {
-      id: '/api/whatsapp/webhook'
-      path: '/api/whatsapp/webhook'
-      fullPath: '/api/whatsapp/webhook'
-      preLoaderRoute: typeof ApiWhatsappWebhookRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/dashboard/leads/': {
       id: '/dashboard/leads/'
       path: '/'
@@ -870,7 +850,6 @@ const rootRouteChildren: RootRouteChildren = {
   ApiCronKeepAliveRoute: ApiCronKeepAliveRoute,
   ApiStripeWebhookRoute: ApiStripeWebhookRoute,
   ApiWhatsappMetaWebhookRoute: ApiWhatsappMetaWebhookRoute,
-  ApiWhatsappWebhookRoute: ApiWhatsappWebhookRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

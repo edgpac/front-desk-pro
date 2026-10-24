@@ -7,12 +7,10 @@ import { isOptedOut, normalizePhone, WhatsAppOptedOutError } from "@/lib/whatsap
 import { recordAuditLog } from "@/lib/audit-log-server";
 import type { InboundWhatsAppTenant } from "@/lib/whatsapp-conversation-server";
 
-// Meta WhatsApp Cloud API — Stage 2B: Embedded Signup + OAuth/token
-// exchange only. No webhook, no inbound/outbound messaging, no templates —
-// those are later sub-stages. Mirrors twilio-server.ts's shape (a small
-// getCredentials()-style helper plus the actual calls), but nothing here
-// is imported by whatsapp-conversation-server.ts or api.whatsapp.webhook.tsx
-// — the two channels stay fully independent.
+// Meta WhatsApp Cloud API — Embedded Signup + OAuth/token exchange, plus
+// webhook/outbound messaging. Nothing here is imported by
+// whatsapp-conversation-server.ts, which only ever talks through the
+// ChannelAdapter passed in.
 
 // Exported (along with graphUrl and describeMetaError below) because
 // whatsapp-templates-server.ts also needs direct Graph API access
@@ -395,9 +393,7 @@ export const completeMetaWhatsAppSignup = createServerFn({ method: "POST" })
 // api.whatsapp.meta-webhook.tsx ------------------------------------------
 
 // Meta signs every webhook POST with HMAC-SHA256 over the raw body, using
-// the app secret — same spirit as Twilio's signature check in
-// twilio-server.ts, different algorithm and header. Constant-time compare,
-// same reasoning as verifyTwilioSignature: a signature check should never
+// the app secret. Constant-time compare: a signature check should never
 // short-circuit on the first mismatched byte.
 export function verifyMetaWebhookSignature(rawBody: string, header: string | null): boolean {
   if (!header || !header.startsWith("sha256=")) return false;
@@ -466,9 +462,8 @@ export async function resolveActiveMetaConnection(
 
 // The reverse lookup direction from resolveActiveMetaConnection above: given
 // a tenant (not a phone_number_id), find their one active Meta connection,
-// if any — used by lead-reply-server.ts to decide whether a given tenant's
-// outbound WhatsApp reply should go through Meta at all, before it even
-// gets to picking Twilio vs Meta.
+// if any — used by lead-reply-server.ts to decide whether a given tenant
+// has an outbound WhatsApp channel to reply through at all.
 export async function resolveActiveMetaConnectionForTenant(
   tenantId: string,
 ): Promise<{ connectionId: string; phoneNumberId: string; accessToken: string } | null> {
@@ -526,20 +521,20 @@ const OUTSIDE_WINDOW_ERROR_CODE = 131047;
 
 export class MetaOutsideWindowError extends Error {}
 
-// tenantId is required specifically so this function — one of the only
-// two places (alongside sendWhatsAppTemplateMessage below and
-// twilio-server.ts's sendWhatsAppMessage) that actually make an outbound
-// WhatsApp API call — can enforce the opt-out check itself. See
-// twilio-server.ts's sendWhatsAppMessage for the full reasoning.
+// tenantId is required specifically so this function — one of the only two
+// places (alongside sendWhatsAppTemplateMessage below) that actually make
+// an outbound WhatsApp API call — can enforce the opt-out check itself,
+// rather than trusting every caller to remember to check first.
 export async function sendWhatsAppMessageMeta(params: {
   phoneNumberId: string;
   accessToken: string;
   to: string;
   body: string;
   tenantId: string;
-  // See twilio-server.ts's sendWhatsAppMessage for exactly what this is
-  // for and why it must never be set anywhere except the opt-out
-  // confirmation send.
+  // Must never be set anywhere except the opt-out confirmation send itself
+  // (see handleOptOutConfirmation in whatsapp-conversation-server.ts) —
+  // that one message has to reach a number the instant it opts out, before
+  // the opt-out check below would otherwise block it.
   allowWhileOptedOut?: boolean | undefined;
 }): Promise<void> {
   if (
@@ -627,11 +622,9 @@ export async function sendWhatsAppTemplateMessage(params: {
   }
 }
 
-// Meta's media retrieval is a two-step lookup, unlike Twilio's stable media
-// URL: GET /{media-id} for a short-lived CDN URL + mime type, then GET that
-// URL with the same Bearer token. Same return shape as
-// fetchTwilioMediaAsBase64 so handleInboundWhatsAppMessage doesn't need to
-// know which channel it came from.
+// Meta's media retrieval is a two-step lookup: GET /{media-id} for a
+// short-lived CDN URL + mime type, then GET that URL with the same Bearer
+// token.
 export async function fetchMetaMediaAsBase64(
   mediaId: string,
   accessToken: string,

@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/lib/use-auth";
-import { getMyTenant, updateMyTenant, normalizeWhatsappNumber, isPlausiblePhoneNumber } from "@/lib/tenant-server";
+import { getMyTenant, updateMyTenant } from "@/lib/tenant-server";
 import type { Tenant } from "@/lib/mock-data";
 
 export const Route = createFileRoute("/get-started")({
@@ -21,11 +21,11 @@ export const Route = createFileRoute("/get-started")({
 
 // The one screen between "just signed up" and an empty dashboard. Skipping
 // straight to the dashboard leaves a new business with no idea that
-// whatsapp_number/labor_rate/service_call_fee (all real, all wired end to
-// end — see ROADMAP.md) need setting before the WhatsApp quoting flow does
-// anything useful. Only ever reached from signup.tsx's post-signup redirect
-// — logging in later always goes straight to /dashboard — so there's no
-// "already seen this" state to track.
+// labor_rate/service_call_fee (both real, both wired end to end — see
+// ROADMAP.md) need setting before the quoting flow does anything useful.
+// Only ever reached from signup.tsx's post-signup redirect — logging in
+// later always goes straight to /dashboard — so there's no "already seen
+// this" state to track.
 function GetStarted() {
   const { user, loading: authLoading } = useAuth();
   const navigate = useNavigate();
@@ -35,7 +35,6 @@ function GetStarted() {
   const [done, setDone] = useState(false);
   const [laborRate, setLaborRate] = useState(125);
   const [serviceCallFee, setServiceCallFee] = useState(89);
-  const [whatsappNumber, setWhatsappNumber] = useState("");
 
   useEffect(() => {
     if (authLoading) return;
@@ -50,7 +49,6 @@ function GetStarted() {
         setTenant(t);
         setLaborRate(t.laborRate);
         setServiceCallFee(t.serviceCallFee);
-        setWhatsappNumber(t.whatsappNumber);
       })
       .catch((err) => {
         toast.error(err instanceof Error ? err.message : "Could not load your account.");
@@ -63,10 +61,8 @@ function GetStarted() {
     };
   }, [authLoading, user, navigate]);
 
-  const normalizedWhatsapp = normalizeWhatsappNumber(whatsappNumber);
-  const whatsappIsValid = !normalizedWhatsapp || isPlausiblePhoneNumber(normalizedWhatsapp);
   const ratesAreValid = Number.isFinite(laborRate) && laborRate >= 0 && Number.isFinite(serviceCallFee) && serviceCallFee >= 0;
-  const canSave = ratesAreValid && whatsappIsValid && !saving;
+  const canSave = ratesAreValid && !saving;
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
@@ -94,7 +90,6 @@ function GetStarted() {
           laborRate,
           serviceCallFee,
           serviceCallFeeMode: tenant.serviceCallFeeMode,
-          whatsappNumber,
         },
       });
       setDone(true);
@@ -125,9 +120,7 @@ function GetStarted() {
             </div>
             <h1 className="mt-4 text-2xl">You're ready.</h1>
             <p className="mt-2 text-sm text-muted-foreground">
-              {normalizedWhatsapp
-                ? "We'll reach out to get that WhatsApp number connected — self-serve setup isn't live yet, so this is a manual step on our end for now."
-                : "Your pricing is set. You can request a WhatsApp number any time from Settings when you're ready."}
+              Your pricing is set. Connect WhatsApp any time from Settings when you're ready.
             </p>
             <Button className="mt-6 w-full" size="lg" onClick={() => navigate({ to: "/dashboard" })}>
               Go to dashboard
@@ -137,7 +130,8 @@ function GetStarted() {
           <div className="mt-8 rounded-md border border-border-strong bg-background p-6">
             <h1 className="text-2xl">Get your first quote ready</h1>
             <p className="mt-2 text-sm text-muted-foreground">
-              Set your pricing and connect WhatsApp so a customer's photo turns into a real quote.
+              Set your pricing so a customer's photo turns into a real quote. You can connect WhatsApp
+              via Meta any time from Settings.
             </p>
 
             <form className="mt-6 space-y-4" onSubmit={handleSave}>
@@ -166,28 +160,6 @@ function GetStarted() {
                     onChange={(e) => setServiceCallFee(e.target.valueAsNumber)}
                   />
                 </div>
-              </div>
-
-              <div>
-                <Label htmlFor="whatsappNumber">Business WhatsApp number</Label>
-                <Input
-                  id="whatsappNumber"
-                  type="tel"
-                  className="mt-1.5"
-                  placeholder="+1 (512) 555-0110"
-                  value={whatsappNumber}
-                  onChange={(e) => setWhatsappNumber(e.target.value)}
-                />
-                {!whatsappIsValid ? (
-                  <span className="mt-1.5 block text-xs text-destructive">
-                    That doesn't look like a real phone number — check the digits, or leave it blank.
-                  </span>
-                ) : (
-                  <span className="mt-1.5 block text-xs text-muted-foreground">
-                    We're still building self-serve WhatsApp connection — save the number you want and
-                    we'll reach out to connect it. Leave blank if you're not ready yet.
-                  </span>
-                )}
               </div>
 
               <Button type="submit" size="lg" className="w-full" disabled={!canSave}>

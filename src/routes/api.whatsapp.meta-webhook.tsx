@@ -19,13 +19,11 @@ import { WhatsAppOptedOutError } from "@/lib/whatsapp-opt-out-server";
 // verification, payload parsing, tenant lookup by phone_number_id.
 // Everything about the actual conversation (48-hour continuation, Q&A
 // pairing, AI pricing, lead creation) lives in
-// whatsapp-conversation-server.ts's handleInboundWhatsAppMessage, the exact
-// same shared function api.whatsapp.webhook.tsx (Twilio) already calls —
-// this route only ever talks through the ChannelAdapter it builds below,
-// never touches twilio-server.ts or its credentials.
+// whatsapp-conversation-server.ts's handleInboundWhatsAppMessage — this
+// route only ever talks through the ChannelAdapter it builds below.
 //
 // Raw HTTP handler, not createServerFn — the signature check needs the
-// exact raw request body, same reason api.whatsapp.webhook.tsx isn't one.
+// exact raw request body.
 
 // Every rejection reason (bad signature, unknown/inactive phone_number_id,
 // missing server config) answers identically to an outside caller — same
@@ -126,9 +124,8 @@ export const Route = createFileRoute("/api/whatsapp/meta-webhook")({
             const connection = await resolveActiveMetaConnection(phoneNumberId);
             if (!connection) {
               // Either an unrecognized number, or a since-disconnected tenant
-              // (the status = 'online' filter excludes it) — same posture as
-              // Twilio's "unrecognized number" case: log it, touch nothing,
-              // ack so Meta stops retrying.
+              // (the status = 'online' filter excludes it) — log it, touch
+              // nothing, ack so Meta stops retrying.
               console.error(`Meta WhatsApp message to unrecognized/inactive phone_number_id ${phoneNumberId}`);
               continue;
             }
@@ -229,9 +226,7 @@ export const Route = createFileRoute("/api/whatsapp/meta-webhook")({
                 // Meta still needs its 200 regardless — same "log and move
                 // on" posture as every other unrecoverable-per-message case
                 // in this route. But the customer must never be met with
-                // silence — same fallback-message requirement api.whatsapp
-                // .webhook.tsx (Twilio) already has for the identical
-                // failure. Routed through sendGuardedReply (not a direct
+                // silence. Routed through sendGuardedReply (not a direct
                 // adapter.sendMessage) — this exact fallback was a
                 // confirmed, reproducible bypass of the loop guard in a
                 // prior review; sendGuardedReply fails closed (sends

@@ -57,7 +57,7 @@ function TermsOfService() {
           <h2 className="text-xl font-semibold">Acceptable use</h2>
           <p>Don't use Job It Ready to send unsolicited messages, collect data unlawfully, misrepresent a
             business, or interfere with the Service's operation. WhatsApp messaging in particular is subject
-            to WhatsApp's and Twilio's own policies in addition to these terms.</p>
+            to WhatsApp's own policies in addition to these terms.</p>
 
           <h2 className="text-xl font-semibold">Your content</h2>
           <p>You (and your customers, through you) retain ownership of photos, descriptions, and other
