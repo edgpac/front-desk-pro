@@ -48,9 +48,11 @@ import {
   handleLoopGuardPause,
   handleInboundWhatsAppMessage,
   withLeadProcessingClaim,
+  toInboundWhatsAppTenant,
   LOOP_PAUSE_MESSAGE,
   type ChannelAdapter,
   type InboundWhatsAppTenant,
+  type RawTenantRowForWhatsApp,
 } from "./whatsapp-conversation-server";
 import { claimLoopNotice } from "./whatsapp-loop-guard-server";
 import { isOptedOut, normalizePhone } from "./whatsapp-opt-out-server";
@@ -141,6 +143,49 @@ describe("decideLeadRoute", () => {
   });
 });
 
+// toInboundWhatsAppTenant is the shared mapping meta-whatsapp-server.ts's
+// resolveActiveMetaConnection calls to build the tenant object passed into
+// handleInboundWhatsAppMessage. Pure and DB-free, so no fakes/mocks needed.
+describe("toInboundWhatsAppTenant", () => {
+  const BASE_ROW: RawTenantRowForWhatsApp = {
+    id: "tenant-1",
+    slug: "acme",
+    name: "Acme Handyman",
+    email: "owner@example.test",
+    currency: "USD",
+    labor_rate: 60,
+    service_call_fee: 60,
+    service_call_fee_mode: "fixed",
+    greeting_mode: "custom",
+    custom_greeting_en: "Hey! Thanks for texting Acme.",
+    custom_greeting_es: "¡Hola! Gracias por escribir a Acme.",
+  };
+
+  it("carries every field through, including the greeting configuration", () => {
+    expect(toInboundWhatsAppTenant(BASE_ROW)).toEqual({
+      id: "tenant-1",
+      slug: "acme",
+      name: "Acme Handyman",
+      email: "owner@example.test",
+      currency: "USD",
+      laborRate: 60,
+      serviceCallFee: 60,
+      serviceCallFeeMode: "fixed",
+      greetingMode: "custom",
+      customGreetingEn: "Hey! Thanks for texting Acme.",
+      customGreetingEs: "¡Hola! Gracias por escribir a Acme.",
+    });
+  });
+
+  it('defaults greetingMode to "recommended" for any value other than exactly "custom" (null, unset, or corrupted)', () => {
+    expect(toInboundWhatsAppTenant({ ...BASE_ROW, greeting_mode: null }).greetingMode).toBe("recommended");
+    expect(toInboundWhatsAppTenant({ ...BASE_ROW, greeting_mode: "" }).greetingMode).toBe("recommended");
+    expect(toInboundWhatsAppTenant({ ...BASE_ROW, greeting_mode: "garbage" }).greetingMode).toBe(
+      "recommended",
+    );
+  });
+});
+
 // ---------------------------------------------------------------------
 // WhatsApp loop guard orchestration (Task: AI-to-AI / non-progressing-
 // answer loop prevention). Simulated here with a stateful fake admin
@@ -158,6 +203,9 @@ const TEST_TENANT: InboundWhatsAppTenant = {
   laborRate: 60,
   serviceCallFee: 60,
   serviceCallFeeMode: "fixed",
+  greetingMode: "recommended",
+  customGreetingEn: null,
+  customGreetingEs: null,
 };
 const TEST_PHONE = "+15551234567";
 
@@ -2823,6 +2871,194 @@ describe("WhatsApp first-contact greeting", () => {
 
     expect(sent).toHaveLength(1);
     expect(sent[0]!.body.startsWith("Hi! 👋 ")).toBe(true);
+  });
+});
+
+describe("WhatsApp first-contact greeting — configurable source (recommended vs. custom)", () => {
+  beforeEach(() => {
+    vi.mocked(getQuoteEstimate).mockClear();
+    vi.mocked(createLead).mockClear();
+    vi.mocked(createLead).mockResolvedValue({ id: "new-lead-1" } as any);
+  });
+
+  const CUSTOM_TENANT: InboundWhatsAppTenant = {
+    ...TEST_TENANT,
+    greetingMode: "custom",
+    customGreetingEn: "Yo! Thanks for texting {business_name} — what's up?",
+    customGreetingEs: "¡Qué tal! Gracias por escribir a {business_name} — ¿qué necesitas?",
+  };
+
+  it("a tenant with a custom English greeting gets their own text, not the recommended default", async () => {
+    const { admin } = fakeFreshQuoteAdmin();
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(getQuoteEstimate).mockResolvedValue(PRICED_RESULT as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: CUSTOM_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "My kitchen faucet is leaking, how much to fix it?",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body.startsWith("Yo! Thanks for texting Acme Handyman — what's up?")).toBe(true);
+    expect(sent[0]!.body).not.toContain("How can I help you today?"); // the recommended default's own wording
+  });
+
+  it("a tenant with a custom Spanish greeting gets their own text for a Spanish conversation", async () => {
+    const { admin } = fakeFreshQuoteAdmin();
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(getQuoteEstimate).mockResolvedValue({
+      ...PRICED_RESULT,
+      diagnosis: "Reemplazo estándar de la llave de la cocina.",
+    } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: CUSTOM_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "Mi llave de la cocina está goteando, ¿cuánto cuesta repararla?",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body.startsWith("¡Qué tal! Gracias por escribir a Acme Handyman — ¿qué necesitas?")).toBe(
+      true,
+    );
+  });
+
+  it("custom mode with ONLY the English field set falls back to the recommended default for a Spanish conversation", async () => {
+    const { admin } = fakeFreshQuoteAdmin();
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(getQuoteEstimate).mockResolvedValue({
+      ...PRICED_RESULT,
+      diagnosis: "Reemplazo estándar de la llave de la cocina.",
+    } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: { ...TEST_TENANT, greetingMode: "custom", customGreetingEn: "Yo! What's up?", customGreetingEs: null },
+      fromPhone: TEST_PHONE,
+      body: "Mi llave de la cocina está goteando, ¿cuánto cuesta repararla?",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body.startsWith("¡Hola! 👋 Gracias por contactar a Acme Handyman.")).toBe(true);
+  });
+
+  it("custom mode with a whitespace-only (deleted) greeting falls back to the recommended default", async () => {
+    const { admin } = fakeFreshQuoteAdmin();
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(getQuoteEstimate).mockResolvedValue(PRICED_RESULT as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: { ...TEST_TENANT, greetingMode: "custom", customGreetingEn: "   ", customGreetingEs: "   " },
+      fromPhone: TEST_PHONE,
+      body: "My kitchen faucet is leaking, how much to fix it?",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body.startsWith("Hi! 👋 Thanks for reaching out to Acme Handyman.")).toBe(true);
+  });
+
+  it("business name is substituted into the recommended greeting from the tenant's own name, never left as a literal token", async () => {
+    const { admin } = fakeFreshQuoteAdmin();
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(getQuoteEstimate).mockResolvedValue(PRICED_RESULT as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: { ...TEST_TENANT, name: "Dusty's Plumbing & Drains" },
+      fromPhone: TEST_PHONE,
+      body: "My kitchen faucet is leaking, how much to fix it?",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body).toContain("Thanks for reaching out to Dusty's Plumbing & Drains.");
+    expect(sent[0]!.body).not.toContain("{business_name}");
+  });
+
+  it("falls back to a generic phrase (never leaving a literal token or dangling 'to .') when the tenant's name is blank", async () => {
+    const { admin } = fakeFreshQuoteAdmin();
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(getQuoteEstimate).mockResolvedValue(PRICED_RESULT as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: { ...TEST_TENANT, name: "   " },
+      fromPhone: TEST_PHONE,
+      body: "My kitchen faucet is leaking, how much to fix it?",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body).toContain("Thanks for reaching out to our team.");
+    expect(sent[0]!.body).not.toContain("{business_name}");
+    expect(sent[0]!.body).not.toContain("to .");
+  });
+
+  it("a custom greeting also only ever fires once — a different-job pivot within the 48-hour window doesn't repeat it", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: {
+        id: "lead-custom-greeting-followup",
+        customer_name: "Lee",
+        photo_url: null,
+        problem: "install a ceiling fan",
+        confidence: "High",
+        diagnosis: "Ceiling fan installation",
+        flag_type: null,
+      },
+      leadSlotClaimSucceeds: true,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(classifyFollowUpIntent).mockClear();
+    vi.mocked(classifyFollowUpIntent).mockResolvedValue({ classification: "different_job" } as any);
+    vi.mocked(getQuoteEstimate).mockResolvedValue(PRICED_RESULT as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: CUSTOM_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "actually, separate from that — my water heater is leaking too",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body).not.toContain("Yo! Thanks for texting");
+    expect(sent[0]!.body).not.toContain("Hi! 👋");
   });
 });
 

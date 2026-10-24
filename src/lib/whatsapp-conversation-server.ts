@@ -567,21 +567,54 @@ function localizedGreeting(language: DetectedLanguage, businessName: string): st
     : `Thanks for reaching out to ${businessName}! To get you a fast, accurate price, send a photo along with a description of what you need — or just describe the problem in more detail and I can help without one.`;
 }
 
-// A short wave, prefixed onto whatever the real first reply turns out to be
-// (a clarifying question, an out-of-scope handoff, or an instant quote) —
-// never its own separate message, and never a fixed, generic "how can I
-// help" line, since the actual content right after it is always real,
-// AI-generated text specific to what the customer described. Callers gate
-// this behind isFirstContact (openLead == null — see
-// handleInboundWhatsAppMessage's own 48-hour, phone+tenant-scoped lookup)
-// rather than applying it unconditionally, so a message that's part of an
-// existing conversation (a flagged lead still inside the 48-hour window, or
-// a "different job" fallthrough from an already-quoted lead) never gets
-// re-greeted — only a message with no lead at all in that window does.
-// Deliberately NOT used for the thin-description case (localizedGreeting above opens warmly on
-// its own — "Hi! Thanks for reaching out..." would be redundant).
-function localizedFirstContactGreeting(language: DetectedLanguage): string {
-  return isEs(language) ? "¡Hola! 👋 " : "Hi! 👋 ";
+// Recommended, localized first-contact greeting templates — used verbatim
+// unless the tenant has configured their own custom text (see
+// resolveFirstContactGreeting below). {business_name} is substituted
+// server-side from the tenant's own name, never from anything
+// customer-supplied.
+const RECOMMENDED_GREETING_TEMPLATE: Record<"en" | "es", string> = {
+  en: "Hi! 👋 Thanks for reaching out to {business_name}. How can I help you today?",
+  es: "¡Hola! 👋 Gracias por contactar a {business_name}. ¿En qué podemos ayudarte?",
+};
+
+// Substitutes {business_name} with the tenant's real name — falling back to
+// a generic phrase (never a customer-supplied value) if the tenant's name
+// is somehow blank, so the sentence still reads naturally instead of
+// leaving a dangling "to ." A no-op for text that doesn't contain the
+// token at all, which is the common case for a tenant's own custom text.
+function applyBusinessName(template: string, businessName: string, language: DetectedLanguage): string {
+  const name = businessName.trim() || (isEs(language) ? "nuestro equipo" : "our team");
+  return template.replaceAll("{business_name}", name);
+}
+
+// Resolves the ONE greeting string used on a tenant's first contact —
+// prefixed onto whatever the real first reply turns out to be (a
+// clarifying question, an out-of-scope handoff, or an instant quote), or
+// sent as the whole message for a bare "hi"-style thin first message (see
+// the thin-description branch in handleInboundWhatsAppMessage). Never its
+// own redundant extra message. Callers gate this behind isFirstContact
+// (openLead == null — see handleInboundWhatsAppMessage's own 48-hour,
+// phone+tenant-scoped lookup) rather than applying it unconditionally, so a
+// message that's part of an existing conversation (a flagged lead still
+// inside the 48-hour window, or a "different job" fallthrough from an
+// already-quoted lead) never gets re-greeted.
+//
+// Security note: the tenant's custom greeting text is used strictly as
+// literal, static customer-facing text, composed here into the final
+// outbound message — it is NEVER passed into any AI prompt (getQuoteEstimate/
+// classifyFollowUpIntent/etc. have all already run and returned their result
+// by the time this is called), so a tenant cannot use this field to inject
+// instructions that influence pricing, diagnosis, or any other AI behavior.
+function resolveFirstContactGreeting(tenant: InboundWhatsAppTenant, language: DetectedLanguage): string {
+  const recommended = applyBusinessName(
+    isEs(language) ? RECOMMENDED_GREETING_TEMPLATE.es : RECOMMENDED_GREETING_TEMPLATE.en,
+    tenant.name,
+    language,
+  );
+  if (tenant.greetingMode !== "custom") return recommended;
+  const custom = (isEs(language) ? tenant.customGreetingEs : tenant.customGreetingEn)?.trim();
+  if (!custom) return recommended; // empty or deleted custom greeting -> safe fallback
+  return applyBusinessName(custom, tenant.name, language);
 }
 
 function localizedLostPhotoMessage(language: DetectedLanguage): string {
@@ -759,7 +792,46 @@ export type InboundWhatsAppTenant = {
   laborRate: number;
   serviceCallFee: number;
   serviceCallFeeMode: "fixed" | "negotiated";
+  greetingMode: "recommended" | "custom";
+  customGreetingEn: string | null;
+  customGreetingEs: string | null;
 };
+
+// Raw tenants-table row shape, as selected by meta-whatsapp-server.ts's
+// resolveActiveMetaConnection before being narrowed to the
+// InboundWhatsAppTenant projection below.
+export type RawTenantRowForWhatsApp = {
+  id: string;
+  slug: string;
+  name: string;
+  email: string;
+  currency: string;
+  labor_rate: number;
+  service_call_fee: number;
+  service_call_fee_mode: "fixed" | "negotiated";
+  greeting_mode: string | null;
+  custom_greeting_en: string | null;
+  custom_greeting_es: string | null;
+};
+
+// Single shared mapping from a raw tenants-table row to the curated
+// InboundWhatsAppTenant projection. Pure and DB-free, so it's directly
+// unit-testable with a plain object.
+export function toInboundWhatsAppTenant(row: RawTenantRowForWhatsApp): InboundWhatsAppTenant {
+  return {
+    id: row.id,
+    slug: row.slug,
+    name: row.name,
+    email: row.email,
+    currency: row.currency,
+    laborRate: row.labor_rate,
+    serviceCallFee: row.service_call_fee,
+    serviceCallFeeMode: row.service_call_fee_mode,
+    greetingMode: row.greeting_mode === "custom" ? "custom" : "recommended",
+    customGreetingEn: row.custom_greeting_en,
+    customGreetingEs: row.custom_greeting_es,
+  };
+}
 
 export async function handleInboundWhatsAppMessage(params: {
   tenant: InboundWhatsAppTenant;
@@ -1413,7 +1485,14 @@ export async function handleInboundWhatsAppMessage(params: {
       adapter,
       leadId: null,
       signature: { kind: "text", text: "canned:thin-description-greeting" },
-      messageText: `${isFirstContact ? localizedFirstContactGreeting(thinDescriptionLanguage) : ""}${localizedGreeting(thinDescriptionLanguage, tenant.name)}`,
+      // First contact and nothing but a bare "hi"-style message to go on —
+      // the configured greeting IS the whole reply (it already reads as a
+      // complete, friendly opener); not prefixed onto localizedGreeting's
+      // own "thanks for reaching out" text, which would just repeat it.
+      // Not first contact — totally unchanged, existing behavior.
+      messageText: isFirstContact
+        ? resolveFirstContactGreeting(tenant, thinDescriptionLanguage)
+        : localizedGreeting(thinDescriptionLanguage, tenant.name),
     });
     return;
   }
@@ -1814,7 +1893,7 @@ async function handleFreshQuote(params: {
   // signal available, same reasoning as the thin-description greeting
   // above.
   const language = detectLanguage(body);
-  const firstContactGreeting = isFirstContact ? localizedFirstContactGreeting(language) : "";
+  const firstContactGreeting = isFirstContact ? `${resolveFirstContactGreeting(tenant, language)} ` : "";
 
   const { data: priceSheetRows } = await admin
     .from("price_sheet_items")

@@ -6,8 +6,11 @@ import { toast } from "sonner";
 import { PageHeader, Panel } from "@/components/app/DashboardShell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/lib/use-auth";
-import { getMyTenant } from "@/lib/tenant-server";
+import { getMyTenant, updateMyGreetingSettings, MAX_CUSTOM_GREETING_LENGTH } from "@/lib/tenant-server";
 import { isSupportedImageFile, UNSUPPORTED_IMAGE_MESSAGE } from "@/lib/image-client";
 import {
   listMyPriceSheet,
@@ -54,6 +57,24 @@ function fileToBase64(file: File): Promise<{ base64: string; mediaType: string }
   });
 }
 
+// Display-only preview of the recommended greeting, for this UI only — the
+// actual outbound text is always resolved server-side by
+// resolveFirstContactGreeting in whatsapp-conversation-server.ts, which this
+// deliberately does NOT import (a server-only module; importing it here
+// would break TanStack Start's client/server import boundary, same reason
+// price-sheet-server.ts duplicates its own small signature-only check
+// rather than importing estimate-server.ts's). Keep these two templates in
+// sync by hand if the recommended wording ever changes.
+const RECOMMENDED_GREETING_PREVIEW: Record<"en" | "es", string> = {
+  en: "Hi! 👋 Thanks for reaching out to {business_name}. How can I help you today?",
+  es: "¡Hola! 👋 Gracias por contactar a {business_name}. ¿En qué podemos ayudarte?",
+};
+
+function greetingPreview(language: "en" | "es", businessName: string): string {
+  const name = businessName.trim() || (language === "es" ? "nuestro equipo" : "our team");
+  return RECOMMENDED_GREETING_PREVIEW[language].replaceAll("{business_name}", name);
+}
+
 function newRow(): PriceSheetRow {
   return {
     id: `new-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -87,6 +108,18 @@ function PriceSheetPage() {
   const [expandedNotes, setExpandedNotes] = useState<Set<string>>(new Set());
   const fileRef = useRef<HTMLInputElement>(null);
   const restoreFileRef = useRef<HTMLInputElement>(null);
+
+  // AI Greeting — deliberately its own state and its own save action,
+  // separate from rows/dirty/saveAll above: this isn't a price-sheet item,
+  // it's a tenant-level setting (see updateMyGreetingSettings), so saving
+  // it must never touch, resend, or risk clobbering the price sheet or
+  // vice versa.
+  const [businessName, setBusinessName] = useState("");
+  const [greetingMode, setGreetingMode] = useState<"recommended" | "custom">("recommended");
+  const [customGreetingEn, setCustomGreetingEn] = useState("");
+  const [customGreetingEs, setCustomGreetingEs] = useState("");
+  const [greetingDirty, setGreetingDirty] = useState(false);
+  const [greetingSaving, setGreetingSaving] = useState(false);
 
   function applyExtractedItems(extracted: ExtractedPriceSheetItem[], source: string) {
     if (extracted.length === 0) {
@@ -126,12 +159,19 @@ function PriceSheetPage() {
       });
     getMyTenant()
       .then((tenant) => {
-        if (active) setCurrency(tenant.currency);
+        if (!active) return;
+        setCurrency(tenant.currency);
+        setBusinessName(tenant.name);
+        setGreetingMode(tenant.greetingMode);
+        setCustomGreetingEn(tenant.customGreetingEn ?? "");
+        setCustomGreetingEs(tenant.customGreetingEs ?? "");
       })
       .catch(() => {
-        // Non-fatal — the page still works with the USD default if this
-        // fails for some reason; the price sheet load above is what gates
-        // the loading state.
+        // Non-fatal — the page still works with the USD default and the
+        // recommended greeting if this fails for some reason; the price
+        // sheet load above is what gates the loading state. A failed load
+        // here falls back to the safe "recommended" default rather than
+        // ever showing blank/broken greeting fields.
       });
     return () => {
       active = false;
@@ -186,6 +226,35 @@ function PriceSheetPage() {
       toast.error(err instanceof Error ? err.message : "Could not save price sheet.");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function saveGreeting() {
+    if (!user) {
+      toast.success("Saved (sample data — sign up to save your real greeting)");
+      setGreetingDirty(false);
+      return;
+    }
+    setGreetingSaving(true);
+    try {
+      await updateMyGreetingSettings({
+        data: { greetingMode, customGreetingEn, customGreetingEs },
+      });
+      // Left as the user typed it locally — not reset to whatever the
+      // server echoed back, same reasoning as every other save here:
+      // the trim/null-if-empty normalization happens server-side, but
+      // re-fetching and overwriting local state isn't needed just to
+      // confirm a successful save, and failing to re-fetch can never
+      // silently discard what's on screen.
+      setGreetingDirty(false);
+      toast.success("Greeting saved — the WhatsApp assistant will use it on new conversations.");
+    } catch (err) {
+      // Dirty state and the typed text are both left exactly as they
+      // were — a failed save must never look like a successful one, and
+      // must never silently discard what the owner typed.
+      toast.error(err instanceof Error ? err.message : "Could not save greeting settings.");
+    } finally {
+      setGreetingSaving(false);
     }
   }
 
@@ -363,6 +432,102 @@ function PriceSheetPage() {
           that needs JavaScript to show its content (some custom-built sites) — use the photo upload above
           for those instead.
         </p>
+      </Panel>
+
+      <Panel
+        title="AI Greeting"
+        aside={
+          <Button size="sm" onClick={() => void saveGreeting()} disabled={!greetingDirty || greetingSaving}>
+            {greetingSaving ? "Saving…" : "Save greeting"}
+          </Button>
+        }
+      >
+        <p className="text-xs text-muted-foreground">
+          This is what the WhatsApp assistant says first, on a new conversation — never repeated on
+          follow-up messages in the same conversation.
+        </p>
+        <RadioGroup
+          className="mt-3 gap-3"
+          value={greetingMode}
+          onValueChange={(value) => {
+            setGreetingMode(value as "recommended" | "custom");
+            setGreetingDirty(true);
+          }}
+        >
+          <div className="flex items-start gap-2">
+            <RadioGroupItem value="recommended" id="greeting-recommended" className="mt-0.5" />
+            <div>
+              <Label htmlFor="greeting-recommended" className="font-medium">
+                Use recommended greeting
+              </Label>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                {greetingPreview("en", businessName)}
+                <br />
+                {greetingPreview("es", businessName)}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-start gap-2">
+            <RadioGroupItem value="custom" id="greeting-custom" className="mt-0.5" />
+            <Label htmlFor="greeting-custom" className="font-medium">
+              Use custom greeting
+            </Label>
+          </div>
+        </RadioGroup>
+
+        {greetingMode === "custom" && (
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <div>
+              <Label htmlFor="greeting-en" className="text-xs font-medium text-muted-foreground">
+                English{" "}
+                <span className="font-normal">
+                  ({customGreetingEn.length}/{MAX_CUSTOM_GREETING_LENGTH})
+                </span>
+              </Label>
+              <Textarea
+                id="greeting-en"
+                className="mt-1"
+                rows={3}
+                placeholder={greetingPreview("en", businessName)}
+                value={customGreetingEn}
+                onChange={(e) => {
+                  setCustomGreetingEn(e.target.value);
+                  setGreetingDirty(true);
+                }}
+              />
+              {customGreetingEn.length > MAX_CUSTOM_GREETING_LENGTH && (
+                <p className="mt-1 text-xs text-destructive">Too long — trim before saving.</p>
+              )}
+            </div>
+            <div>
+              <Label htmlFor="greeting-es" className="text-xs font-medium text-muted-foreground">
+                Spanish{" "}
+                <span className="font-normal">
+                  ({customGreetingEs.length}/{MAX_CUSTOM_GREETING_LENGTH})
+                </span>
+              </Label>
+              <Textarea
+                id="greeting-es"
+                className="mt-1"
+                rows={3}
+                placeholder={greetingPreview("es", businessName)}
+                value={customGreetingEs}
+                onChange={(e) => {
+                  setCustomGreetingEs(e.target.value);
+                  setGreetingDirty(true);
+                }}
+              />
+              {customGreetingEs.length > MAX_CUSTOM_GREETING_LENGTH && (
+                <p className="mt-1 text-xs text-destructive">Too long — trim before saving.</p>
+              )}
+            </div>
+            <p className="text-xs text-muted-foreground sm:col-span-2">
+              Leave a language blank to use the recommended greeting for that language instead. Use{" "}
+              <code className="rounded-sm bg-muted px-1 py-0.5">{"{business_name}"}</code> anywhere you want
+              your business name inserted automatically.
+            </p>
+          </div>
+        )}
       </Panel>
 
       <Panel>

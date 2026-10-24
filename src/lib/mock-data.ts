@@ -342,6 +342,13 @@ export type Tenant = {
   // estimate-server.ts's buildPrompt for how "fixed" vs "negotiated" changes
   // the AI's service-call/diagnostic-fee behavior.
   serviceCallFeeMode: "fixed" | "negotiated";
+  // AI Greeting (Price Sheet page) — "recommended" uses the built-in
+  // localized default; "custom" uses customGreetingEn/Es, falling back to
+  // the recommended default per-language if that language's field is
+  // unset. See whatsapp-conversation-server.ts's resolveFirstContactGreeting.
+  greetingMode: "recommended" | "custom";
+  customGreetingEn: string | null;
+  customGreetingEs: string | null;
 };
 
 export const TENANT: Tenant = {
@@ -362,6 +369,9 @@ export const TENANT: Tenant = {
   laborRate: 125,
   serviceCallFee: 89,
   serviceCallFeeMode: "fixed",
+  greetingMode: "recommended",
+  customGreetingEn: null,
+  customGreetingEs: null,
 };
 
 // Served as a static asset from the same domain (public/widget.js) rather

@@ -5,7 +5,8 @@ import { getAdminClient } from "@/lib/public-lead-server";
 import { resumeLoopGuardState } from "@/lib/whatsapp-loop-guard-server";
 import { isOptedOut, normalizePhone, WhatsAppOptedOutError } from "@/lib/whatsapp-opt-out-server";
 import { recordAuditLog } from "@/lib/audit-log-server";
-import type { InboundWhatsAppTenant } from "@/lib/whatsapp-conversation-server";
+import type { InboundWhatsAppTenant, RawTenantRowForWhatsApp } from "@/lib/whatsapp-conversation-server";
+import { toInboundWhatsAppTenant } from "@/lib/whatsapp-conversation-server";
 
 // Meta WhatsApp Cloud API — Embedded Signup + OAuth/token exchange, plus
 // webhook/outbound messaging. Nothing here is imported by
@@ -423,7 +424,7 @@ export async function resolveActiveMetaConnection(
   const { data, error } = await admin
     .from("whatsapp_connections")
     .select(
-      "id, meta_system_user_token, tenants!inner(id, slug, name, email, currency, labor_rate, service_call_fee, service_call_fee_mode)",
+      "id, meta_system_user_token, tenants!inner(id, slug, name, email, currency, labor_rate, service_call_fee, service_call_fee_mode, greeting_mode, custom_greeting_en, custom_greeting_es)",
     )
     .eq("meta_phone_number_id", phoneNumberId)
     .eq("status", "online")
@@ -432,31 +433,13 @@ export async function resolveActiveMetaConnection(
 
   const connectionId = data["id"] as string;
   const accessToken = data["meta_system_user_token"] as string | null;
-  const tenantRow = data["tenants"] as unknown as {
-    id: string;
-    slug: string;
-    name: string;
-    email: string;
-    currency: string;
-    labor_rate: number;
-    service_call_fee: number;
-    service_call_fee_mode: "fixed" | "negotiated";
-  };
+  const tenantRow = data["tenants"] as unknown as RawTenantRowForWhatsApp;
   if (!accessToken || !tenantRow) return null;
 
   return {
     connectionId,
     accessToken,
-    tenant: {
-      id: tenantRow.id,
-      slug: tenantRow.slug,
-      name: tenantRow.name,
-      email: tenantRow.email,
-      currency: tenantRow.currency,
-      laborRate: tenantRow.labor_rate,
-      serviceCallFee: tenantRow.service_call_fee,
-      serviceCallFeeMode: tenantRow.service_call_fee_mode,
-    },
+    tenant: toInboundWhatsAppTenant(tenantRow),
   };
 }
 
