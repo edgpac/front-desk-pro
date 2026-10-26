@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { hasActiveSubscriptionForOwner } from "@/lib/entitlements-server";
 import { lineItemsTotal } from "@/lib/mock-data";
 import { validateSubmittedLineItem, type PriceSheetItem } from "@/lib/estimate-server";
+import { normalizePhone } from "@/lib/whatsapp-loop-guard-server";
 
 // Duplicated from estimate-server.ts's own private getClientIpHash rather
 // than exported and imported — estimate-server.ts is imported by client
@@ -349,6 +350,12 @@ export const createLead = createServerFn({ method: "POST" })
           }
         : { status: null, flagType: null, flagReason: null };
 
+    // Plain normalization only (strip whitespace/punctuation, keep a
+    // leading "+") — never a full E.164 validator, never a guessed country
+    // code, and this never rewrites an existing customer record, only what
+    // this new lead itself stores. See normalizePhone's own comment.
+    const normalizedPhone = normalizePhone(data.phone);
+
     // Atomic: both the lead row and its line items commit or roll back
     // together (0019_lead_write_atomicity.sql) — previously two separate
     // requests, which could leave a committed lead with no line items if
@@ -356,7 +363,7 @@ export const createLead = createServerFn({ method: "POST" })
     const { data: leadId, error: leadError } = await admin.rpc("create_lead_with_line_items", {
       p_tenant_id: tenant.id,
       p_customer_name: data.customerName,
-      p_phone: data.phone,
+      p_phone: normalizedPhone,
       p_address: data.address,
       p_channel: data.channel,
       p_photo_url: data.photoUrl ?? null,
@@ -403,7 +410,7 @@ export const createLead = createServerFn({ method: "POST" })
         tenant: { name: tenant.name, email: tenant.email, currency: tenant.currency },
         lead: {
           customer: data.customerName,
-          phone: data.phone,
+          phone: normalizedPhone,
           address: data.address,
           channel: data.channel,
           problem: data.problem,
@@ -463,7 +470,8 @@ export const createFlaggedLead = createServerFn({ method: "POST" })
       .insert({
         tenant_id: tenant.id,
         customer_name: data.customerName,
-        phone: data.phone,
+        // Plain normalization only — see normalizePhone's own comment.
+        phone: normalizePhone(data.phone),
         channel: data.channel,
         photo_url: data.photoUrl,
         problem: data.problem,
@@ -539,7 +547,8 @@ export const performCreateClarifyingLead = createServerOnlyFn(
       .insert({
         tenant_id: tenant.id,
         customer_name: data.customerName,
-        phone: data.phone,
+        // Plain normalization only — see normalizePhone's own comment.
+        phone: normalizePhone(data.phone),
         channel: data.channel,
         photo_url: data.photoUrl,
         problem: data.problem,
@@ -678,7 +687,12 @@ export const performFinalizeLeadWithQuote = createServerOnlyFn(
         // filled in here. A no-op for WhatsApp, which already wrote the same
         // values at createClarifyingLead time.
         p_customer_name: data.customerName,
-        p_phone: data.phone,
+        // Plain normalization only — see normalizePhone's own comment. A
+        // no-op for WhatsApp (already normalized by the time
+        // createClarifyingLead first wrote it); this is what actually
+        // changes behavior for the widget, which only collects the real
+        // phone at this final step.
+        p_phone: normalizePhone(data.phone),
         p_diagnosis: data.diagnosis,
         p_confidence: data.confidence,
         p_ai_line_items_snapshot: data.lineItems,
@@ -711,7 +725,8 @@ export const performFinalizeLeadWithQuote = createServerOnlyFn(
         tenant: { name: tenant.name, email: tenant.email, currency: tenant.currency },
         lead: {
           customer: data.customerName,
-          phone: data.phone,
+          // Same normalized value just written above — see its comment.
+          phone: normalizePhone(data.phone),
           address: "",
           channel: data.channel,
           problem: data.problem,
@@ -840,7 +855,8 @@ export const finalizeLeadAsOutOfScope = createServerFn({ method: "POST" })
       .from("leads")
       .update({
         customer_name: data.customerName,
-        phone: data.phone,
+        // Plain normalization only — see normalizePhone's own comment.
+        phone: normalizePhone(data.phone),
         status: "flagged",
         flag_type: "outside_service_scope",
         flag_reason: data.flagReason,
@@ -896,7 +912,8 @@ export const finalizeLeadAsNeedsReview = createServerFn({ method: "POST" })
       .from("leads")
       .update({
         customer_name: data.customerName,
-        phone: data.phone,
+        // Plain normalization only — see normalizePhone's own comment.
+        phone: normalizePhone(data.phone),
         status: "flagged",
         flag_type: "needs_human_review",
         flag_reason: "AI couldn't finalize this quote automatically after clarification.",

@@ -36,6 +36,13 @@ type FakeAdminConfig = {
 // the function threw.
 function fakeAdmin(config: FakeAdminConfig) {
   const calls: string[] = [];
+  // Captures exactly what each write call was given, so a phone-normalization
+  // test can assert against the real payload reaching the database layer,
+  // not just that the call happened.
+  const writes = {
+    leadInsertPayload: null as Record<string, unknown> | null,
+    rpcParams: {} as Record<string, Record<string, unknown> | undefined>,
+  };
   const client = {
     from(table: string) {
       if (table === "tenants") {
@@ -69,11 +76,14 @@ function fakeAdmin(config: FakeAdminConfig) {
       if (table === "leads") {
         calls.push("from:leads");
         return {
-          insert: () => ({
-            select: () => ({
-              single: async () => config.leadInsert ?? { data: { id: "lead-1" }, error: null },
-            }),
-          }),
+          insert: (payload: Record<string, unknown>) => {
+            writes.leadInsertPayload = payload;
+            return {
+              select: () => ({
+                single: async () => config.leadInsert ?? { data: { id: "lead-1" }, error: null },
+              }),
+            };
+          },
         };
       }
       if (table === "price_sheet_items") {
@@ -87,15 +97,16 @@ function fakeAdmin(config: FakeAdminConfig) {
       }
       throw new Error(`fakeAdmin: unexpected table "${table}"`);
     },
-    rpc: async (name: string) => {
+    rpc: async (name: string, params?: Record<string, unknown>) => {
       calls.push(`rpc:${name}`);
+      writes.rpcParams[name] = params;
       if (name === "increment_tenant_ip_usage") return { data: 1, error: null };
       if (name === "update_lead_with_line_items")
         return config.updateLead ?? { data: "lead-1", error: null };
       throw new Error(`fakeAdmin: unexpected rpc "${name}"`);
     },
   };
-  return { client: client as unknown as ReturnType<typeof getAdminClient>, calls };
+  return { client: client as unknown as ReturnType<typeof getAdminClient>, calls, writes };
 }
 
 const baseClarifyingInput = {
@@ -207,5 +218,62 @@ describe("performFinalizeLeadWithQuote — subscription gate (Task B)", () => {
     const result = await performFinalizeLeadWithQuote(client, baseFinalizeInput);
     expect(result).toEqual({ id: "lead-1", total: 0 });
     expect(calls).toContain("rpc:update_lead_with_line_items");
+  });
+});
+
+// Plain phone normalization (strip whitespace/punctuation, keep a leading
+// "+") applied at every public lead-write boundary — never a country-code
+// guess, never a rewrite of an existing customer record, just consistent
+// formatting for what THIS write stores. See normalizePhone's own comment
+// in whatsapp-loop-guard-server.ts.
+describe("phone normalization at the public lead-write boundary", () => {
+  it("performCreateClarifyingLead strips formatting punctuation from a widget-typed phone before it reaches the insert", async () => {
+    const { client, writes } = fakeAdmin({
+      tenant: { id: "tenant-1", user_id: "owner-1" },
+      subscriptionActive: true,
+    });
+    await performCreateClarifyingLead(client, {
+      ...baseClarifyingInput,
+      phone: "+1 (555) 123-4567",
+    });
+    expect(writes.leadInsertPayload?.["phone"]).toBe("+15551234567");
+  });
+
+  it("performCreateClarifyingLead leaves an already-normalized phone unchanged (idempotent)", async () => {
+    const { client, writes } = fakeAdmin({
+      tenant: { id: "tenant-1", user_id: "owner-1" },
+      subscriptionActive: true,
+    });
+    await performCreateClarifyingLead(client, { ...baseClarifyingInput, phone: "+15551234567" });
+    expect(writes.leadInsertPayload?.["phone"]).toBe("+15551234567");
+  });
+
+  it("performCreateClarifyingLead never guesses a missing country code — a bare local number stays a bare local number, just stripped of punctuation", async () => {
+    const { client, writes } = fakeAdmin({
+      tenant: { id: "tenant-1", user_id: "owner-1" },
+      subscriptionActive: true,
+    });
+    await performCreateClarifyingLead(client, { ...baseClarifyingInput, phone: "(555) 123-4567" });
+    expect(writes.leadInsertPayload?.["phone"]).toBe("5551234567");
+  });
+
+  it("performFinalizeLeadWithQuote normalizes the widget's final-step phone the same way, both in the lead update RPC and the owner notification", async () => {
+    const { client, writes } = fakeAdmin({
+      tenant: { id: "tenant-1", user_id: "owner-1" },
+      subscriptionActive: true,
+      updateLead: { data: "lead-1", error: null },
+    });
+    await performFinalizeLeadWithQuote(client, { ...baseFinalizeInput, phone: "+1 555 123 4567" });
+    expect(writes.rpcParams["update_lead_with_line_items"]?.["p_phone"]).toBe("+15551234567");
+  });
+
+  it("performFinalizeLeadWithQuote is a no-op for a phone WhatsApp already normalized (idempotent re-write)", async () => {
+    const { client, writes } = fakeAdmin({
+      tenant: { id: "tenant-1", user_id: "owner-1" },
+      subscriptionActive: true,
+      updateLead: { data: "lead-1", error: null },
+    });
+    await performFinalizeLeadWithQuote(client, { ...baseFinalizeInput, phone: "+15551234567" });
+    expect(writes.rpcParams["update_lead_with_line_items"]?.["p_phone"]).toBe("+15551234567");
   });
 });

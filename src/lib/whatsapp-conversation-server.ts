@@ -784,7 +784,10 @@ export type LeadRouteDecision =
   | "quoted_follow_up"; // already has a real quote (confidence set) — includes pending_negotiated_price
 
 export function decideLeadRoute(
-  openLead: { confidence: string | null; flag_type: string | null } | null | undefined,
+  openLead:
+    | { confidence: string | null; flag_type: string | null; status: string }
+    | null
+    | undefined,
 ): LeadRouteDecision {
   if (!openLead) return "fresh_quote";
   // Order matters: pending_negotiated_price also has a non-null flag_type,
@@ -798,9 +801,268 @@ export function decideLeadRoute(
   // also always has a real confidence value (same finalizeLeadWithQuote
   // path) — it needs zero changes here, already correctly falls into
   // quoted_follow_up, same as pending_negotiated_price does.
-  if (openLead.confidence !== null) return "quoted_follow_up";
+  if (openLead.confidence !== null) {
+    // won/lost are genuinely terminal — the job is either done or the
+    // customer walked away, so there's no legitimate "follow-up to a
+    // finished job" the way there is for every other status. A new
+    // message about a won/lost lead is always a fresh request, never a
+    // continuation. booked and quoted are deliberately NOT special-cased
+    // here: a booked job is still active (a question about the scheduled
+    // appointment is a real follow-up, not a new request), and
+    // classifyFollowUpIntent already correctly distinguishes "about the
+    // booked job" from "something new" for any confidence-set lead — this
+    // was already working correctly before this change, for any status
+    // other than won/lost.
+    if (openLead.status === "won" || openLead.status === "lost") return "fresh_quote";
+    return "quoted_follow_up";
+  }
   if (openLead.flag_type != null) return "fresh_quote";
   return "continue_clarification";
+}
+
+// --- Extended-window conversation resume --------------------------------
+//
+// Reached only when the normal 48-hour lookup found nothing actionable
+// (decideLeadRoute's initial result was "fresh_quote" — no lead at all, or
+// a won/lost one). Looks further back for a genuinely unresolved prior
+// lead and decides, using the exact same classifyFollowUpIntent call the
+// quoted_follow_up route already relies on for this exact kind of
+// same-job/different-job/ambiguous decision, whether the current message
+// plausibly continues one of them — never by picking whichever is newest.
+
+// Deliberately much longer than the 48-hour "silent continuation" window.
+const RESUME_LOOKBACK_DAYS = 14;
+
+// Above this many plausible open leads, automatic matching is not
+// attempted at all — classifying against an arbitrary subset and silently
+// ignoring the rest risks attaching the message to the wrong job exactly
+// as often as it helps. A single, honest "which one is this about"
+// question is the safe fallback instead of ever guessing from a partial
+// set.
+const MAX_RESUME_CANDIDATES = 3;
+
+// Same shape as the main openLead query above (status now included there
+// too) — status in ('new','quoted','flagged','booked') deliberately
+// excludes won/lost, which decideLeadRoute already treats as terminal:
+// nothing to resume once a job is actually finished or abandoned.
+export const RESUMABLE_STATUSES = ["new", "quoted", "flagged", "booked"] as const;
+
+type ResumeCandidate = {
+  id: string;
+  customer_name: string | null;
+  photo_url: string | null;
+  problem: string;
+  confidence: string | null;
+  diagnosis: string | null;
+  flag_type: string | null;
+  status: string;
+};
+
+// One short, natural line truncated from the lead's own stored problem
+// text — never inventing detail beyond what's actually on record.
+function summarizeForCustomer(text: string, maxLen = 80): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= maxLen) return trimmed;
+  return `${trimmed.slice(0, maxLen - 1).trimEnd()}…`;
+}
+
+// Sent once, at the moment a prior conversation is confidently resumed —
+// never repeated afterward, since the resumed lead becomes an ordinary
+// in-window openLead for every message after this one, and this function
+// is only ever reached when the normal 48-hour lookup found nothing.
+function localizedResumeAcknowledgment(language: DetectedLanguage, problem: string): string {
+  const summary = summarizeForCustomer(problem);
+  return isEs(language)
+    ? `Retomando esto — usted mencionó: "${summary}".`
+    : `Picking this back up — you mentioned: "${summary}".`;
+}
+
+// Covers both the "one candidate, but the classifier itself was unsure"
+// case and the "more than one plausible candidate" case — named
+// candidates are drawn only from their own stored problem text, never
+// invented.
+function localizedCandidateClarifyingQuestion(
+  language: DetectedLanguage,
+  candidates: ResumeCandidate[],
+): string {
+  const summaries = candidates.map((c) => `"${summarizeForCustomer(c.problem)}"`);
+  if (summaries.length === 1) {
+    return isEs(language)
+      ? `¿Esto es sobre ${summaries[0]}, o algo nuevo?`
+      : `Is this about ${summaries[0]}, or something new?`;
+  }
+  const list = summaries.join(isEs(language) ? ", o " : ", or ");
+  return isEs(language)
+    ? `Tengo más de una cosa pendiente para usted — ¿esto es sobre ${list}?`
+    : `I have more than one thing open for you — is this about ${list}?`;
+}
+
+function localizedTooManyCandidatesMessage(language: DetectedLanguage): string {
+  return isEs(language)
+    ? "Veo varias cosas en proceso para usted — ¿podría recordarme a cuál se refiere esto?"
+    : "I see a few things in progress for you — could you remind me which one this is about?";
+}
+
+// Exported solely so this decision logic is directly unit-testable without
+// re-driving the entire handleInboundWhatsAppMessage pipeline (the same
+// reasoning decideLeadRoute's own export already follows) — not meant to be
+// called from anywhere outside this module's own fresh_quote branch below.
+//
+// "no_match" carries hadPriorHistory: whether the 14-day lookback found ANY
+// lead for this (tenant, phone) at all — even one that was never a resume
+// candidate (won/lost, excluded by the query below) or was found but
+// classified as a different job. The caller needs this to correctly
+// suppress a false first-contact greeting for a genuinely returning
+// customer, entirely separate from whether anything here was resumable —
+// this flag never carries the candidate's own problem/diagnosis/photo, so
+// it can't leak any transcript detail into the fresh-lead path.
+export type ConversationResumeOutcome =
+  | { kind: "resumed"; lead: ResumeCandidate }
+  | { kind: "handled" }
+  | { kind: "no_match"; hadPriorHistory: boolean };
+
+export async function attemptConversationResume(params: {
+  admin: ReturnType<typeof getAdminClient>;
+  tenant: InboundWhatsAppTenant;
+  fromPhone: string;
+  adapter: ChannelAdapter;
+  body: string;
+}): Promise<ConversationResumeOutcome> {
+  const { admin, tenant, fromPhone, adapter, body } = params;
+  const language = detectLanguage(body);
+
+  // +1 over the real cap: enough to detect "more than MAX_RESUME_CANDIDATES
+  // exist" without needing a separate count query, never enough to pull an
+  // unbounded number of rows.
+  const { data: candidateRows } = await admin
+    .from("leads")
+    .select("id, customer_name, photo_url, problem, confidence, diagnosis, flag_type, status")
+    .eq("tenant_id", tenant.id)
+    .eq("phone", fromPhone)
+    .gte("created_at", new Date(Date.now() - RESUME_LOOKBACK_DAYS * 24 * 60 * 60 * 1000).toISOString())
+    .in("status", RESUMABLE_STATUSES)
+    .order("created_at", { ascending: false })
+    .limit(MAX_RESUME_CANDIDATES + 1);
+
+  const found = (candidateRows ?? []) as ResumeCandidate[];
+  if (found.length === 0) {
+    // Nothing resumable — but a won/lost (or any other excluded-status)
+    // lead within the same window still proves this is a returning
+    // customer. A second, minimal existence check (any status, no
+    // candidate fields beyond id) answers exactly that, without ever
+    // feeding a won/lost lead's own content anywhere.
+    const { data: anyPriorLeadRows } = await admin
+      .from("leads")
+      .select("id")
+      .eq("tenant_id", tenant.id)
+      .eq("phone", fromPhone)
+      .gte("created_at", new Date(Date.now() - RESUME_LOOKBACK_DAYS * 24 * 60 * 60 * 1000).toISOString())
+      .limit(1);
+    return { kind: "no_match", hadPriorHistory: (anyPriorLeadRows ?? []).length > 0 };
+  }
+
+  if (found.length > MAX_RESUME_CANDIDATES) {
+    await sendGuardedReply({
+      admin,
+      tenant,
+      fromPhone,
+      adapter,
+      leadId: null,
+      signature: { kind: "text", text: "canned:resume-too-many-candidates" },
+      messageText: localizedTooManyCandidatesMessage(language),
+    });
+    return { kind: "handled" };
+  }
+
+  // A lead decideLeadRoute would send straight back to fresh_quote anyway
+  // (a flagged, not-yet-priced lead — needs_human_review/
+  // outside_service_scope/conflicting_information/loop_suspected — all
+  // deliberately always restart fresh on their next message, same as the
+  // existing 48-hour in-window behavior for a flagged lead) must never
+  // receive a "picking this back up" acknowledgment it then can't actually
+  // honor. A flagged lead that DOES have a real price
+  // (partially_priced/pending_negotiated_price) keeps its confidence set,
+  // so decideLeadRoute correctly returns quoted_follow_up for it and it
+  // stays eligible below — this filters out the specific unresumable
+  // combination, not "flagged" wholesale. Filtered BEFORE classification so
+  // an unresumable candidate can never crowd out a genuinely resumable one
+  // into a false "which one is this about" question, and so no AI call is
+  // wasted classifying something that could never be resumed regardless of
+  // the answer.
+  const routable = found.filter((candidate) => decideLeadRoute(candidate) !== "fresh_quote");
+  if (routable.length === 0) {
+    return { kind: "no_match", hadPriorHistory: true };
+  }
+
+  // Each candidate classified independently against the SAME current
+  // message — reusing classifyFollowUpIntent exactly as quoted_follow_up
+  // already does, just from this new call site. Parallelized: each call
+  // is independent, no shared state between them.
+  const classifications = await Promise.all(
+    routable.map((candidate) =>
+      classifyFollowUpIntent({
+        data: {
+          priorProblem: candidate.problem,
+          priorDiagnosis: candidate.diagnosis || "",
+          customerReply: body,
+        },
+      }),
+    ),
+  );
+
+  const plausible = routable.filter((_, i) => classifications[i]!.classification !== "different_job");
+  const confidentMatches = routable.filter((_, i) => classifications[i]!.classification === "same_job");
+
+  if (plausible.length === 0) {
+    // Every candidate classified different_job — safe to proceed as a
+    // genuinely new request, no contamination. found.length > 0 here (we
+    // only reach this line past the found.length === 0 branch above), so
+    // this customer is still a known returning one.
+    return { kind: "no_match", hadPriorHistory: true };
+  }
+
+  if (plausible.length === 1 && confidentMatches.length === 1) {
+    const resumedLead = confidentMatches[0]!;
+    const resumeLanguage = detectLanguage(resumedLead.problem, body);
+    const acknowledgment = localizedResumeAcknowledgment(resumeLanguage, resumedLead.problem);
+    const { sent } = await sendGuardedReply({
+      admin,
+      tenant,
+      fromPhone,
+      adapter,
+      leadId: resumedLead.id,
+      signature: { kind: "text", text: "canned:resume-acknowledgment" },
+      messageText: acknowledgment,
+      onSent: async () => {
+        await admin
+          .from("lead_messages")
+          .insert({ lead_id: resumedLead.id, role: "assistant", body: acknowledgment });
+      },
+    });
+    if (!sent) {
+      // The loop guard suppressed this send (sendGuardedReply already sent
+      // its own pause notice instead) — follow the same terminal rule
+      // every other tripped check in this file follows: stop here, never
+      // proceed as though the acknowledgment actually went out and the
+      // customer is now mid-conversation on this lead.
+      return { kind: "handled" };
+    }
+    return { kind: "resumed", lead: resumedLead };
+  }
+
+  // Either more than one plausible candidate, or the single candidate was
+  // itself ambiguous (the classifier couldn't confidently say same_job OR
+  // different_job) — never guess in either case; ask once instead.
+  await sendGuardedReply({
+    admin,
+    tenant,
+    fromPhone,
+    adapter,
+    leadId: null,
+    signature: { kind: "text", text: "canned:resume-candidate-question" },
+    messageText: localizedCandidateClarifyingQuestion(language, plausible),
+  });
+  return { kind: "handled" };
 }
 
 // Reached once MAX_AUTOMATED_REPLIES_PER_CONVERSATION automated replies
@@ -1006,10 +1268,14 @@ export async function handleInboundWhatsAppMessage(params: {
   // but scoped to this tenant, and against the real leads table instead of
   // a separate customers table. A message from the same phone number to the
   // same tenant within 48 hours continues that lead instead of creating a
-  // duplicate.
-  const { data: openLead } = await admin
+  // duplicate. `let`, not `const` — attemptConversationResume below may
+  // reassign this to an older, genuinely-unresolved lead found outside this
+  // 48-hour window, which then flows through the exact same
+  // continue_clarification/quoted_follow_up logic as a normal in-window
+  // lead would.
+  let { data: openLead } = await admin
     .from("leads")
-    .select("id, customer_name, photo_url, problem, confidence, diagnosis, flag_type")
+    .select("id, customer_name, photo_url, problem, confidence, diagnosis, flag_type, status")
     .eq("tenant_id", tenant.id)
     .eq("phone", fromPhone)
     .gte("created_at", new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString())
@@ -1052,7 +1318,37 @@ export async function handleInboundWhatsAppMessage(params: {
   // reason) routes to fresh_quote below — the one-time recovery message
   // for a failure fires directly in the catch block that sets the flag,
   // not here; a later message always gets a genuine fresh attempt.
-  const route = decideLeadRoute(openLead);
+  // `let`, not `const` — may be recomputed below once attemptConversationResume
+  // has had a chance to adopt an older, genuinely-unresolved lead.
+  let route = decideLeadRoute(openLead);
+
+  // Set only on a "no_match" outcome that still found real prior history
+  // (a won/lost lead, or one classified as a different job) — threaded
+  // into isFirstContact below so the 14-day resume lookback's own findings
+  // aren't discarded the moment nothing turns out to be resumable. Never
+  // carries any candidate's own problem/diagnosis/photo — a boolean only.
+  let hadPriorHistoryFromResume = false;
+
+  // Only attempted when the normal 48-hour lookup left nothing actionable
+  // — never overrides a lead that's already being handled normally. See
+  // attemptConversationResume's own comment for the full decision logic
+  // (classify against each candidate, resume only a single confident
+  // match, ask rather than guess otherwise, never silently pick the
+  // newest of more than MAX_RESUME_CANDIDATES). A "resumed" outcome is now
+  // guaranteed to recompute to something other than fresh_quote (see
+  // attemptConversationResume's own routable filter), so this never loops
+  // back into this same block a second time.
+  if (route === "fresh_quote") {
+    const resumeOutcome = await attemptConversationResume({ admin, tenant, fromPhone, adapter, body });
+    if (resumeOutcome.kind === "handled") return;
+    if (resumeOutcome.kind === "resumed") {
+      openLead = resumeOutcome.lead;
+      route = decideLeadRoute(openLead);
+    } else {
+      // "no_match" — proceed exactly as before, openLead/route unchanged.
+      hadPriorHistoryFromResume = resumeOutcome.hadPriorHistory;
+    }
+  }
 
   // confidence is only ever set once a real quote exists (createLead and
   // finalizeLeadWithQuote both require it; createClarifyingLead deliberately
@@ -1582,8 +1878,12 @@ export async function handleInboundWhatsAppMessage(params: {
   // (e.g. weeks ago, well outside the window). Computed once here and
   // threaded into handleFreshQuote below so both the thin-description
   // short-circuit and the full quote/clarification paths agree on one
-  // answer.
-  const isFirstContact = openLead == null && !hadPriorInboundInteraction;
+  // answer. hadPriorHistoryFromResume extends this past the 48-hour window
+  // without widening the window itself: it's only ever set from a real
+  // 14-day lookback that already ran above (attemptConversationResume),
+  // never a new check of its own, and it only ever means "some lead
+  // existed" — never which one or what it said.
+  const isFirstContact = openLead == null && !hadPriorInboundInteraction && !hadPriorHistoryFromResume;
 
   const hasSubstantialDescription = body.trim().length > 10;
   if (!mediaRef && !hasSubstantialDescription) {

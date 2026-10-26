@@ -49,6 +49,8 @@ import {
   handleInboundWhatsAppMessage,
   withLeadProcessingClaim,
   toInboundWhatsAppTenant,
+  attemptConversationResume,
+  RESUMABLE_STATUSES,
   LOOP_PAUSE_MESSAGE,
   MAX_AUTOMATED_REPLIES_PER_CONVERSATION,
   type ChannelAdapter,
@@ -112,33 +114,57 @@ describe("decideLeadRoute", () => {
   });
 
   it("routes to continue_clarification for a lead with no confidence and no flag", () => {
-    expect(decideLeadRoute({ confidence: null, flag_type: null })).toBe("continue_clarification");
+    expect(decideLeadRoute({ confidence: null, flag_type: null, status: "new" })).toBe(
+      "continue_clarification",
+    );
   });
 
   it("routes to quoted_follow_up once a lead has a real confidence value", () => {
-    expect(decideLeadRoute({ confidence: "High", flag_type: null })).toBe("quoted_follow_up");
-  });
-
-  it("routes a flagged, never-quoted lead (outside_service_scope) to fresh_quote", () => {
-    expect(decideLeadRoute({ confidence: null, flag_type: "outside_service_scope" })).toBe(
-      "fresh_quote",
-    );
-  });
-
-  it("routes a flagged, never-quoted lead (needs_human_review) to fresh_quote — not a sticky permanent state", () => {
-    expect(decideLeadRoute({ confidence: null, flag_type: "needs_human_review" })).toBe(
-      "fresh_quote",
-    );
-  });
-
-  it("confidence takes priority over flag_type: a quoted-but-flagged lead (pending_negotiated_price) still routes to quoted_follow_up", () => {
-    expect(decideLeadRoute({ confidence: "High", flag_type: "pending_negotiated_price" })).toBe(
+    expect(decideLeadRoute({ confidence: "High", flag_type: null, status: "quoted" })).toBe(
       "quoted_follow_up",
     );
   });
 
+  it("routes a flagged, never-quoted lead (outside_service_scope) to fresh_quote", () => {
+    expect(
+      decideLeadRoute({ confidence: null, flag_type: "outside_service_scope", status: "flagged" }),
+    ).toBe("fresh_quote");
+  });
+
+  it("routes a flagged, never-quoted lead (needs_human_review) to fresh_quote — not a sticky permanent state", () => {
+    expect(
+      decideLeadRoute({ confidence: null, flag_type: "needs_human_review", status: "flagged" }),
+    ).toBe("fresh_quote");
+  });
+
+  it("confidence takes priority over flag_type: a quoted-but-flagged lead (pending_negotiated_price) still routes to quoted_follow_up", () => {
+    expect(
+      decideLeadRoute({ confidence: "High", flag_type: "pending_negotiated_price", status: "flagged" }),
+    ).toBe("quoted_follow_up");
+  });
+
   it("confidence takes priority over flag_type even for an unrelated flag combination", () => {
-    expect(decideLeadRoute({ confidence: "Low", flag_type: "needs_human_review" })).toBe(
+    expect(
+      decideLeadRoute({ confidence: "Low", flag_type: "needs_human_review", status: "flagged" }),
+    ).toBe(
+      "quoted_follow_up",
+    );
+  });
+
+  it("a won lead is terminal — a new message routes to fresh_quote, never quoted_follow_up", () => {
+    expect(decideLeadRoute({ confidence: "High", flag_type: null, status: "won" })).toBe(
+      "fresh_quote",
+    );
+  });
+
+  it("a lost lead is terminal — a new message routes to fresh_quote, never quoted_follow_up", () => {
+    expect(decideLeadRoute({ confidence: "High", flag_type: null, status: "lost" })).toBe(
+      "fresh_quote",
+    );
+  });
+
+  it("a booked lead is NOT terminal — still routes to quoted_follow_up, unchanged from before this fix (a question about the appointment is a real follow-up, not a new request)", () => {
+    expect(decideLeadRoute({ confidence: "High", flag_type: null, status: "booked" })).toBe(
       "quoted_follow_up",
     );
   });
@@ -817,6 +843,11 @@ type FakeOpenLead = {
   confidence: string | null;
   diagnosis: string | null;
   flag_type: string | null;
+  // Optional — defaults applied by each fixture (fakeInboundAdmin: "new")
+  // so the ~20 existing call sites that predate decideLeadRoute's
+  // status-awareness don't all need touching for a field irrelevant to
+  // what they're actually testing.
+  status?: string;
 };
 
 // Supports two different real call shapes against the same fake data:
@@ -837,6 +868,7 @@ function chainableRead(resolved: { data: unknown; error: unknown }) {
   const chain: Record<string, unknown> = {
     eq: () => chain,
     gte: () => chain,
+    in: () => chain,
     order: () => chain,
     limit: () => chain,
     maybeSingle: async () => resolved,
@@ -846,8 +878,16 @@ function chainableRead(resolved: { data: unknown; error: unknown }) {
 }
 
 function fakeInboundAdmin(config: {
-  openLead: FakeOpenLead;
+  // null simulates "no lead at all in the last 48 hours" — the precondition
+  // for attemptConversationResume to even run. Every pre-existing test
+  // passes a real object here and is unaffected by widening this type.
+  openLead: FakeOpenLead | null;
   leadSlotClaimSucceeds: boolean;
+  // Rows attemptConversationResume's own extended-window query (the
+  // leads-table .in(...) call) should see. Defaults to [] so every
+  // pre-existing test (none of which exercise resume behavior) keeps its
+  // exact prior "no candidates" behavior.
+  resumeCandidates?: FakeOpenLead[];
   // The flag_type a GUARDED write should see at write time, if different
   // from openLead.flag_type at routing time — simulates a concurrent
   // write (e.g. the winning claim-holder's own processing) landing in
@@ -871,11 +911,39 @@ function fakeInboundAdmin(config: {
   // test already implicitly relied on. Set to 2+ to exercise the
   // automated-reply cap itself.
   outboundInteractionCount?: number;
+  // What hasPriorInboundInteraction's own 48-hour-windowed query should
+  // report. Defaults to true — every pre-existing test configures a real
+  // openLead, which already makes isFirstContact false on its own, so this
+  // signal was previously irrelevant and hardcoded true. Set to false to
+  // genuinely exercise the no-prior-interaction case (together with
+  // openLead: null).
+  hadPriorInboundInteraction?: boolean;
+  // What attemptConversationResume's own secondary "any lead at all in the
+  // 14-day window" existence check should report — independent of
+  // resumeCandidates (which is filtered to RESUMABLE_STATUSES only).
+  // Defaults to false. Set to true to simulate a won/lost (or otherwise
+  // excluded-status) lead that still proves the customer is returning, even
+  // though it can never itself be a resume candidate.
+  anyPriorLeadInExtendedWindow?: boolean;
 }) {
   // Deliberately NOT the same object decideLeadRoute's initial read
   // returns — see flagTypeAtWriteTime's own comment above.
-  const writeTimeState = { flag_type: config.flagTypeAtWriteTime ?? config.openLead.flag_type };
-  const leadState: FakeOpenLead = { ...config.openLead };
+  const writeTimeState = {
+    flag_type: config.flagTypeAtWriteTime ?? config.openLead?.flag_type ?? null,
+  };
+  // Defaults to "new" — every pre-existing test using this fixture predates
+  // decideLeadRoute's status-awareness and doesn't care about it; "new" is
+  // never won/lost, so it never changes any of their outcomes. null (no
+  // recent lead) stays null, never coerced into a fake object — decideLeadRoute
+  // treats a real-but-empty object as a lead with undefined confidence/flag_type,
+  // which is a completely different (and wrong) routing outcome than "no lead".
+  const leadState: FakeOpenLead | null = config.openLead
+    ? { status: "new", ...config.openLead }
+    : null;
+  const resumeCandidateRows: FakeOpenLead[] = (config.resumeCandidates ?? []).map((c) => ({
+    status: "new",
+    ...c,
+  }));
   const calls = {
     leadMessageInserts: [] as Array<{ lead_id: string; role: string; body: string }>,
     leadUpdateAttempts: 0,
@@ -883,6 +951,11 @@ function fakeInboundAdmin(config: {
     lastLeadUpdatePatch: null as Record<string, unknown> | null,
     claimAttempts: 0,
     releaseAttempts: 0,
+    // Captures exactly what attemptConversationResume's extended-window
+    // query filtered its "status in (...)" clause to, each time .in() is
+    // called — the direct proof that won/lost leads are excluded by the
+    // query itself, not by some later filtering step.
+    resumeStatusInArgs: [] as unknown[][],
   };
 
   const admin = {
@@ -941,13 +1014,15 @@ function fakeInboundAdmin(config: {
         return { select: () => chainableRead({ data: null, error: null }) };
       }
       if (table === "whatsapp_interaction_events") {
-        // Single-row (.maybeSingle()) shape: value is irrelevant — every
-        // test using this fixture always configures a real openLead, so
-        // isFirstContact is already false from that alone. List shape
-        // (awaited directly off .limit()): countRecentOutboundInteractions'
-        // own call — outboundInteractionCount controls how many rows come
-        // back, capped to whatever `n` the real code asked for.
+        // Single-row (.maybeSingle()) shape: hasPriorInboundInteraction's
+        // own call — configurable via hadPriorInboundInteraction (defaults
+        // true, matching every pre-existing test's implicit assumption).
+        // List shape (awaited directly off .limit()):
+        // countRecentOutboundInteractions' own call — outboundInteractionCount
+        // controls how many rows come back, capped to whatever `n` the real
+        // code asked for.
         const outboundCount = config.outboundInteractionCount ?? 1;
+        const hadPriorInbound = config.hadPriorInboundInteraction ?? true;
         const chain: Record<string, unknown> = {
           eq: () => chain,
           gte: () => chain,
@@ -956,13 +1031,72 @@ function fakeInboundAdmin(config: {
             then: (resolve: (v: { data: unknown[]; error: null }) => void) =>
               resolve({ data: Array(Math.min(outboundCount, n)).fill({ id: "evt-1" }), error: null }),
           }),
-          maybeSingle: async () => ({ data: { id: "evt-1" }, error: null }),
+          maybeSingle: async () => ({ data: hadPriorInbound ? { id: "evt-1" } : null, error: null }),
         };
         return { select: () => chain };
       }
       if (table === "leads") {
         return {
-          select: () => chainableRead({ data: { ...leadState }, error: null }),
+          // .in(...) is only ever called by attemptConversationResume's
+          // extended-window query, never by the main openLead lookup this
+          // fixture otherwise simulates. Once called, every subsequent
+          // chain call (including a later .limit()) switches to the resume
+          // chain below, which resolves to resumeCandidateRows (default
+          // [], preserving every pre-existing test's "no candidates"
+          // behavior) — chainableRead's own eq()/gte() loop back to THEIR
+          // OWN closure, not this one, so the override has to live on a
+          // chain built specifically for this table, not spread onto
+          // chainableRead's result.
+          select: () => {
+            const resumeChain: Record<string, unknown> = {
+              eq: () => resumeChain,
+              gte: () => resumeChain,
+              order: () => resumeChain,
+              in: (_col: string, values: unknown[]) => {
+                calls.resumeStatusInArgs.push(values);
+                return resumeChain;
+              },
+              limit: (n: number) => ({
+                ...resumeChain,
+                then: (resolve: (v: { data: unknown[]; error: null }) => void) =>
+                  resolve({ data: resumeCandidateRows.slice(0, n), error: null }),
+              }),
+              maybeSingle: async () => ({ data: resumeCandidateRows[0] ?? null, error: null }),
+              then: (resolve: (v: { data: unknown[]; error: null }) => void) =>
+                resolve({ data: resumeCandidateRows, error: null }),
+            };
+            const normalChain: Record<string, unknown> = {
+              eq: () => normalChain,
+              gte: () => normalChain,
+              order: () => normalChain,
+              // Two real call shapes end here, distinguished by what comes
+              // next: the main 48h openLead lookup always calls
+              // .order().limit(1).maybeSingle() (handled below, via the
+              // spread-preserved maybeSingle), while attemptConversationResume's
+              // secondary "any lead at all in the 14-day window" existence
+              // check never calls .order() or .maybeSingle() at all — it's
+              // awaited directly off .limit(1) (query shape: .eq().eq().gte().limit(1)),
+              // which this .then resolves independently via
+              // anyPriorLeadInExtendedWindow, never leadState (a completely
+              // different, 48-hour-scoped concept).
+              limit: () => ({
+                ...normalChain,
+                then: (resolve: (v: { data: unknown[]; error: null }) => void) =>
+                  resolve({
+                    data: config.anyPriorLeadInExtendedWindow ? [{ id: "any-prior-lead" }] : [],
+                    error: null,
+                  }),
+              }),
+              maybeSingle: async () => ({ data: leadState ? { ...leadState } : null, error: null }),
+              then: (resolve: (v: { data: unknown[]; error: null }) => void) =>
+                resolve({ data: leadState ? [{ ...leadState }] : [], error: null }),
+              in: (col: string, values: unknown[]) => {
+                calls.resumeStatusInArgs.push(values);
+                return resumeChain;
+              },
+            };
+            return normalChain;
+          },
           update: (patch: Record<string, unknown>) => ({
             eq: () => {
               // Thenable with an attached `.is(...)`: awaiting the plain
@@ -977,7 +1111,11 @@ function fakeInboundAdmin(config: {
                 then: (resolve: (v: { error: null }) => void) => {
                   calls.leadUpdateAttempts++;
                   calls.lastLeadUpdatePatch = patch;
-                  Object.assign(leadState, patch);
+                  // leadState is only null for resume tests where the main
+                  // 48h lookup found nothing — a resumed lead is a
+                  // different, separately-tracked object (resumeCandidateRows),
+                  // so there's nothing of leadState's to mutate here.
+                  if (leadState) Object.assign(leadState, patch);
                   Object.assign(writeTimeState, patch);
                   calls.leadUpdateApplied++; // unconditional — always applies when reached
                   resolve({ error: null });
@@ -990,7 +1128,7 @@ function fakeInboundAdmin(config: {
                   // comment on flagTypeAtWriteTime for why these must be
                   // independent.
                   if ((writeTimeState as unknown as Record<string, unknown>)[col] === val) {
-                    Object.assign(leadState, patch);
+                    if (leadState) Object.assign(leadState, patch);
                     Object.assign(writeTimeState, patch);
                     calls.leadUpdateApplied++;
                   }
@@ -1032,6 +1170,824 @@ function fakeInboundAdmin(config: {
   };
   return { admin: admin as unknown as SupabaseClient, calls, leadState };
 }
+
+// ---------------------------------------------------------------------
+// Extended-window conversation resume — attemptConversationResume is
+// exported solely so this decision logic (candidate selection, the
+// never-guess-above-MAX_RESUME_CANDIDATES fallback, the single-confident-
+// match auto-resume, the ask-rather-than-guess fallback) is directly
+// testable without re-driving the whole handleInboundWhatsAppMessage
+// pipeline for every scenario — same reasoning decideLeadRoute's own
+// export already follows above. A separate describe block below exercises
+// the WIRING into handleInboundWhatsAppMessage itself (route recomputed,
+// quoted_follow_up takes over, no duplicate lead created).
+// ---------------------------------------------------------------------
+
+const OLD_UNRESOLVED_LEAD: FakeOpenLead = {
+  id: "lead-old-1",
+  customer_name: "Jordan",
+  photo_url: null,
+  problem: "the kitchen faucet is still dripping after the last visit",
+  confidence: "High",
+  diagnosis: "Worn cartridge replacement",
+  flag_type: null,
+  status: "quoted",
+};
+
+describe("attemptConversationResume", () => {
+  beforeEach(() => {
+    vi.mocked(classifyFollowUpIntent).mockClear();
+  });
+
+  it("zero candidates in the extended window: no_match, classifyFollowUpIntent never called, nothing sent", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: null,
+      leadSlotClaimSucceeds: true,
+      resumeCandidates: [],
+    });
+    const { adapter, sent } = fakeAdapter();
+
+    const outcome = await attemptConversationResume({
+      admin,
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      adapter,
+      body: "hi, is anyone there?",
+    });
+
+    // No candidate AND no other lead of any status in the 14-day window —
+    // a genuinely first-time (or long-dormant-enough-not-to-matter)
+    // contact, not just "nothing resumable."
+    expect(outcome).toEqual({ kind: "no_match", hadPriorHistory: false });
+    expect(classifyFollowUpIntent).not.toHaveBeenCalled();
+    expect(sent).toEqual([]);
+  });
+
+  it("one candidate, classified same_job: resumes it, sends exactly one localized acknowledgment naming the real stored problem, and queries only the resumable status set (won/lost excluded by construction, not by later filtering)", async () => {
+    const { admin, calls } = fakeInboundAdmin({
+      openLead: null,
+      leadSlotClaimSucceeds: true,
+      resumeCandidates: [OLD_UNRESOLVED_LEAD],
+    });
+    vi.mocked(classifyFollowUpIntent).mockResolvedValue({ classification: "same_job" } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    const outcome = await attemptConversationResume({
+      admin,
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      adapter,
+      body: "is that still happening?",
+    });
+
+    expect(outcome.kind).toBe("resumed");
+    if (outcome.kind === "resumed") expect(outcome.lead.id).toBe(OLD_UNRESOLVED_LEAD.id);
+    expect(classifyFollowUpIntent).toHaveBeenCalledWith({
+      data: {
+        priorProblem: OLD_UNRESOLVED_LEAD.problem,
+        priorDiagnosis: OLD_UNRESOLVED_LEAD.diagnosis,
+        customerReply: "is that still happening?",
+      },
+    });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.to).toBe(TEST_PHONE);
+    expect(sent[0]!.body).toContain("kitchen faucet is still dripping");
+    expect(calls.leadMessageInserts).toEqual([
+      { lead_id: OLD_UNRESOLVED_LEAD.id, role: "assistant", body: sent[0]!.body },
+    ]);
+    // The real safety guarantee for "a completed job must not automatically
+    // become the active conversation": the query's own status filter is the
+    // resumable set, never won/lost — confirmed against the real exported
+    // constant, not a hardcoded duplicate list that could silently drift.
+    expect(calls.resumeStatusInArgs).toHaveLength(1);
+    expect(calls.resumeStatusInArgs[0]).toEqual([...RESUMABLE_STATUSES]);
+    expect(calls.resumeStatusInArgs[0]).not.toContain("won");
+    expect(calls.resumeStatusInArgs[0]).not.toContain("lost");
+  });
+
+  it("one candidate, classified same_job, prior problem in Spanish: the acknowledgment is localized to Spanish, never defaults to English", async () => {
+    const spanishLead: FakeOpenLead = {
+      ...OLD_UNRESOLVED_LEAD,
+      problem: "la llave de la cocina todavía gotea",
+    };
+    const { admin } = fakeInboundAdmin({
+      openLead: null,
+      leadSlotClaimSucceeds: true,
+      resumeCandidates: [spanishLead],
+    });
+    vi.mocked(classifyFollowUpIntent).mockResolvedValue({ classification: "same_job" } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await attemptConversationResume({
+      admin,
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      adapter,
+      body: "¿sigue goteando?",
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body).toContain("Retomando esto");
+    expect(sent[0]!.body).toContain("llave de la cocina");
+  });
+
+  it("one candidate, classified different_job: no_match — a genuinely new request is never silently attached to the old job, and nothing about it is recorded", async () => {
+    const { admin, calls } = fakeInboundAdmin({
+      openLead: null,
+      leadSlotClaimSucceeds: true,
+      resumeCandidates: [OLD_UNRESOLVED_LEAD],
+    });
+    vi.mocked(classifyFollowUpIntent).mockResolvedValue({ classification: "different_job" } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    const outcome = await attemptConversationResume({
+      admin,
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      adapter,
+      body: "my garage door opener is making a grinding noise",
+    });
+
+    // A real candidate existed and was classified — so this customer IS a
+    // known returning one, even though nothing here was a match.
+    expect(outcome).toEqual({ kind: "no_match", hadPriorHistory: true });
+    expect(sent).toEqual([]); // no acknowledgment, no clarifying question
+    expect(calls.leadMessageInserts).toEqual([]); // no contamination of any kind
+  });
+
+  it("one candidate, classified ambiguous: asks a single clarifying question naming only that job — never guesses either way", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: null,
+      leadSlotClaimSucceeds: true,
+      resumeCandidates: [OLD_UNRESOLVED_LEAD],
+    });
+    vi.mocked(classifyFollowUpIntent).mockResolvedValue({ classification: "ambiguous" } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    const outcome = await attemptConversationResume({
+      admin,
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      adapter,
+      body: "ok",
+    });
+
+    expect(outcome).toEqual({ kind: "handled" });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body).toBe(
+      'Is this about "the kitchen faucet is still dripping after the last visit", or something new?',
+    );
+  });
+
+  it("two plausible candidates (one same_job, one ambiguous): asks which one rather than silently picking either — the required 'ask instead of guess' fallback for more than one match", async () => {
+    const faucetLead: FakeOpenLead = {
+      ...OLD_UNRESOLVED_LEAD,
+      id: "lead-faucet",
+      problem: "the kitchen faucet is still dripping",
+    };
+    const garageLead: FakeOpenLead = {
+      ...OLD_UNRESOLVED_LEAD,
+      id: "lead-garage",
+      problem: "the garage door opener makes a grinding noise",
+      diagnosis: "Opener motor inspection",
+    };
+    const { admin } = fakeInboundAdmin({
+      openLead: null,
+      leadSlotClaimSucceeds: true,
+      resumeCandidates: [faucetLead, garageLead],
+    });
+    vi.mocked(classifyFollowUpIntent).mockImplementation(async ({ data }: any) => ({
+      classification: data.priorProblem.includes("garage") ? "ambiguous" : "same_job",
+    }));
+    const { adapter, sent } = fakeAdapter();
+
+    const outcome = await attemptConversationResume({
+      admin,
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      adapter,
+      body: "any update?",
+    });
+
+    expect(outcome).toEqual({ kind: "handled" });
+    expect(classifyFollowUpIntent).toHaveBeenCalledTimes(2);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body).toBe(
+      'I have more than one thing open for you — is this about "the kitchen faucet is still dripping", or "the garage door opener makes a grinding noise"?',
+    );
+  });
+
+  it("more than MAX_RESUME_CANDIDATES plausible leads: never guesses from a partial set — sends one honest clarifying question and never even runs classification", async () => {
+    const candidates: FakeOpenLead[] = Array.from({ length: 4 }, (_, i) => ({
+      ...OLD_UNRESOLVED_LEAD,
+      id: `lead-${i}`,
+      problem: `job number ${i}`,
+    }));
+    const { admin } = fakeInboundAdmin({
+      openLead: null,
+      leadSlotClaimSucceeds: true,
+      resumeCandidates: candidates,
+    });
+    const { adapter, sent } = fakeAdapter();
+
+    const outcome = await attemptConversationResume({
+      admin,
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      adapter,
+      body: "any update?",
+    });
+
+    expect(outcome).toEqual({ kind: "handled" });
+    // Never classifies against an arbitrary subset and silently ignores the
+    // rest — the safe fallback is a single honest question, not a guess
+    // from whichever MAX_RESUME_CANDIDATES+1 happened to come back first.
+    expect(classifyFollowUpIntent).not.toHaveBeenCalled();
+    expect(sent).toEqual([
+      {
+        to: TEST_PHONE,
+        body: "I see a few things in progress for you — could you remind me which one this is about?",
+      },
+    ]);
+  });
+
+  it("exactly MAX_RESUME_CANDIDATES (3) candidates, all plausible: proceeds through normal classification instead of the too-many fallback — the limit is 'more than 3', not 'any multiple'", async () => {
+    const candidates: FakeOpenLead[] = Array.from({ length: 3 }, (_, i) => ({
+      ...OLD_UNRESOLVED_LEAD,
+      id: `lead-${i}`,
+      problem: `job number ${i}`,
+    }));
+    const { admin } = fakeInboundAdmin({
+      openLead: null,
+      leadSlotClaimSucceeds: true,
+      resumeCandidates: candidates,
+    });
+    vi.mocked(classifyFollowUpIntent).mockResolvedValue({ classification: "same_job" } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    const outcome = await attemptConversationResume({
+      admin,
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      adapter,
+      body: "any update?",
+    });
+
+    expect(classifyFollowUpIntent).toHaveBeenCalledTimes(3);
+    // 3 confident matches, not exactly 1 — still asks rather than guessing,
+    // but via the normal "more than one plausible" path, not the too-many
+    // fallback (proven above by classification actually having run).
+    expect(outcome).toEqual({ kind: "handled" });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body).not.toBe(
+      "I see a few things in progress for you — could you remind me which one this is about?",
+    );
+  });
+
+  // Fix 1 — a flagged lead with no price yet (needs_human_review,
+  // outside_service_scope, conflicting_information, loop_suspected) always
+  // routes to fresh_quote on its next message, by design (decideLeadRoute's
+  // own flag_type check) — it must never receive a resume acknowledgment it
+  // then can't actually honor, which would otherwise create a disconnected
+  // duplicate lead right after telling the customer their conversation was
+  // being picked back up.
+  it("a flagged lead with no price yet is never resumed, even on a confident same-job match — it still counts as real prior history, but is filtered out before classification ever runs", async () => {
+    const unpricedFlaggedLead: FakeOpenLead = {
+      ...OLD_UNRESOLVED_LEAD,
+      id: "lead-unpriced-flagged",
+      confidence: null,
+      flag_type: "needs_human_review",
+      status: "flagged",
+    };
+    const { admin } = fakeInboundAdmin({
+      openLead: null,
+      leadSlotClaimSucceeds: true,
+      resumeCandidates: [unpricedFlaggedLead],
+    });
+    const { adapter, sent } = fakeAdapter();
+
+    const outcome = await attemptConversationResume({
+      admin,
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      adapter,
+      body: "is that still happening?",
+    });
+
+    // decideLeadRoute(unpricedFlaggedLead) === "fresh_quote" (confidence
+    // null, flag_type set) — filtered out before any AI call, not just
+    // before the acknowledgment.
+    expect(classifyFollowUpIntent).not.toHaveBeenCalled();
+    expect(sent).toEqual([]); // no false "picking this back up"
+    // Still real prior history — a returning customer, just nothing
+    // resumable about this specific lead.
+    expect(outcome).toEqual({ kind: "no_match", hadPriorHistory: true });
+  });
+
+  it("a flagged lead that DOES already have a real price (e.g. pending_negotiated_price) stays resumable — flagged alone is never the disqualifier, only the combination with no price yet", async () => {
+    const pricedFlaggedLead: FakeOpenLead = {
+      ...OLD_UNRESOLVED_LEAD,
+      id: "lead-priced-flagged",
+      confidence: "High",
+      flag_type: "pending_negotiated_price",
+      status: "flagged",
+    };
+    const { admin } = fakeInboundAdmin({
+      openLead: null,
+      leadSlotClaimSucceeds: true,
+      resumeCandidates: [pricedFlaggedLead],
+    });
+    vi.mocked(classifyFollowUpIntent).mockResolvedValue({ classification: "same_job" } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    const outcome = await attemptConversationResume({
+      admin,
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      adapter,
+      body: "any update on the price?",
+    });
+
+    // decideLeadRoute(pricedFlaggedLead) === "quoted_follow_up" (confidence
+    // set, not won/lost) — a safe, valid downstream route, so this one
+    // DOES get classified and resumed normally.
+    expect(classifyFollowUpIntent).toHaveBeenCalledTimes(1);
+    expect(outcome.kind).toBe("resumed");
+    expect(sent).toHaveLength(1);
+  });
+
+  it("when the acknowledgment send itself is suppressed by the loop guard, the outcome is 'handled', not a false 'resumed' — the caller never continues processing as though it went out", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: null,
+      leadSlotClaimSucceeds: true,
+      resumeCandidates: [OLD_UNRESOLVED_LEAD],
+      // Trips the SAME record_whatsapp_interaction RPC sendGuardedReply's
+      // own evaluateOutboundInteraction calls — simulating the loop guard
+      // suppressing this specific send, independent of (and reached only
+      // after) the resume-matching logic above it.
+      loopGuardTripped: true,
+    });
+    vi.mocked(classifyFollowUpIntent).mockResolvedValue({ classification: "same_job" } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    const outcome = await attemptConversationResume({
+      admin,
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      adapter,
+      body: "is that still happening?",
+    });
+
+    expect(outcome).toEqual({ kind: "handled" });
+    // The generic pause notice went out instead of the acknowledgment —
+    // never both, never neither.
+    expect(sent).toEqual([{ to: TEST_PHONE, body: LOOP_PAUSE_MESSAGE }]);
+  });
+});
+
+describe("attemptConversationResume — tenant isolation on the service-role path", () => {
+  it("two tenants sharing the same phone number never see each other's resume candidates — getAdminClient bypasses RLS entirely, so isolation here depends ENTIRELY on this query's own tenant_id filter", async () => {
+    const SHARED_PHONE = "+15559998888";
+    // A real (if minimal) tenant_id+phone filter, unlike fakeInboundAdmin's
+    // resumeCandidates (a static list that ignores tenant_id) — this
+    // fixture exists specifically to prove the .eq("tenant_id", ...) filter
+    // in the real query is what isolation depends on here, since the
+    // service-role client has no RLS to fall back on if that filter were
+    // ever dropped.
+    const allLeads = [
+      {
+        tenant_id: "tenant-A",
+        id: "lead-A1",
+        customer_name: "A Customer",
+        photo_url: null,
+        problem: "tenant A's leaking faucet",
+        confidence: null,
+        diagnosis: null,
+        flag_type: null,
+        status: "new",
+        phone: SHARED_PHONE,
+      },
+      {
+        tenant_id: "tenant-B",
+        id: "lead-B1",
+        customer_name: "B Customer",
+        photo_url: null,
+        problem: "tenant B's broken garage door",
+        confidence: null,
+        diagnosis: null,
+        flag_type: null,
+        status: "new",
+        phone: SHARED_PHONE,
+      },
+    ];
+
+    function adminFor() {
+      return {
+        from: (table: string) => {
+          if (table === "lead_messages") {
+            return { insert: async () => ({ error: null }) };
+          }
+          if (table !== "leads") throw new Error(`unexpected table "${table}"`);
+          const filters: { tenant_id?: string; phone?: string } = {};
+          const chain: Record<string, unknown> = {
+            eq: (col: string, val: string) => {
+              if (col === "tenant_id") filters.tenant_id = val;
+              if (col === "phone") filters.phone = val;
+              return chain;
+            },
+            gte: () => chain,
+            order: () => chain,
+            in: () => chain,
+            limit: (n: number) => ({
+              then: (resolve: (v: { data: unknown[]; error: null }) => void) => {
+                const matches = allLeads.filter(
+                  (l) => l.tenant_id === filters.tenant_id && l.phone === filters.phone,
+                );
+                resolve({ data: matches.slice(0, n), error: null });
+              },
+            }),
+          };
+          return { select: () => chain };
+        },
+        rpc: async (name: string) => {
+          if (name === "record_whatsapp_interaction") {
+            return {
+              data: [
+                {
+                  tripped: false,
+                  just_tripped: false,
+                  trip_reason: null,
+                  is_duplicate_content: false,
+                  duplicate_content_count: 0,
+                  repeat_count: 0,
+                  recent_event_count: 0,
+                },
+              ],
+              error: null,
+            };
+          }
+          throw new Error(`unexpected rpc "${name}"`);
+        },
+      } as unknown as SupabaseClient;
+    }
+
+    vi.mocked(classifyFollowUpIntent).mockResolvedValue({ classification: "same_job" } as any);
+    const { adapter: adapterA, sent: sentA } = fakeAdapter();
+    const { adapter: adapterB, sent: sentB } = fakeAdapter();
+
+    const outcomeA = await attemptConversationResume({
+      admin: adminFor(),
+      tenant: { ...TEST_TENANT, id: "tenant-A" },
+      fromPhone: SHARED_PHONE,
+      adapter: adapterA,
+      body: "following up",
+    });
+    const outcomeB = await attemptConversationResume({
+      admin: adminFor(),
+      tenant: { ...TEST_TENANT, id: "tenant-B" },
+      fromPhone: SHARED_PHONE,
+      adapter: adapterB,
+      body: "following up",
+    });
+
+    expect(outcomeA.kind).toBe("resumed");
+    expect(outcomeB.kind).toBe("resumed");
+    if (outcomeA.kind === "resumed") expect(outcomeA.lead.id).toBe("lead-A1");
+    if (outcomeB.kind === "resumed") expect(outcomeB.lead.id).toBe("lead-B1");
+    expect(sentA[0]!.body).toContain("leaking faucet");
+    expect(sentA[0]!.body).not.toContain("garage door");
+    expect(sentB[0]!.body).toContain("garage door");
+    expect(sentB[0]!.body).not.toContain("leaking faucet");
+  });
+});
+
+describe("handleInboundWhatsAppMessage — conversation resume wiring", () => {
+  beforeEach(() => {
+    vi.mocked(classifyFollowUpIntent).mockClear();
+    // mockReset (not mockClear): these two carry a per-test resolved value,
+    // and only some tests in this block set one — without resetting, a
+    // prior test's configured value leaks into a later test that never
+    // asked for it (the exact bug the redelivered-webhook test caught).
+    vi.mocked(getFollowUpAnswer).mockReset();
+    vi.mocked(getQuoteEstimate).mockReset();
+    vi.mocked(createLead).mockClear();
+    vi.mocked(createClarifyingLead).mockClear();
+  });
+
+  it("no lead in the last 48h, one unresolved quoted job from days ago, same_job: resumes it, answers using the OLD diagnosis, and never creates a duplicate lead", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: null,
+      leadSlotClaimSucceeds: true,
+      resumeCandidates: [OLD_UNRESOLVED_LEAD],
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(classifyFollowUpIntent).mockResolvedValue({ classification: "same_job" } as any);
+    vi.mocked(getFollowUpAnswer).mockResolvedValue("Yes, still the same price for that.");
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "is that offer still good?",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(2);
+    expect(sent[0]!.body).toContain("kitchen faucet is still dripping"); // resume acknowledgment
+    expect(sent[1]!.body).toBe("Yes, still the same price for that."); // quoted_follow_up's own answer
+    expect(getFollowUpAnswer).toHaveBeenCalledTimes(1);
+    expect(getQuoteEstimate).not.toHaveBeenCalled();
+    expect(createLead).not.toHaveBeenCalled();
+    expect(createClarifyingLead).not.toHaveBeenCalled();
+  });
+
+  it("a booked job (appointment already scheduled) can still be resumed for an appointment-related follow-up — booked is never treated as terminal the way won/lost are", async () => {
+    const bookedLead: FakeOpenLead = {
+      ...OLD_UNRESOLVED_LEAD,
+      id: "lead-booked-1",
+      problem: "water heater replacement, scheduled install",
+      status: "booked",
+    };
+    const { admin } = fakeInboundAdmin({
+      openLead: null,
+      leadSlotClaimSucceeds: true,
+      resumeCandidates: [bookedLead],
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(classifyFollowUpIntent).mockResolvedValue({ classification: "same_job" } as any);
+    vi.mocked(getFollowUpAnswer).mockResolvedValue("Yes, we'll be there Tuesday at 10am.");
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "what time will you be here?",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    // Resumed into quoted_follow_up (getFollowUpAnswer ran), never treated
+    // as a fresh request just because it's reached through the extended
+    // window — the exact "booked may be resumed for appointment questions"
+    // requirement.
+    expect(getFollowUpAnswer).toHaveBeenCalledTimes(1);
+    expect(getQuoteEstimate).not.toHaveBeenCalled();
+    expect(sent[1]!.body).toBe("Yes, we'll be there Tuesday at 10am.");
+  });
+
+  it("a finished (won) job on file never resurfaces as a resume candidate — a genuinely new request proceeds straight to a fresh quote, with no wasted classification call against the closed job", async () => {
+    // RESUMABLE_STATUSES excludes won/lost at the query level (proven
+    // directly above) — resumeCandidates: [] here simulates exactly what
+    // the real query would already have filtered out, not an extra
+    // application-level check.
+    const { admin } = fakeInboundAdmin({
+      openLead: null,
+      leadSlotClaimSucceeds: true,
+      resumeCandidates: [],
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(getQuoteEstimate).mockResolvedValue({
+      needsClarification: false,
+      outOfScope: false,
+      isEmergency: false,
+      issueType: "Electrical",
+      severity: "Low",
+      confidence: "High",
+      diagnosis: "Outlet replacement.",
+      isDiagnosisOnly: false,
+      hasNoPricedWork: false,
+      hasPartiallyDeferredWork: false,
+      lineItems: [
+        {
+          description: "Outlet replacement",
+          detail: "",
+          amount: 150,
+          priceSheetItemId: "ps-outlet",
+          hours: undefined,
+        },
+      ],
+      totalLow: 150,
+      totalHigh: 150,
+    } as any);
+    vi.mocked(createLead).mockResolvedValue({ id: "new-outlet-lead" } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "my bedroom outlet stopped working",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(classifyFollowUpIntent).not.toHaveBeenCalled(); // nothing to classify against
+    expect(getQuoteEstimate).toHaveBeenCalledTimes(1);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body).toContain("150");
+  });
+
+  it("a redelivered webhook for the same resume-triggering message is caught by the top-level loop guard before any second resume attempt — never a duplicate acknowledgment or a second AI classification round", async () => {
+    vi.mocked(classifyFollowUpIntent).mockResolvedValue({ classification: "same_job" } as any);
+    // The resumed lead's confidence is set, so it routes to quoted_follow_up
+    // right after resuming — same_job there calls getFollowUpAnswer for its
+    // own reply, a second send alongside the resume acknowledgment itself.
+    vi.mocked(getFollowUpAnswer).mockResolvedValue("Yes, still the same price for that.");
+
+    // First delivery: processes normally, resumes the old lead.
+    const first = fakeInboundAdmin({
+      openLead: null,
+      leadSlotClaimSucceeds: true,
+      resumeCandidates: [OLD_UNRESOLVED_LEAD],
+    });
+    vi.mocked(getAdminClient).mockReturnValue(first.admin);
+    const { adapter: adapter1, sent: sent1 } = fakeAdapter();
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "is that still happening?",
+      mediaRef: undefined,
+      providerMessageId: "wamid.FIRST",
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter: adapter1,
+    });
+    expect(sent1).toHaveLength(2); // resume acknowledgment + quoted_follow_up's own answer
+    expect(classifyFollowUpIntent).toHaveBeenCalledTimes(2); // resume match + quoted_follow_up's own same_job check
+
+    // Second delivery: the loop guard's own duplicate-content detection
+    // (real-Postgres logic — see fakeInboundAdmin's own notes on why this
+    // file doesn't reimplement that RPC's hashing) recognizes the
+    // redelivered event and trips BEFORE any routing or resume logic runs.
+    vi.mocked(classifyFollowUpIntent).mockClear();
+    const second = fakeInboundAdmin({
+      openLead: null,
+      leadSlotClaimSucceeds: true,
+      resumeCandidates: [OLD_UNRESOLVED_LEAD],
+      loopGuardTripped: true,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(second.admin);
+    const { adapter: adapter2, sent: sent2 } = fakeAdapter();
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "is that still happening?",
+      mediaRef: undefined,
+      providerMessageId: "wamid.FIRST",
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter: adapter2,
+    });
+
+    expect(classifyFollowUpIntent).not.toHaveBeenCalled(); // never re-runs resume matching
+    expect(sent2).toEqual([{ to: TEST_PHONE, body: LOOP_PAUSE_MESSAGE }]); // generic pause, not a second ack
+  });
+});
+
+// Fix 2/3 — the 14-day resume lookback can discover real prior history
+// (a won/lost lead, or a lead classified as a different job) even when
+// nothing is actually resumed. That history must not be discarded: a
+// returning customer must never get the first-contact greeting just
+// because hasPriorInboundInteraction's own 48-hour window alone can't see
+// that far back. These tests use the fixture's new
+// hadPriorInboundInteraction/anyPriorLeadInExtendedWindow fields (Fix 3) to
+// genuinely exercise all three cases, rather than the pre-existing
+// fixture default that made isFirstContact unconditionally false.
+describe("handleInboundWhatsAppMessage — first-contact greeting correctly reflects the 14-day history signal", () => {
+  const FIRST_CONTACT_PHRASE = "How can I help you today?";
+  const RETURNING_GREETING_PHRASE = "To get you a fast, accurate price";
+
+  beforeEach(() => {
+    vi.mocked(classifyFollowUpIntent).mockClear();
+    vi.mocked(getQuoteEstimate).mockReset();
+    vi.mocked(createLead).mockClear();
+  });
+
+  it("baseline: genuinely no prior history anywhere (no 48h interaction, no 14-day lead of any status) — the first-contact greeting still fires normally", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: null,
+      leadSlotClaimSucceeds: true,
+      resumeCandidates: [],
+      hadPriorInboundInteraction: false,
+      anyPriorLeadInExtendedWindow: false,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "hi",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body).toContain(FIRST_CONTACT_PHRASE);
+  });
+
+  it("a won lead exists in the 14-day window (excluded from resume eligibility) — still correctly suppresses the first-contact greeting; the customer gets the ordinary returning-customer prompt instead", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: null,
+      leadSlotClaimSucceeds: true,
+      // Nothing resumable — a won lead is never a resumeCandidates row
+      // (excluded by RESUMABLE_STATUSES at the query level) — but it DOES
+      // show up in attemptConversationResume's own secondary existence
+      // check, which doesn't filter by status.
+      resumeCandidates: [],
+      hadPriorInboundInteraction: false,
+      anyPriorLeadInExtendedWindow: true,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "hi",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(1);
+    // This is the whole point of the fix: if isFirstContact ignored the
+    // 14-day signal (i.e. this assertion were run against the pre-fix
+    // code), this customer — who just had a completed job 5 days ago —
+    // would wrongly get FIRST_CONTACT_PHRASE here instead.
+    expect(sent[0]!.body).not.toContain(FIRST_CONTACT_PHRASE);
+    expect(sent[0]!.body).toContain(RETURNING_GREETING_PHRASE);
+  });
+
+  it("a prior lead classified as a different job establishes real history for a substantial message too — the fresh quote it still gets is never prefixed with the first-contact greeting", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: null,
+      leadSlotClaimSucceeds: true,
+      resumeCandidates: [OLD_UNRESOLVED_LEAD],
+      hadPriorInboundInteraction: false,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(classifyFollowUpIntent).mockResolvedValue({ classification: "different_job" } as any);
+    vi.mocked(getQuoteEstimate).mockResolvedValue({
+      needsClarification: false,
+      outOfScope: false,
+      isEmergency: false,
+      issueType: "Electrical",
+      severity: "Low",
+      confidence: "High",
+      diagnosis: "Outlet replacement.",
+      isDiagnosisOnly: false,
+      hasNoPricedWork: false,
+      hasPartiallyDeferredWork: false,
+      lineItems: [
+        {
+          description: "Outlet replacement",
+          detail: "",
+          amount: 150,
+          priceSheetItemId: "ps-outlet",
+          hours: undefined,
+        },
+      ],
+      totalLow: 150,
+      totalHigh: 150,
+    } as any);
+    vi.mocked(createLead).mockResolvedValue({ id: "new-outlet-lead" } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "my bedroom outlet stopped working",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body).toContain("150"); // still a genuine fresh quote
+    expect(sent[0]!.body).not.toContain(FIRST_CONTACT_PHRASE); // but not greeted as brand new
+    // And the OLD candidate's own content never leaks into this new lead —
+    // same transcript-isolation guarantee as the direct attemptConversationResume
+    // tests above, now confirmed through the full pipeline too.
+    expect(sent[0]!.body).not.toContain(OLD_UNRESOLVED_LEAD.problem);
+  });
+});
 
 describe("handleInboundWhatsAppMessage — a lost lead-slot claim must not silently suppress the owner notification", () => {
   it("continue_clarification: claim lost — owner still notified, lead flagged needs_human_review, AI pipeline never touched", async () => {
@@ -2302,12 +3258,19 @@ function fakeOptOutAdmin(config: { row?: FakeOptOutRow } = {}) {
       // can complete without crashing. Not meant to simulate real lead
       // routing; see fakeInboundAdmin above for that.
       if (table === "leads") {
+        // Also covers attemptConversationResume's extended-window query
+        // (.in(...), awaited directly off .limit() with no .maybeSingle())
+        // — resolves to zero candidates, same "no open lead" intent as the
+        // .maybeSingle() shape below.
         const chain: Record<string, unknown> = {
           eq: () => chain,
           gte: () => chain,
+          in: () => chain,
           order: () => chain,
           limit: () => chain,
           maybeSingle: async () => ({ data: null, error: null }),
+          then: (resolve: (v: { data: unknown[]; error: null }) => void) =>
+            resolve({ data: [], error: null }),
         };
         return { select: () => chain };
       }
@@ -2361,13 +3324,18 @@ function fakeFreshQuoteAdmin(config: { priorInboundInteraction?: boolean } = {})
       }
       if (table === "leads") {
         // No open lead — every test in this block is a genuinely fresh,
-        // first-ever conversation from this phone number.
+        // first-ever conversation from this phone number. Also covers
+        // attemptConversationResume's extended-window query (.in(...),
+        // awaited directly off .limit()) — zero candidates, same intent.
         const chain: Record<string, unknown> = {
           eq: () => chain,
           gte: () => chain,
+          in: () => chain,
           order: () => chain,
           limit: () => chain,
           maybeSingle: async () => ({ data: null, error: null }),
+          then: (resolve: (v: { data: unknown[]; error: null }) => void) =>
+            resolve({ data: [], error: null }),
         };
         return { select: () => chain };
       }
