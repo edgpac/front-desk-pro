@@ -524,6 +524,24 @@ describe("buildPrompt", () => {
     expect(prompt).toContain("so TWO line items");
   });
 
+  // PRODUCTION REGRESSION: a real WhatsApp conversation showed the model's
+  // own clarifying question opening with "Hi Edgar!" — guessed from the
+  // customer addressing the business owner by name in their message, then
+  // echoed back as if it were the customer's own name — immediately after
+  // the business's own structural greeting, producing a visible double
+  // greeting. Fixed with an explicit instruction, not just the orchestration
+  // fix (whatsapp-conversation-server.ts) that stops sending a question at
+  // all on first contact — defense in depth, since this same question-
+  // composition rule also governs every later clarification round, where
+  // the orchestration fix doesn't apply.
+  it("instructs the model never to open a clarifying question with a greeting or a guessed customer name", () => {
+    const prompt = buildPrompt(baseInput());
+    expect(prompt).toContain(
+      "Never open the question with a greeting or salutation of any kind",
+    );
+    expect(prompt).toContain("Never address the customer by name or invent one");
+  });
+
   // Phase 2, P1.1 — the no-photo/first-round clarifying-question instruction
   // used to hardcode "a photo is almost always the single most useful thing
   // you're missing" regardless of what kind of business this is. Replaced

@@ -4172,8 +4172,41 @@ describe("WhatsApp first-contact greeting", () => {
     });
 
     expect(sent).toHaveLength(1);
-    expect(sent[0]!.body.startsWith("Hi! 👋 ")).toBe(true);
+    // Short greeting — the customer already said why they're reaching out,
+    // so the open-ended "how can I help you today?" tail is dropped; the
+    // priced response follows immediately in the same message.
+    expect(sent[0]!.body.startsWith("Hi! 👋 Thanks for reaching out to")).toBe(true);
+    expect(sent[0]!.body).not.toContain("How can I help you today?");
     expect(sent[0]!.body).toContain(PRICED_RESULT.diagnosis);
+  });
+
+  it("first contact, outOfScope hand-off: short greeting (no 'how can I help you today?'), acknowledgment, then hand-off text", async () => {
+    const { admin } = fakeFreshQuoteAdmin();
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(getQuoteEstimate).mockResolvedValue({
+      needsClarification: false,
+      outOfScope: true,
+      acknowledgment: "Got it — roof repair.",
+    } as any);
+    vi.mocked(createFlaggedLead).mockClear();
+    vi.mocked(createFlaggedLead).mockResolvedValue({ id: "new-flagged-lead-1" } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "Do you fix roofs? Mine is leaking.",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body.startsWith("Hi! 👋 Thanks for reaching out to")).toBe(true);
+    expect(sent[0]!.body).not.toContain("How can I help you today?");
+    expect(sent[0]!.body).toContain("Got it — roof repair.");
   });
 
   // PRODUCTION REGRESSION: a real WhatsApp conversation showed "Hi! 👋"
@@ -4258,6 +4291,60 @@ describe("WhatsApp first-contact greeting", () => {
     // question sentence AND inside the parenthetical list.
     expect(body.match(/Not cooling/g)?.length).toBe(1);
     expect(body.match(/Making noise/g)?.length).toBe(1);
+  });
+
+  // PRODUCTION REGRESSION: a real WhatsApp conversation showed a double
+  // greeting on a genuinely first-contact message ("Edgar. Buen dia" — the
+  // customer addressing the business owner by name, not stating their own)
+  // — the recommended greeting, followed immediately by the model's own
+  // "Hi Edgar! What can we help you with today?" clarifying question and
+  // its options, all concatenated into one message. Root cause: a
+  // first-contact needsClarification response had the structural greeting
+  // prefix glued directly onto the model's own question text, with nothing
+  // stopping the model from adding its own (name-guessing) greeting too.
+  // Fix: on first contact, needsClarification now sends ONLY the plain
+  // greeting — no question, no options, no lead — exactly mirroring the
+  // thin-description short-circuit. The customer's next message is then
+  // correctly NOT treated as first contact (evaluateInboundInteraction
+  // already recorded this one at the top of the handler), so the real
+  // question gets asked then, without re-greeting.
+  it("first contact + needsClarification sends ONLY the plain greeting — no question, no options, no lead created", async () => {
+    const { admin } = fakeFreshQuoteAdmin({ priorInboundInteraction: false });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(getQuoteEstimate).mockResolvedValue({
+      needsClarification: true,
+      questions: [
+        {
+          question: "Hi Edgar! What can we help you with today?",
+          options: [
+            "I need a repair or fix",
+            "I want to install or replace something",
+            "I need maintenance or cleaning",
+            "Something else",
+          ],
+        },
+      ],
+    } as any);
+    vi.mocked(createClarifyingLead).mockClear();
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "Edgar. Buen dia",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body.startsWith("Hi! 👋 ")).toBe(true);
+    expect(sent[0]!.body).not.toContain("Edgar");
+    expect(sent[0]!.body).not.toContain("What can we help you with");
+    expect(sent[0]!.body).not.toContain("I need a repair or fix");
+    expect(createClarifyingLead).not.toHaveBeenCalled();
   });
 
   it("DOES greet a thin message that's genuinely this phone's first-ever contact (no prior interaction recorded)", async () => {
@@ -4486,7 +4573,9 @@ describe("WhatsApp first-contact greeting", () => {
     });
 
     expect(sent).toHaveLength(1);
-    expect(sent[0]!.body.startsWith("Hi! 👋 ")).toBe(true);
+    // Short greeting again — real content was in the first message.
+    expect(sent[0]!.body.startsWith("Hi! 👋 Thanks for reaching out to")).toBe(true);
+    expect(sent[0]!.body).not.toContain("How can I help you today?");
   });
 });
 

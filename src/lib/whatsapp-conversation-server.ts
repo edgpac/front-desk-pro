@@ -617,6 +617,18 @@ const RECOMMENDED_GREETING_TEMPLATE: Record<"en" | "es", string> = {
   es: "¡Hola! 👋 Gracias por contactar a {business_name}. ¿En qué podemos ayudarte?",
 };
 
+// Same opener, without the open-ended "how can I help you today?" tail —
+// used when the customer's first message already explains why they're
+// reaching out (see resolveFirstContactGreeting's "short" variant below).
+// Asking an open-ended question right after they've already told us would
+// read as not having listened; the real response (diagnosis/price,
+// out-of-scope hand-off, etc.) follows immediately after this in the same
+// message, so there's nothing left to invite here.
+const RECOMMENDED_GREETING_SHORT_TEMPLATE: Record<"en" | "es", string> = {
+  en: "Hi! 👋 Thanks for reaching out to {business_name}.",
+  es: "¡Hola! 👋 Gracias por contactar a {business_name}.",
+};
+
 // Substitutes {business_name} with the tenant's real name — falling back to
 // a generic phrase (never a customer-supplied value) if the tenant's name
 // is somehow blank, so the sentence still reads naturally instead of
@@ -645,12 +657,31 @@ function applyBusinessName(template: string, businessName: string, language: Det
 // classifyFollowUpIntent/etc. have all already run and returned their result
 // by the time this is called), so a tenant cannot use this field to inject
 // instructions that influence pricing, diagnosis, or any other AI behavior.
-function resolveFirstContactGreeting(tenant: InboundWhatsAppTenant, language: DetectedLanguage): string {
-  const recommended = applyBusinessName(
-    isEs(language) ? RECOMMENDED_GREETING_TEMPLATE.es : RECOMMENDED_GREETING_TEMPLATE.en,
-    tenant.name,
-    language,
-  );
+// variant "full" (default): the open-ended recommended greeting, used
+// whenever the greeting itself is inviting the customer to explain why
+// they're reaching out (a bare/thin first message, or a first-contact
+// question that's being asked instead of just greeting). variant "short":
+// the same opener without the "how can I help you today?" tail, used when
+// a real response (price, diagnosis, hand-off) immediately follows in the
+// same message — the customer already told us why. A tenant's own CUSTOM
+// greeting is never split or shortened (it's free text the owner wrote
+// deliberately; there's no reliable way to strip an "open canvas" tail
+// from arbitrary text) — "short" only ever affects the recommended
+// template.
+function resolveFirstContactGreeting(
+  tenant: InboundWhatsAppTenant,
+  language: DetectedLanguage,
+  variant: "full" | "short" = "full",
+): string {
+  const template =
+    variant === "short"
+      ? isEs(language)
+        ? RECOMMENDED_GREETING_SHORT_TEMPLATE.es
+        : RECOMMENDED_GREETING_SHORT_TEMPLATE.en
+      : isEs(language)
+        ? RECOMMENDED_GREETING_TEMPLATE.es
+        : RECOMMENDED_GREETING_TEMPLATE.en;
+  const recommended = applyBusinessName(template, tenant.name, language);
   if (tenant.greetingMode !== "custom") return recommended;
   const custom = (isEs(language) ? tenant.customGreetingEs : tenant.customGreetingEn)?.trim();
   if (!custom) return recommended; // empty or deleted custom greeting -> safe fallback
@@ -2363,7 +2394,13 @@ async function handleFreshQuote(params: {
     priorContextText,
   } = params;
   const language = detectLanguage(priorContextText, body);
-  const firstContactGreeting = isFirstContact ? `${resolveFirstContactGreeting(tenant, language)} ` : "";
+  // "short" variant: by the time this is used (outOfScope hand-off, or a
+  // priced quote below), the customer's first message already told us why
+  // they're reaching out and a real response follows immediately — the
+  // open-ended "how can I help you today?" tail would be redundant. The
+  // needsClarification branch above resolves its own ("full") greeting
+  // directly, on the rare first-contact path where nothing follows it.
+  const firstContactGreeting = isFirstContact ? `${resolveFirstContactGreeting(tenant, language, "short")} ` : "";
 
   const { data: priceSheetRows } = await admin
     .from("price_sheet_items")
@@ -2448,9 +2485,36 @@ async function handleFreshQuote(params: {
   }
 
   if (result.needsClarification) {
+    // First contact with nothing substantive to go on yet (the model
+    // itself couldn't find enough to even ask a specific question about)
+    // gets the SAME treatment as the thin-description short-circuit above:
+    // send only the plain greeting, create no lead, and let the customer's
+    // own next message carry the real description. This is safe, not a
+    // behavior regression of the "create the lead now" fix below — that
+    // fix exists to stop a DESCRIBED problem's context from being lost
+    // across a clarification round; here there was no real description to
+    // lose in the first place (that's exactly why the model asked at all).
+    // evaluateInboundInteraction already recorded this message as an
+    // inbound event at the top of this handler, so the customer's next
+    // message correctly sees isFirstContact: false and proceeds normally
+    // — no repeat-greeting loop.
+    if (isFirstContact) {
+      const greetingOnly = resolveFirstContactGreeting(tenant, language, "full");
+      await sendGuardedReply({
+        admin,
+        tenant,
+        fromPhone,
+        adapter,
+        leadId: null,
+        signature: { kind: "text", text: "canned:thin-description-greeting" },
+        messageText: greetingOnly,
+      });
+      return;
+    }
+
     const question = result.questions[0];
     const optionsText = question?.options?.length ? `\n(${question.options.join(" / ")})` : "";
-    const questionText = `${firstContactGreeting}${question?.question ?? localizedClarifyingFallbackQuestion(language)}${optionsText}`;
+    const questionText = `${question?.question ?? localizedClarifyingFallbackQuestion(language)}${optionsText}`;
 
     // Create the lead now, at the first clarification round, instead of
     // just replying and discarding the original photo/description — that
