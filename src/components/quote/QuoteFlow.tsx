@@ -91,6 +91,8 @@ export function QuoteFlow({
   serviceCallFeeMode = "fixed",
   currency = "USD",
   priceSheet = SAMPLE_PRICE_SHEET,
+  exclusions = [],
+  specialties = [],
   tenantSlug,
   channel = "Quote link",
 }: {
@@ -103,6 +105,12 @@ export function QuoteFlow({
   serviceCallFeeMode?: "fixed" | "negotiated";
   currency?: string;
   priceSheet?: PriceSheetItem[];
+  // Tenant-configured work this business won't take / its specialties —
+  // see QuoteTenant in public-lead-server.ts, which is where a real
+  // tenant's values come from. Empty for /demo (no real tenant), same as
+  // every other tenant-configured prop here.
+  exclusions?: { label: string }[];
+  specialties?: { label: string }[];
   tenantSlug?: string;
   // Which intake surface this instance is running on — threaded straight
   // through to createLead/createFlaggedLead so a lead's origin (embedded
@@ -132,6 +140,12 @@ export function QuoteFlow({
   // is ever persisted. Once set, later rounds/finalization update this same
   // lead instead of creating new ones.
   const [clarifyingLeadId, setClarifyingLeadId] = useState<string | null>(null);
+  // Set only when an outOfScope result came back because it matched a
+  // configured exclusion (getQuoteEstimate's applyExclusionGuard), not a
+  // genuine no-match — read later in sendFlaggedRequest to pick a more
+  // specific flag_type/flag_reason for the dashboard. Null for every other
+  // case, including a real "nothing on the price sheet covers this."
+  const [outOfScopeExclusion, setOutOfScopeExclusion] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const descriptionRef = useRef<HTMLInputElement>(null);
 
@@ -225,6 +239,8 @@ export function QuoteFlow({
           serviceCallFee,
           serviceCallFeeMode,
           priceSheet,
+          exclusions,
+          specialties,
           description,
           imageBase64: base64,
           imageMediaType: mediaType,
@@ -246,6 +262,7 @@ export function QuoteFlow({
         // further questions — so persist the round's answers with no
         // follow-up questions, same helper, empty nextQuestions.
         await persistClarificationRound(newAnswersThisRound, []);
+        setOutOfScopeExclusion(outcome.excludedServiceLabel ?? null);
         setStage("outOfScope");
         return;
       }
@@ -437,6 +454,9 @@ export function QuoteFlow({
     }
     setSendingLead(true);
     try {
+      const flagReason = outOfScopeExclusion
+        ? `Matches a configured exclusion: "${outOfScopeExclusion}" — ${description}`
+        : `Nothing on the price sheet covers: ${description}`;
       // P1-D: same reasoning as sendQuoteToBusiness above — complete the
       // existing clarifying lead rather than creating a duplicate.
       if (clarifyingLeadId !== null) {
@@ -446,7 +466,8 @@ export function QuoteFlow({
             tenantSlug,
             customerName: customerName.trim(),
             phone: phone.trim(),
-            flagReason: `Nothing on the price sheet covers: ${description}`,
+            flagReason,
+            flagType: outOfScopeExclusion ? "excluded_service" : "outside_service_scope",
           },
         });
       } else {
@@ -458,8 +479,8 @@ export function QuoteFlow({
             channel,
             photoUrl: null,
             problem: description,
-            flagType: "outside_service_scope",
-            flagReason: `Nothing on the price sheet covers: ${description}`,
+            flagType: outOfScopeExclusion ? "excluded_service" : "outside_service_scope",
+            flagReason,
           },
         });
       }
@@ -859,7 +880,7 @@ export function QuoteFlow({
               {result.isDiagnosisOnly ? (
                 <p className="mt-1.5 text-sm text-neutral-500">
                   Due for an in-person visit to see exactly what's needed. This amount applies toward the total
-                  repair cost — we'll confirm the full price once we know what the fix requires.
+                  job cost — we'll confirm the full price once we know what's needed.
                 </p>
               ) : (
                 <p className="mt-1.5 text-sm text-neutral-500">

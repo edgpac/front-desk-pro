@@ -66,6 +66,8 @@ function WidgetEmbedPage() {
         currency={tenant.currency}
         bookingLink={tenant.calendarLink}
         priceSheet={tenant.priceSheet}
+        exclusions={tenant.exclusions}
+        specialties={tenant.specialties}
         tenantSlug={tenant.slug}
         channel="Widget"
         compact

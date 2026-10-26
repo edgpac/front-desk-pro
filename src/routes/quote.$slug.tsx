@@ -73,6 +73,8 @@ function QuotePage() {
               currency={tenant.currency}
               bookingLink={tenant.calendarLink}
               priceSheet={tenant.priceSheet}
+              exclusions={tenant.exclusions}
+              specialties={tenant.specialties}
               tenantSlug={tenant.slug}
             />
           </div>

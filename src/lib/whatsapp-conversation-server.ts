@@ -19,6 +19,7 @@ import {
   getAdminClient,
 } from "@/lib/public-lead-server";
 import { sendFollowUpNotificationEmail } from "@/lib/notify-server";
+import { getActiveCapabilitiesForTenant } from "@/lib/capabilities-server";
 import { lineItemAmount, money } from "@/lib/mock-data";
 import {
   evaluateInboundInteraction,
@@ -47,6 +48,25 @@ import {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Fetches a tenant's active capabilities once and splits them into
+// getQuoteEstimate's two shapes — exclusions (the actual enforcement
+// input, see applyExclusionGuard in estimate-server.ts) and specialties
+// (advisory-only). A read failure fails toward "nothing known" (empty
+// arrays) rather than throwing — see getActiveCapabilitiesForTenant's own
+// comment: this must never block a quote outright.
+async function fetchCapabilitiesForQuote(
+  admin: ReturnType<typeof getAdminClient>,
+  tenantId: string,
+): Promise<{ exclusions: { label: string }[]; specialties: { label: string }[] }> {
+  const capabilities = await getActiveCapabilitiesForTenant(admin, tenantId);
+  return {
+    exclusions: capabilities.filter((c) => c.type === "exclusion").map((c) => ({ label: c.label })),
+    specialties: capabilities
+      .filter((c) => c.type === "specialty" || c.type === "certification" || c.type === "equipment")
+      .map((c) => ({ label: c.label })),
+  };
 }
 
 // WhatsApp AI-to-AI / non-progressing-answer loop guard — see
@@ -545,8 +565,8 @@ function formatQuotePriceLine(
   }
   const pricedPortion = isDiagnosisOnly
     ? isEs(language)
-      ? `Tarifa de visita de diagnóstico: ${money(totalLow, currency)}, correspondiente a una visita en persona — este monto se aplica al costo total de la reparación una vez que sepamos qué se necesita.`
-      : `Diagnosis visit fee: ${money(totalLow, currency)}, due for an in-person visit — this applies toward the total repair cost once we know what's needed.`
+      ? `Tarifa de visita de diagnóstico: ${money(totalLow, currency)}, correspondiente a una visita en persona — este monto se aplica al costo total del trabajo una vez que sepamos qué se necesita.`
+      : `Diagnosis visit fee: ${money(totalLow, currency)}, due for an in-person visit — this applies toward the total job cost once we know what's needed.`
     : isEs(language)
       ? `Precio estimado: ${money(totalLow, currency)}.`
       : `Estimated price: ${money(totalLow, currency)}.`;
@@ -1410,6 +1430,7 @@ export async function handleInboundWhatsAppMessage(params: {
           : null,
         aiNotes: row.ai_notes,
       }));
+      const clarifyCapabilities = await fetchCapabilitiesForQuote(admin, tenant.id);
 
       // The original photo stays canonical regardless of whether this reply
       // has its own attachment — re-fetched fresh each round via the adapter
@@ -1450,6 +1471,8 @@ export async function handleInboundWhatsAppMessage(params: {
             serviceCallFee: tenant.serviceCallFee,
             serviceCallFeeMode: tenant.serviceCallFeeMode,
             priceSheet: clarifyPriceSheet,
+            exclusions: clarifyCapabilities.exclusions,
+            specialties: clarifyCapabilities.specialties,
             description: openLead.problem,
             ...(clarifyImageBase64 !== undefined ? { imageBase64: clarifyImageBase64 } : {}),
             ...(clarifyImageMediaType !== undefined
@@ -1549,8 +1572,10 @@ export async function handleInboundWhatsAppMessage(params: {
           .from("leads")
           .update({
             status: "flagged",
-            flag_type: "outside_service_scope",
-            flag_reason: `Nothing on the price sheet covers: ${openLead.problem}`,
+            flag_type: clarifyResult.excludedServiceLabel ? "excluded_service" : "outside_service_scope",
+            flag_reason: clarifyResult.excludedServiceLabel
+              ? `Matches a configured exclusion: "${clarifyResult.excludedServiceLabel}" — ${openLead.problem}`
+              : `Nothing on the price sheet covers: ${openLead.problem}`,
           })
           .eq("id", openLead.id);
         await sendGuardedReply({
@@ -2107,6 +2132,7 @@ async function handleQuotedFollowUpPhoto(params: {
           : null,
         aiNotes: row.ai_notes,
       }));
+      const reassessCapabilities = await fetchCapabilitiesForQuote(admin, tenant.id);
 
       const { data: lineItemRows } = await admin
         .from("lead_line_items")
@@ -2135,6 +2161,8 @@ async function handleQuotedFollowUpPhoto(params: {
             serviceCallFee: tenant.serviceCallFee,
             serviceCallFeeMode: tenant.serviceCallFeeMode,
             priceSheet,
+            exclusions: reassessCapabilities.exclusions,
+            specialties: reassessCapabilities.specialties,
             description: updatedDescription || NO_DESCRIPTION_PLACEHOLDER,
             imageBase64,
             imageMediaType,
@@ -2360,6 +2388,7 @@ async function handleFreshQuote(params: {
       : null,
     aiNotes: row.ai_notes,
   }));
+  const freshQuoteCapabilities = await fetchCapabilitiesForQuote(admin, tenant.id);
 
   let imageBase64: string | undefined;
   let imageMediaType: string | undefined;
@@ -2394,6 +2423,8 @@ async function handleFreshQuote(params: {
         serviceCallFee: tenant.serviceCallFee,
         serviceCallFeeMode: tenant.serviceCallFeeMode,
         priceSheet,
+        exclusions: freshQuoteCapabilities.exclusions,
+        specialties: freshQuoteCapabilities.specialties,
         description: body || NO_DESCRIPTION_PLACEHOLDER,
         ...(imageBase64 !== undefined ? { imageBase64 } : {}),
         ...(imageMediaType !== undefined ? { imageMediaType } : {}),
@@ -2473,8 +2504,10 @@ async function handleFreshQuote(params: {
         channel,
         photoUrl: mediaRef ?? null,
         problem: openingProblem,
-        flagType: "outside_service_scope",
-        flagReason: `Nothing on the price sheet covers: ${openingProblem}`,
+        flagType: result.excludedServiceLabel ? "excluded_service" : "outside_service_scope",
+        flagReason: result.excludedServiceLabel
+          ? `Matches a configured exclusion: "${result.excludedServiceLabel}" — ${openingProblem}`
+          : `Nothing on the price sheet covers: ${openingProblem}`,
       },
     });
     await admin

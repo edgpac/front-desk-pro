@@ -234,7 +234,9 @@ export function BusinessDocument({
                 <p className="font-display text-[19px] font-extrabold leading-tight text-foreground">
                   {tenant.name}
                 </p>
-                <p className="mt-1 text-[11px] font-medium text-muted-foreground">{tenant.trade} services</p>
+                {tenant.trade.trim() && (
+                  <p className="mt-1 text-[11px] font-medium text-muted-foreground">{tenant.trade} services</p>
+                )}
                 <p className="text-[11px] text-muted-foreground">{tenant.phone}</p>
                 <p className="text-[11px] text-muted-foreground">{tenant.email}</p>
                 <p className="text-[11px] text-muted-foreground">{tenant.address}</p>
@@ -399,12 +401,10 @@ export function BusinessDocument({
               )}
               {kind !== "receipt" && (
                 <Section title="Payment & warranty">
-                  <p>
-                    {tenant.paymentTerms} {tenant.warrantyTerms}
-                  </p>
+                  <p>{[tenant.paymentTerms, tenant.warrantyTerms].filter((t) => t.trim()).join(" ")}</p>
                 </Section>
               )}
-              {kind === "receipt" && (
+              {kind === "receipt" && tenant.warrantyTerms.trim() && (
                 <Section title="Warranty">
                   <p>{tenant.warrantyTerms}</p>
                 </Section>

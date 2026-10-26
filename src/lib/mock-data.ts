@@ -55,6 +55,7 @@ export type Lead = {
     | "outside_service_scope"
     | "pending_negotiated_price"
     | "partially_priced"
+    | "excluded_service"
     | null;
 };
 

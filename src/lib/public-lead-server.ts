@@ -53,6 +53,11 @@ export type QuoteTenant = {
   serviceCallFeeMode: "fixed" | "negotiated";
   calendarLink: string;
   priceSheet: PriceSheetItem[];
+  // Active tenant_capabilities, split by type here so QuoteFlow.tsx can
+  // pass each straight into getQuoteEstimate's exclusions/specialties
+  // fields without re-filtering client-side.
+  exclusions: { label: string }[];
+  specialties: { label: string }[];
 };
 
 // Public, unauthenticated lookup for the /quote/:slug page — an anonymous
@@ -103,6 +108,13 @@ export const getTenantForQuote = createServerFn({ method: "GET" })
       throw new Error(`Could not load price sheet: ${itemsError.message}`);
     }
 
+    // Dynamic import, not a top-level static one — same reasoning as
+    // notify-server.ts's import in createLead below: keeps this module out
+    // of the dev client bundle for a route (widget.$slug.tsx/quote.$slug.tsx)
+    // this file is otherwise already reachable from.
+    const { getActiveCapabilitiesForTenant } = await import("@/lib/capabilities-server");
+    const capabilities = await getActiveCapabilitiesForTenant(admin, tenant.id as string);
+
     return {
       name: tenant.name as string,
       slug: tenant.slug as string,
@@ -111,6 +123,10 @@ export const getTenantForQuote = createServerFn({ method: "GET" })
       serviceCallFee: tenant.service_call_fee as number,
       serviceCallFeeMode: tenant.service_call_fee_mode as "fixed" | "negotiated",
       calendarLink: tenant.calendar_link as string,
+      exclusions: capabilities.filter((c) => c.type === "exclusion").map((c) => ({ label: c.label })),
+      specialties: capabilities
+        .filter((c) => c.type === "specialty" || c.type === "certification" || c.type === "equipment")
+        .map((c) => ({ label: c.label })),
       priceSheet: (items ?? []).map((item) => ({
         id: item["id"] as string,
         task: item["task"] as string,
@@ -439,7 +455,7 @@ type CreateFlaggedLeadInput = {
   channel: "Widget" | "Quote link" | "Shared link" | "WhatsApp";
   photoUrl: string | null;
   problem: string;
-  flagType: "conflicting_information" | "needs_human_review" | "outside_service_scope";
+  flagType: "conflicting_information" | "needs_human_review" | "outside_service_scope" | "excluded_service";
   flagReason: string;
 };
 
@@ -821,6 +837,12 @@ type FinalizeAsOutOfScopeInput = {
   customerName: string;
   phone: string;
   flagReason: string;
+  // Optional, defaults to "outside_service_scope" (today's only prior
+  // behavior) — set to "excluded_service" when getQuoteEstimate's
+  // exclusion guard is what produced this outOfScope result, so the
+  // dashboard can distinguish "nothing on the price sheet covers this"
+  // from "the business explicitly said it doesn't take this."
+  flagType?: "outside_service_scope" | "excluded_service";
 };
 
 // P1-D's other necessary half: once createClarifyingLead has started a
@@ -858,7 +880,7 @@ export const finalizeLeadAsOutOfScope = createServerFn({ method: "POST" })
         // Plain normalization only — see normalizePhone's own comment.
         phone: normalizePhone(data.phone),
         status: "flagged",
-        flag_type: "outside_service_scope",
+        flag_type: data.flagType ?? "outside_service_scope",
         flag_reason: data.flagReason,
       })
       .eq("id", data.leadId)

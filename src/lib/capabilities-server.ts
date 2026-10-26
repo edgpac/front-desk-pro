@@ -92,3 +92,34 @@ export const removeCapability = createServerFn({ method: "POST" })
     if (error) throw new Error(`Could not remove: ${error.message}`);
     return { ok: true as const };
   });
+
+// The service-role-path equivalent of listMyCapabilities — called from
+// whatsapp-conversation-server.ts and QuoteFlow.tsx's widget flow (via
+// public-lead-server.ts's getTenantForQuote), both of which use the admin
+// client (no authenticated owner session to scope an RLS-backed query
+// through) and already know the tenant's id directly, having already
+// resolved it the same way they resolve the price sheet. A plain function,
+// not a createServerFn — these callers are server-side code calling it
+// directly, not a client-facing RPC endpoint of its own, and this shape
+// makes it directly unit-testable with a fake admin client.
+export async function getActiveCapabilitiesForTenant(
+  admin: Pick<SupabaseClient, "from">,
+  tenantId: string,
+): Promise<Capability[]> {
+  const { data, error } = await admin
+    .from("tenant_capabilities")
+    .select("id, type, label, notes, active")
+    .eq("tenant_id", tenantId)
+    .eq("active", true)
+    .order("created_at", { ascending: true });
+  if (error) {
+    console.error(`Could not load capabilities for tenant ${tenantId}:`, error.message);
+    // Fails toward "no exclusions known" rather than throwing — a read
+    // failure here must never block a quote outright (that would be a
+    // worse outcome than this feature not existing at all), but it must
+    // also never silently treat a failed read as "this request isn't
+    // excluded" without saying so loudly first.
+    return [];
+  }
+  return (data ?? []) as Capability[];
+}

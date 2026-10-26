@@ -925,6 +925,12 @@ function fakeInboundAdmin(config: {
   // excluded-status) lead that still proves the customer is returning, even
   // though it can never itself be a resume candidate.
   anyPriorLeadInExtendedWindow?: boolean;
+  // Active tenant_capabilities rows fetchCapabilitiesForQuote should see,
+  // every time handleFreshQuote/the clarification/reassessment paths call
+  // getQuoteEstimate. Defaults to [] — every pre-existing test (none of
+  // which configure any capability) keeps its exact prior "nothing
+  // excluded, no specialties" behavior.
+  capabilities?: Array<{ id: string; type: string; label: string; notes: string | null; active: boolean }>;
 }) {
   // Deliberately NOT the same object decideLeadRoute's initial read
   // returns — see flagTypeAtWriteTime's own comment above.
@@ -1164,6 +1170,20 @@ function fakeInboundAdmin(config: {
         // to build its price-sheet argument — content is irrelevant
         // here since getQuoteEstimate itself is mocked.
         return { select: () => ({ eq: async () => ({ data: [], error: null }) }) };
+      }
+      if (table === "tenant_capabilities") {
+        // getActiveCapabilitiesForTenant's own query shape:
+        // .select(...).eq("tenant_id", ...).eq("active", true).order(...).
+        const rows = config.capabilities ?? [];
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                order: async () => ({ data: rows, error: null }),
+              }),
+            }),
+          }),
+        };
       }
       throw new Error(`fakeInboundAdmin: unexpected table "${table}"`);
     },
@@ -1853,6 +1873,106 @@ describe("handleInboundWhatsAppMessage — conversation resume wiring", () => {
   });
 });
 
+// Phase 2, P0.1 — the diagnosis-visit-fee quote line used to say "this
+// applies toward the total repair cost... once we know what's needed" —
+// factually wrong for a non-repair business (a salon, consultant, or
+// cleaning company isn't repairing anything). Confirms the wording is now
+// industry-neutral in both languages, through the real pipeline, not just
+// read from source.
+describe("quote price line wording — industry-neutral diagnosis-fee phrasing (no repair-specific language)", () => {
+  beforeEach(() => {
+    vi.mocked(getQuoteEstimate).mockReset();
+    vi.mocked(createLead).mockClear();
+  });
+
+  it("English: the diagnosis-fee line says 'total job cost,' never 'repair cost' or 'the fix'", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: null,
+      leadSlotClaimSucceeds: true,
+      resumeCandidates: [],
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(getQuoteEstimate).mockResolvedValue({
+      needsClarification: false,
+      outOfScope: false,
+      isEmergency: false,
+      issueType: "General",
+      severity: "Low",
+      confidence: "Medium",
+      diagnosis: "Needs an in-person look before pricing.",
+      isDiagnosisOnly: true,
+      hasNoPricedWork: false,
+      hasPartiallyDeferredWork: false,
+      lineItems: [
+        { description: "Diagnostic visit", detail: "", amount: 89, priceSheetItemId: "service_call", hours: undefined },
+      ],
+      totalLow: 89,
+      totalHigh: 89,
+    } as any);
+    vi.mocked(createLead).mockResolvedValue({ id: "new-lead-1" } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "I'm not sure what's wrong, can you take a look?",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body).toContain("total job cost");
+    expect(sent[0]!.body).not.toContain("repair cost");
+    expect(sent[0]!.body).not.toContain("the fix");
+  });
+
+  it("Spanish: the diagnosis-fee line says 'costo total del trabajo,' never 'la reparación'", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: null,
+      leadSlotClaimSucceeds: true,
+      resumeCandidates: [],
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(getQuoteEstimate).mockResolvedValue({
+      needsClarification: false,
+      outOfScope: false,
+      isEmergency: false,
+      issueType: "General",
+      severity: "Low",
+      confidence: "Medium",
+      diagnosis: "Necesita una visita en persona antes de poder dar un precio.",
+      isDiagnosisOnly: true,
+      hasNoPricedWork: false,
+      hasPartiallyDeferredWork: false,
+      lineItems: [
+        { description: "Visita de diagnóstico", detail: "", amount: 89, priceSheetItemId: "service_call", hours: undefined },
+      ],
+      totalLow: 89,
+      totalHigh: 89,
+    } as any);
+    vi.mocked(createLead).mockResolvedValue({ id: "new-lead-2" } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "No estoy segura de qué pasa, ¿pueden revisar?",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body).toContain("costo total del trabajo");
+    expect(sent[0]!.body).not.toContain("la reparación");
+  });
+});
+
 // Fix 2/3 — the 14-day resume lookback can discover real prior history
 // (a won/lost lead, or a lead classified as a different job) even when
 // nothing is actually resumed. That history must not be discarded: a
@@ -2155,6 +2275,49 @@ describe("handleInboundWhatsAppMessage — a lost lead-slot claim must not silen
     expect(calls.leadUpdateApplied).toBe(1);
     expect(calls.lastLeadUpdatePatch?.["flag_type"]).toBe("outside_service_scope");
     expect(calls.releaseAttempts).toBe(1); // claim released after the callback completes
+  });
+
+  // Phase 2 — "configured exclusions actually control AI behavior." When
+  // getQuoteEstimate's own exclusion guard (estimate-server.ts) is what
+  // produced this outOfScope result, the mid-clarification path must flag
+  // it distinctly from a genuine "nothing on the price sheet covers this"
+  // — same mechanism as the fresh-quote test below, exercised through the
+  // continue_clarification branch instead.
+  it("continue_clarification: an outOfScope result caused by a configured exclusion is flagged excluded_service, not outside_service_scope", async () => {
+    const { admin, calls } = fakeInboundAdmin({
+      openLead: {
+        id: "lead-gas",
+        customer_name: "Pat",
+        photo_url: null,
+        problem: "install a gas line",
+        confidence: null,
+        diagnosis: null,
+        flag_type: null,
+      },
+      leadSlotClaimSucceeds: true,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(getQuoteEstimate).mockClear();
+    vi.mocked(getQuoteEstimate).mockResolvedValue({
+      needsClarification: false,
+      outOfScope: true,
+      excludedServiceLabel: "Gas line installation",
+    } as any);
+    const { adapter } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "it's for a new stove hookup",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(calls.lastLeadUpdatePatch?.["flag_type"]).toBe("excluded_service");
+    expect(calls.lastLeadUpdatePatch?.["flag_reason"]).toContain("Gas line installation");
   });
 
   // PRODUCTION REGRESSION: a real customer said "Not cooling and needs a
@@ -2616,6 +2779,48 @@ describe("language stays pinned to prior context, never silently resets to Engli
 
     expect(sent).toHaveLength(1);
     expect(sent[0]!.body).toContain("¡Gracias por contactar a Acme Handyman!");
+  });
+
+  // Phase 2 — "configured exclusions actually control AI behavior." A
+  // genuinely fresh (no prior lead) conversation whose outOfScope result
+  // came from the exclusion guard, not a real no-match, must create the
+  // flagged lead with flagType: "excluded_service" and a flag_reason the
+  // owner can actually act on — distinguishing "the business refuses this"
+  // from "nothing on the price sheet covers it" at the dashboard level,
+  // never changing what the customer is told.
+  it("handleFreshQuote: an outOfScope result caused by a configured exclusion creates a flagged lead with flagType excluded_service", async () => {
+    const { admin } = fakeFreshQuoteAdmin();
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(getQuoteEstimate).mockClear();
+    vi.mocked(getQuoteEstimate).mockResolvedValue({
+      needsClarification: false,
+      outOfScope: true,
+      excludedServiceLabel: "Gas line installation",
+    } as any);
+    vi.mocked(createFlaggedLead).mockClear();
+    vi.mocked(createFlaggedLead).mockResolvedValue({ id: "new-lead-gas" } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "I need a gas line run to my new stove",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(createFlaggedLead).toHaveBeenCalledTimes(1);
+    const call = vi.mocked(createFlaggedLead).mock.calls[0]![0] as { data: Record<string, unknown> };
+    expect(call.data["flagType"]).toBe("excluded_service");
+    expect(call.data["flagReason"]).toContain("Gas line installation");
+    // The customer-facing message is unaffected — same generic hand-off
+    // as a genuine outside_service_scope case, never revealing "you hit
+    // an exclusion list."
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body).toContain("pass your message along to our team");
   });
 
   it("handleFreshQuote main body: a longer English reply ('Thanks anywaya') after Spanish prior context still replies in Spanish", async () => {
@@ -3341,6 +3546,17 @@ function fakeFreshQuoteAdmin(config: { priorInboundInteraction?: boolean } = {})
       }
       if (table === "price_sheet_items") {
         return { select: () => ({ eq: async () => ({ data: [], error: null }) }) };
+      }
+      if (table === "tenant_capabilities") {
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                order: async () => ({ data: [], error: null }),
+              }),
+            }),
+          }),
+        };
       }
       if (table === "lead_messages") {
         return {

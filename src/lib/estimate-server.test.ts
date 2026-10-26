@@ -4,6 +4,9 @@ import {
   validateQuoteAgainstPriceSheet,
   buildPrompt,
   buildClaudeMessageContent,
+  buildQuoteResult,
+  findMatchingExclusion,
+  applyExclusionGuard,
   extractDollarAmounts,
   findUnexpectedAmounts,
   isSupportedImageBase64,
@@ -13,6 +16,7 @@ import {
   SERVICE_CALL_SENTINEL_ID,
   type PriceSheetItem,
   type QuoteInput,
+  type QuoteResult,
 } from "./estimate-server";
 
 // Covers the highest-priority gap identified in the 2026-09 security
@@ -478,6 +482,46 @@ describe("buildPrompt", () => {
     const prompt = buildPrompt(baseInput());
     expect(prompt).toContain("a missing photo is never by itself a reason to lower confidence");
   });
+
+  // Phase 2, P1.2 — the bundling/multi-line-item worked example used to be
+  // anchored to a doorknob/towel-bar/toilet-unclogging price sheet, sent to
+  // every tenant regardless of industry. Confirms the lesson (same-item
+  // matches collapse to one line; different-item matches stay separate,
+  // both fully priced) survives in abstract, industry-neutral form.
+  it("the bundling worked example is industry-neutral — no repair-specific task names, same matchedServices/lineItems lesson preserved", () => {
+    // A clean, non-repair price sheet — the module-level `priceSheet`
+    // fixture above legitimately contains "doorknob" as a keyword of its
+    // OWN (unrelated to the worked example), so this test uses its own
+    // override to isolate exactly what the worked-example text itself
+    // contains, independent of fixture data.
+    const cleanPriceSheet: PriceSheetItem[] = [
+      {
+        id: "ps-clean-1",
+        task: "Consultation",
+        category: "General",
+        keywords: ["consultation"],
+        pricingType: "flat",
+        priceMin: 50,
+        priceMax: 50,
+        hours: 0,
+        bundleable: false,
+        materialsPolicy: "included",
+        diagnosisFee: null,
+        aiNotes: null,
+      },
+    ];
+    const prompt = buildPrompt(
+      baseInput({ priceSheet: cleanPriceSheet, description: "I'd like to book a consultation." }),
+    );
+    expect(prompt).not.toContain("doorknob");
+    expect(prompt).not.toContain("towel bar");
+    expect(prompt).not.toContain("unclogging");
+    expect(prompt).toContain("Service A");
+    expect(prompt).toContain("Service B");
+    expect(prompt).toContain("BUNDLEABLE");
+    expect(prompt).toContain("so ONE line item");
+    expect(prompt).toContain("so TWO line items");
+  });
 });
 
 // Photo-intelligence investigation (2026-10-19): the user asked whether the
@@ -646,5 +690,167 @@ describe("findUnexpectedAmounts", () => {
     expect(
       findUnexpectedAmounts("The business will confirm the price when they're in touch.", [120]),
     ).toEqual([]);
+  });
+});
+
+// Phase 2 — "configured exclusions actually control AI behavior." These
+// cover the deterministic, server-side mechanism (never the AI's own
+// compliance) that prevents excluded work from receiving an automatic
+// quote even when a matching price-sheet item exists.
+describe("findMatchingExclusion — deterministic keyword-overlap matching, no AI involved", () => {
+  it("matches when the exclusion's own words appear directly in the search text", () => {
+    expect(
+      findMatchingExclusion(["I need a gas line run to my new stove"], [{ label: "Gas line installation" }]),
+    ).toBe("Gas line installation");
+  });
+
+  it("matches a simple word-form variation (install vs installation, roof vs roofs) via lenient prefix matching", () => {
+    expect(
+      findMatchingExclusion(
+        ["I need my roof fixed, it's a two story house"],
+        [{ label: "Roofs over 2 stories" }],
+      ),
+    ).toBe("Roofs over 2 stories");
+  });
+
+  it("does NOT match on a single shared common word alone — majority-of-tokens avoids this false positive", () => {
+    expect(findMatchingExclusion(["my truck needs repair"], [{ label: "Deck repair" }])).toBeNull();
+  });
+
+  it("returns null when nothing is configured", () => {
+    expect(findMatchingExclusion(["anything at all"], [])).toBeNull();
+  });
+
+  it("returns null when none of the exclusion's words appear anywhere", () => {
+    expect(
+      findMatchingExclusion(["I'd like a haircut and a beard trim"], [{ label: "Gas line installation" }]),
+    ).toBeNull();
+  });
+
+  it("a single-token exclusion matches on that one token's presence", () => {
+    expect(findMatchingExclusion(["is there asbestos in this ceiling"], [{ label: "Asbestos" }])).toBe(
+      "Asbestos",
+    );
+  });
+
+  it("checks every configured exclusion, not just the first", () => {
+    expect(
+      findMatchingExclusion(
+        ["I need a gas line installed"],
+        [{ label: "Roofs over 2 stories" }, { label: "Gas line installation" }],
+      ),
+    ).toBe("Gas line installation");
+  });
+});
+
+describe("applyExclusionGuard — overrides a priced result when it matches a configured exclusion", () => {
+  const exclusionPriceSheet: PriceSheetItem[] = [
+    {
+      id: "ps-gas",
+      task: "Gas line installation",
+      category: "Gas",
+      keywords: ["gas line", "gas pipe"],
+      pricingType: "flat",
+      priceMin: 400,
+      priceMax: 400,
+      hours: 0,
+      bundleable: false,
+      materialsPolicy: "included",
+      diagnosisFee: null,
+      aiNotes: null,
+    },
+    {
+      id: "ps-faucet",
+      task: "Faucet replacement",
+      category: "Plumbing",
+      keywords: ["faucet", "tap"],
+      pricingType: "flat",
+      priceMin: 180,
+      priceMax: 180,
+      hours: 0,
+      bundleable: false,
+      materialsPolicy: "included",
+      diagnosisFee: null,
+      aiNotes: null,
+    },
+  ];
+  const excludedInput = (description: string, lineItemId: string, amount: number): QuoteInput => ({
+    businessName: "Test Co",
+    laborRate: 60,
+    serviceCallFee: 89,
+    serviceCallFeeMode: "fixed",
+    priceSheet: exclusionPriceSheet,
+    exclusions: [{ label: "Gas line installation" }],
+    description,
+  });
+  const pricedResult = (lineItemId: string, amount: number): QuoteResult =>
+    buildQuoteResult(
+      {
+        diagnosis: "Will install the gas line as requested.",
+        lineItems: [{ description: "Gas line installation", detail: "", amount, priceSheetItemId: lineItemId }],
+        matchedServices: [{ customerIssue: "gas line", priceSheetItemId: lineItemId }],
+      },
+      exclusionPriceSheet,
+    );
+
+  it("overrides a priced result into an outOfScope hand-off when it matches a configured exclusion — the core safety guarantee", () => {
+    const input = excludedInput("I need a gas line run to my new stove", "ps-gas", 400);
+    const result = applyExclusionGuard(pricedResult("ps-gas", 400), input);
+    expect(result).toEqual({
+      needsClarification: false,
+      outOfScope: true,
+      excludedServiceLabel: "Gas line installation",
+    });
+  });
+
+  it("an ALLOWED service with the exact same exclusions configured still prices normally — exclusions are specific, not a blanket block", () => {
+    const allowedResult = buildQuoteResult(
+      {
+        diagnosis: "Will replace the kitchen faucet.",
+        lineItems: [{ description: "Faucet replacement", detail: "", amount: 180, priceSheetItemId: "ps-faucet" }],
+        matchedServices: [{ customerIssue: "faucet", priceSheetItemId: "ps-faucet" }],
+      },
+      exclusionPriceSheet,
+    );
+    const input: QuoteInput = {
+      businessName: "Test Co",
+      laborRate: 60,
+      serviceCallFee: 89,
+      serviceCallFeeMode: "fixed",
+      priceSheet: exclusionPriceSheet,
+      exclusions: [{ label: "Gas line installation" }],
+      description: "My kitchen faucet is leaking",
+    };
+    const result = applyExclusionGuard(allowedResult, input);
+    expect(result).toEqual(allowedResult);
+    expect(result.needsClarification).toBe(false);
+  });
+
+  it("never touches a needsClarification result, regardless of configured exclusions", () => {
+    const clarifying: QuoteResult = { needsClarification: true, questions: [{ question: "Which room?", options: [] }] };
+    const input = excludedInput("gas line somewhere", "ps-gas", 400);
+    expect(applyExclusionGuard(clarifying, input)).toEqual(clarifying);
+  });
+
+  it("never adds excludedServiceLabel to a genuine AI-decided outOfScope result (nothing matched at all)", () => {
+    const genuineOutOfScope: QuoteResult = { needsClarification: false, outOfScope: true, acknowledgment: "Got it." };
+    const input = excludedInput("something unrelated", "ps-gas", 400);
+    expect(applyExclusionGuard(genuineOutOfScope, input)).toEqual(genuineOutOfScope);
+    expect("excludedServiceLabel" in applyExclusionGuard(genuineOutOfScope, input)).toBe(false);
+  });
+
+  it("a tenant with zero configured exclusions is completely unaffected — every priced result passes through unchanged", () => {
+    const priced = pricedResult("ps-gas", 400);
+    const input: QuoteInput = {
+      businessName: "Test Co",
+      laborRate: 60,
+      serviceCallFee: 89,
+      serviceCallFeeMode: "fixed",
+      priceSheet: exclusionPriceSheet,
+      description: "I need a gas line run",
+      // exclusions deliberately omitted — the common case for every
+      // existing tenant today.
+    };
+    expect(applyExclusionGuard(priced, input)).toEqual(priced);
   });
 });

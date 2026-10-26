@@ -27,6 +27,7 @@ type LeadRow = {
     | "outside_service_scope"
     | "pending_negotiated_price"
     | "partially_priced"
+    | "excluded_service"
     | null;
   ai_line_items_snapshot: LineItem[] | null;
   created_at: string;

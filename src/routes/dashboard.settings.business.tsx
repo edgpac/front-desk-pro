@@ -17,9 +17,15 @@ export const Route = createFileRoute("/dashboard/settings/business")({
 
 const CURRENCIES: Tenant["currency"][] = ["USD", "MXN", "CAD"];
 
+// "trade" and "warrantyTerms" are deliberately NOT required — neither has
+// a natural equivalent for every service business (a consultant or a
+// salon has no "trade" to name and no "workmanship" to warranty), and
+// nothing downstream depends on either being non-empty: updateMyTenant
+// has no server-side validation on them, and BusinessDocument.tsx omits
+// their sections/phrases entirely when blank rather than rendering a
+// dangling label.
 const REQUIRED_FIELDS: (keyof Tenant)[] = [
   "name",
-  "trade",
   "phone",
   "email",
   "address",
@@ -27,7 +33,6 @@ const REQUIRED_FIELDS: (keyof Tenant)[] = [
   "hours",
   "calendarLink",
   "paymentTerms",
-  "warrantyTerms",
 ];
 
 function BusinessSettings() {
@@ -120,7 +125,7 @@ function BusinessSettings() {
         title="Business info"
         description={
           user
-            ? "Everything here appears on your proposals, invoices, and receipts — all fields are required before you can save."
+            ? "Everything here appears on your proposals, invoices, and receipts."
             : "You're viewing sample data — sign up to save your own business info here."
         }
       />
@@ -130,8 +135,12 @@ function BusinessSettings() {
           <Field label="Business name" required>
             <Input value={form.name} onChange={(e) => set("name", e.target.value)} required />
           </Field>
-          <Field label="Trade" required>
-            <Input value={form.trade} onChange={(e) => set("trade", e.target.value)} required />
+          <Field label="Business type">
+            <Input
+              value={form.trade}
+              onChange={(e) => set("trade", e.target.value)}
+              placeholder="e.g. Plumbing, Hair Salon, Marketing Consulting"
+            />
           </Field>
 
           <Field label="Phone" required>
@@ -209,13 +218,12 @@ function BusinessSettings() {
               required
             />
           </Field>
-          <Field label="Warranty terms" required className="sm:col-span-2">
+          <Field label="Warranty terms" className="sm:col-span-2">
             <Textarea
               rows={2}
               value={form.warrantyTerms}
               onChange={(e) => set("warrantyTerms", e.target.value)}
-              placeholder="e.g. 30-day warranty on all workmanship."
-              required
+              placeholder="e.g. 30-day warranty on workmanship, a 48-hour cancellation policy, or a non-refundable booking deposit — leave blank if this doesn't apply to your business."
             />
           </Field>
 
