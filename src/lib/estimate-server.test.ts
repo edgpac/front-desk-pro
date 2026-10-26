@@ -14,6 +14,7 @@ import {
   IMAGE_TOO_LARGE_MESSAGE,
   MAX_IMAGE_BASE64_CHARS,
   SERVICE_CALL_SENTINEL_ID,
+  NO_DESCRIPTION_PLACEHOLDER,
   type PriceSheetItem,
   type QuoteInput,
   type QuoteResult,
@@ -521,6 +522,51 @@ describe("buildPrompt", () => {
     expect(prompt).toContain("BUNDLEABLE");
     expect(prompt).toContain("so ONE line item");
     expect(prompt).toContain("so TWO line items");
+  });
+
+  // Phase 2, P1.1 — the no-photo/first-round clarifying-question instruction
+  // used to hardcode "a photo is almost always the single most useful thing
+  // you're missing" regardless of what kind of business this is. Replaced
+  // with an instruction to reason from the price sheet (the same mechanism
+  // this prompt already uses for isEmergency and every other business-type
+  // inference), so a salon/consultant/photographer tenant isn't defaulted
+  // into a photo-first request that doesn't fit their kind of work.
+  it("the no-photo, first-round instruction reasons from the price sheet instead of assuming a photo is always most useful", () => {
+    const prompt = buildPrompt(baseInput()); // no imageBase64, no answers: !hasPhoto && isFirstRound
+    expect(prompt).not.toContain(
+      "a photo is almost always the single most useful thing you're missing",
+    );
+    expect(prompt).toContain(
+      "Reason about whether a photo would genuinely help you price or assess the specific kind of work this business does",
+    );
+  });
+
+  it("the no-photo, first-round instruction appears only when there's no photo and it's the first round — absent once a photo exists or a round has already happened", () => {
+    const marker =
+      "Reason about whether a photo would genuinely help you price or assess the specific kind of work this business does";
+    expect(buildPrompt(baseInput())).toContain(marker); // !hasPhoto && isFirstRound
+    expect(buildPrompt(baseInput({ imageBase64: "x" }))).not.toContain(marker); // hasPhoto
+    expect(
+      buildPrompt(baseInput({ answers: [{ question: "Is there a photo?", answer: "No" }] })),
+    ).not.toContain(marker); // !isFirstRound
+  });
+
+  it("the no-photo-repeat-round instruction (already asked once, still no photo) remains byte-for-byte unchanged", () => {
+    const prompt = buildPrompt(
+      baseInput({ answers: [{ question: "Is there a photo?", answer: "No" }] }),
+    );
+    expect(prompt).toContain(
+      "No photo has been provided, and the customer has already been asked about this — do NOT ask for a photo again under any circumstance, even if you still don't have one. Proceed using the description and answers already given; if a genuinely different, price-changing detail remains, ask about that instead, otherwise price the job now.",
+    );
+  });
+
+  it("the photo-without-description instruction remains byte-for-byte unchanged", () => {
+    const prompt = buildPrompt(
+      baseInput({ imageBase64: "x", description: NO_DESCRIPTION_PLACEHOLDER }),
+    );
+    expect(prompt).toContain(
+      "No description was provided — a photo alone rarely tells you everything (what's actually needed, relevant history, what the customer wants done), so make your first clarifying question an open-ended request for the customer to describe what they need in their own words, rather than guessing from the image alone or asking a narrower multiple-choice question first. Phrase it naturally for whatever this business actually does — not every photo represents something broken (a repair job, a grooming request, an installation) — don't assume 'problem' framing where it doesn't fit.",
+    );
   });
 });
 

@@ -3316,6 +3316,177 @@ describe("handleInboundWhatsAppMessage — quoted_follow_up with a photo (Priori
   });
 });
 
+// Phase 2 — "configured exclusions actually control AI behavior," the
+// input-wiring half. The excluded_service flag-type tests elsewhere in
+// this file (search "excluded_service") prove the OUTPUT branching is
+// correct given a getQuoteEstimate result that already has
+// excludedServiceLabel set — they never prove the fetched capabilities
+// actually reached getQuoteEstimate's own input in the first place. These
+// tests close that gap directly: asserting on getQuoteEstimate's real
+// call arguments (via vi.mocked(getQuoteEstimate).mock.calls), not its
+// return value, at each of the three call sites that reach it.
+describe("getQuoteEstimate call-argument wiring — fetched exclusions/specialties actually reach the AI call", () => {
+  const EXCLUSION_CAPABILITIES = [
+    { id: "cap-1", type: "exclusion", label: "Gas line installation", notes: null, active: true },
+    { id: "cap-2", type: "specialty", label: "Tankless water heaters", notes: null, active: true },
+  ];
+
+  beforeEach(() => {
+    vi.mocked(getQuoteEstimate).mockClear();
+  });
+
+  function getQuoteEstimateCallData(): Record<string, unknown> {
+    expect(getQuoteEstimate).toHaveBeenCalledTimes(1);
+    const call = vi.mocked(getQuoteEstimate).mock.calls[0]![0] as { data: Record<string, unknown> };
+    return call.data;
+  }
+
+  it("fresh-quote path (handleFreshQuote): configured exclusions and specialties are present in getQuoteEstimate's actual call arguments", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: null,
+      leadSlotClaimSucceeds: true,
+      resumeCandidates: [],
+      capabilities: EXCLUSION_CAPABILITIES,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(getQuoteEstimate).mockResolvedValue({ needsClarification: false, outOfScope: true } as any);
+    vi.mocked(createFlaggedLead).mockResolvedValue({ id: "new-lead-1" } as any);
+    const { adapter } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "I need a gas line run to my new stove",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    const data = getQuoteEstimateCallData();
+    expect(data["exclusions"]).toEqual([{ label: "Gas line installation" }]);
+    expect(data["specialties"]).toEqual([{ label: "Tankless water heaters" }]);
+  });
+
+  it("fresh-quote path: a tenant with nothing configured sends empty exclusions/specialties arrays, never undefined or omitted", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: null,
+      leadSlotClaimSucceeds: true,
+      resumeCandidates: [],
+      // capabilities deliberately omitted — the common case for every
+      // tenant today (confirmed live: 0 tenant_capabilities rows exist in
+      // production as of this feature's rollout).
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(getQuoteEstimate).mockResolvedValue({ needsClarification: false, outOfScope: true } as any);
+    vi.mocked(createFlaggedLead).mockResolvedValue({ id: "new-lead-2" } as any);
+    const { adapter } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "my kitchen faucet is leaking",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    const data = getQuoteEstimateCallData();
+    expect(data["exclusions"]).toEqual([]);
+    expect(data["specialties"]).toEqual([]);
+  });
+
+  it("mid-clarification path (continue_clarification): configured exclusions reach getQuoteEstimate's call arguments", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: {
+        id: "lead-clarify-1",
+        customer_name: "Pat",
+        photo_url: null,
+        problem: "install a gas line",
+        confidence: null,
+        diagnosis: null,
+        flag_type: null,
+      },
+      leadSlotClaimSucceeds: true,
+      capabilities: EXCLUSION_CAPABILITIES,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(getQuoteEstimate).mockResolvedValue({ needsClarification: false, outOfScope: true } as any);
+    const { adapter } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "it's for a new stove hookup",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    const data = getQuoteEstimateCallData();
+    expect(data["exclusions"]).toEqual([{ label: "Gas line installation" }]);
+    expect(data["specialties"]).toEqual([{ label: "Tankless water heaters" }]);
+  });
+
+  it("photo-reassessment path (quoted_follow_up, same_job): configured exclusions reach getQuoteEstimate's call arguments", async () => {
+    const quotedLead: FakeOpenLead = {
+      id: "lead-photo-reassess-1",
+      customer_name: "Riley",
+      photo_url: null,
+      problem: "Kitchen faucet needs replacing.",
+      confidence: "High",
+      diagnosis: "Standard kitchen faucet replacement.",
+      flag_type: null,
+    };
+    const { admin } = fakeInboundAdmin({
+      openLead: quotedLead,
+      leadSlotClaimSucceeds: true,
+      existingLineItems: [{ description: "Kitchen faucet replacement", rate: 120, qty: 1 }],
+      capabilities: EXCLUSION_CAPABILITIES,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(classifyFollowUpPhotoIntent).mockResolvedValue({ classification: "same_job" } as any);
+    vi.mocked(getQuoteEstimate).mockResolvedValue({
+      needsClarification: false,
+      outOfScope: false,
+      isEmergency: false,
+      issueType: "Plumbing",
+      severity: "Medium",
+      confidence: "High",
+      diagnosis: "Corroded shut-off valves found.",
+      isDiagnosisOnly: false,
+      hasNoPricedWork: false,
+      hasPartiallyDeferredWork: false,
+      lineItems: [
+        { description: "Kitchen faucet replacement", detail: "", amount: 185, priceSheetItemId: "ps-1", hours: undefined },
+      ],
+      totalLow: 185,
+      totalHigh: 185,
+    } as any);
+    const { adapter } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "here's what it looks like under the sink",
+      mediaRef: "media-ref-reassess-1",
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    const data = getQuoteEstimateCallData();
+    expect(data["exclusions"]).toEqual([{ label: "Gas line installation" }]);
+    expect(data["specialties"]).toEqual([{ label: "Tankless water heaters" }]);
+  });
+});
+
 // ---------------------------------------------------------------------
 // WhatsApp opt-out — handleInboundWhatsAppMessage's own state machine
 // (handleOptOutState), checked BEFORE the loop guard. Real-Postgres
