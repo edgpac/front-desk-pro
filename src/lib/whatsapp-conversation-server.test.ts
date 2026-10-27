@@ -21,19 +21,27 @@ vi.mock("@/lib/public-lead-server", () => ({
   finalizeLeadWithQuote: vi.fn(),
 }));
 vi.mock("@/lib/estimate-server", async (importOriginal) => {
-  // detectLanguage is real, not mocked — it's a pure, deterministic
-  // pattern-matcher (see estimate-server.ts), and the whatsapp-conversation-
-  // server.ts localization tests below depend on its actual Spanish-
-  // detection behavior to verify real language-routing, not a fake return
-  // value that would prove nothing about the real code path.
+  // detectLanguage/detectCurrentLanguage are real, not mocked — they're
+  // pure, deterministic pattern-matchers (see estimate-server.ts), and the
+  // whatsapp-conversation-server.ts localization tests below depend on
+  // their actual Spanish-detection behavior to verify real language-
+  // routing, not a fake return value that would prove nothing about the
+  // real code path.
   const actual = await importOriginal<typeof import("@/lib/estimate-server")>();
   return {
     getQuoteEstimate: vi.fn(),
     getFollowUpAnswer: vi.fn(),
     classifyFollowUpIntent: vi.fn(),
     classifyFollowUpPhotoIntent: vi.fn(),
+    // Defaults to "specific_or_other" so every existing fresh_quote test
+    // (which doesn't configure this mock at all) falls through to the
+    // normal getQuoteEstimate flow unchanged, exactly as it did before this
+    // classifier existed — only tests that explicitly set this mock to
+    // "broad_overview" exercise the new short-circuit.
+    classifyBroadServiceInquiry: vi.fn(() => Promise.resolve({ classification: "specific_or_other" })),
     isSupportedImageBase64: vi.fn(() => true),
     detectLanguage: actual.detectLanguage,
+    detectCurrentLanguage: actual.detectCurrentLanguage,
     NO_DESCRIPTION_PLACEHOLDER: "no description provided",
     UNSUPPORTED_IMAGE_MESSAGE: "unsupported image message",
   };
@@ -70,6 +78,7 @@ import {
   getQuoteEstimate,
   classifyFollowUpIntent,
   classifyFollowUpPhotoIntent,
+  classifyBroadServiceInquiry,
   isSupportedImageBase64,
   getFollowUpAnswer,
 } from "@/lib/estimate-server";
@@ -525,15 +534,21 @@ describe("handleLoopGuardPause", () => {
     expect(sent).toEqual([{ to: TEST_PHONE, body: LOOP_PAUSE_MESSAGE }]);
   });
 
-  // PRODUCTION REGRESSION: a real conversation showed "I'll pass your
-  // message along to our team." (outOfScope handoff) immediately followed,
-  // on the customer's very next message, by this same generic pause
-  // notice — redundant, since they were just told exactly that. The trip
-  // state itself (and the resulting pause on future automated replies)
-  // lives entirely in whatsapp_loop_guards, untouched by this — only the
-  // repeat customer-facing text is suppressed.
-  it("suppresses the pause notice when the lead was already flagged outside_service_scope (handoff already communicated)", async () => {
-    const { admin, calls } = fakeLoopGuardAdmin({
+  // "outside_service_scope" deliberately removed from
+  // ALREADY_HANDED_OFF_FLAG_TYPES (2026-10-27): this test used to assert
+  // suppression on the premise that an outOfScope result had already sent
+  // the customer a real handoff message ("I'll pass your message along to
+  // our team."). The silence mechanism means that's no longer true — an
+  // outOfScope result sends nothing at all — so the premise this
+  // suppression relied on is false, and leaving it in place would leave a
+  // customer in total, permanent, unexplained silence (whatsapp_loop_guards
+  // trips never auto-clear) instead of at least getting this generic pause
+  // notice. The pause notice must now fire normally, same as any other
+  // non-exempt flag (pending_negotiated_price above); the lead-level
+  // loop_suspected label is still correctly blocked by the existing-flag
+  // WHERE clause, same as that case.
+  it("no longer suppresses the pause notice for a lead flagged outside_service_scope — that flag's handoff message is silent now, so the premise no longer holds", async () => {
+    const { admin, leadState, calls } = fakeLoopGuardAdmin({
       lead: { flag_type: "outside_service_scope" },
       guard: { notice_status: "pending" },
     });
@@ -545,9 +560,9 @@ describe("handleLoopGuardPause", () => {
       adapter,
       leadId: "lead-1",
     });
-    expect(sent).toEqual([]);
-    expect(calls.claimAttempted).toBe(0); // never even attempts to claim the notice slot
-    expect(calls.markSent).toBe(0);
+    expect(sent).toEqual([{ to: TEST_PHONE, body: LOOP_PAUSE_MESSAGE }]);
+    expect(leadState.flag_type).toBe("outside_service_scope"); // untouched — WHERE flag_type IS NULL still blocks it
+    expect(calls.leadFlagUpdateApplied).toBe(0);
   });
 
   it("suppresses the pause notice when the lead was already flagged needs_human_review (handoff already communicated)", async () => {
@@ -570,10 +585,12 @@ describe("handleLoopGuardPause", () => {
 
   // Exercises the leadId: null path specifically (the real top-of-
   // handleInboundWhatsAppMessage call site, which never has a lead id in
-  // hand) — confirms the by-phone lookup correctly finds the open lead and
-  // still suppresses when it's already flagged outside_service_scope.
-  it("suppresses the pause notice via the by-phone lookup when called with leadId: null and an open, already-flagged lead exists", async () => {
-    const { admin, calls } = fakeLoopGuardAdmin({
+  // hand) — confirms the by-phone lookup correctly finds the open lead and,
+  // same as the direct-leadId test above, no longer suppresses the pause
+  // notice for outside_service_scope now that flag sends no handoff
+  // message of its own.
+  it("still sends the pause notice via the by-phone lookup when called with leadId: null and the found lead is flagged outside_service_scope", async () => {
+    const { admin } = fakeLoopGuardAdmin({
       guard: { notice_status: "pending" },
       leadForPhoneLookup: { id: "lead-found-by-phone", flag_type: "outside_service_scope" },
     });
@@ -585,8 +602,7 @@ describe("handleLoopGuardPause", () => {
       adapter,
       leadId: null,
     });
-    expect(sent).toEqual([]);
-    expect(calls.claimAttempted).toBe(0);
+    expect(sent).toEqual([{ to: TEST_PHONE, body: LOOP_PAUSE_MESSAGE }]);
   });
 
   it("still sends the pause notice via the by-phone lookup when called with leadId: null and no open lead exists at all", async () => {
@@ -931,6 +947,14 @@ function fakeInboundAdmin(config: {
   // which configure any capability) keeps its exact prior "nothing
   // excluded, no specialties" behavior.
   capabilities?: Array<{ id: string; type: string; label: string; notes: string | null; active: boolean }>;
+  // Raw price_sheet_items rows handleFreshQuote reads to build its
+  // priceSheet argument. Defaults to [] — every pre-existing test (where
+  // getQuoteEstimate is mocked anyway, so the actual price-sheet content
+  // never mattered) keeps its exact prior "empty" behavior. Only the
+  // broad-service-inquiry short-circuit tests need real category/price_min
+  // content, since that's what the short-circuit's own category list and
+  // "is anything actually priced" gate read directly off this table.
+  priceSheetRows?: Array<Record<string, unknown>>;
 }) {
   // Deliberately NOT the same object decideLeadRoute's initial read
   // returns — see flagTypeAtWriteTime's own comment above.
@@ -1167,9 +1191,12 @@ function fakeInboundAdmin(config: {
       }
       if (table === "price_sheet_items") {
         // Read before every getQuoteEstimate call (claim-won path only)
-        // to build its price-sheet argument — content is irrelevant
-        // here since getQuoteEstimate itself is mocked.
-        return { select: () => ({ eq: async () => ({ data: [], error: null }) }) };
+        // to build its price-sheet argument — content is usually
+        // irrelevant since getQuoteEstimate itself is mocked, except for
+        // the broad-service-inquiry short-circuit (handleFreshQuote),
+        // which reads this directly, before getQuoteEstimate is ever
+        // reached.
+        return { select: () => ({ eq: async () => ({ data: config.priceSheetRows ?? [], error: null }) }) };
       }
       if (table === "tenant_capabilities") {
         // getActiveCapabilitiesForTenant's own query shape:
@@ -1333,6 +1360,36 @@ describe("attemptConversationResume", () => {
     expect(outcome).toEqual({ kind: "no_match", hadPriorHistory: true });
     expect(sent).toEqual([]); // no acknowledgment, no clarifying question
     expect(calls.leadMessageInserts).toEqual([]); // no contamination of any kind
+  });
+
+  // PRODUCTION GAP (2026-10-27): a payment message arriving on a phone with
+  // a resumable candidate lead must never produce the "which job is this
+  // about?" disambiguation reply below — that would itself be a
+  // customer-facing message about an out-of-scope message. "out_of_scope"
+  // is excluded from "plausible" the same way "different_job" is, so this
+  // falls through to no_match exactly like the different_job case above,
+  // letting the normal fresh_quote path (RULE 0 in buildPrompt) handle the
+  // silence instead.
+  it("one candidate, classified out_of_scope: no_match — never asks which job a payment message is about, no acknowledgment, no contamination", async () => {
+    const { admin, calls } = fakeInboundAdmin({
+      openLead: null,
+      leadSlotClaimSucceeds: true,
+      resumeCandidates: [OLD_UNRESOLVED_LEAD],
+    });
+    vi.mocked(classifyFollowUpIntent).mockResolvedValue({ classification: "out_of_scope" } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    const outcome = await attemptConversationResume({
+      admin,
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      adapter,
+      body: "Did you receive my payment?",
+    });
+
+    expect(outcome).toEqual({ kind: "no_match", hadPriorHistory: true });
+    expect(sent).toEqual([]); // no disambiguation question, no acknowledgment
+    expect(calls.leadMessageInserts).toEqual([]);
   });
 
   it("one candidate, classified ambiguous: asks a single clarifying question naming only that job — never guesses either way", async () => {
@@ -2269,7 +2326,11 @@ describe("handleInboundWhatsAppMessage — a lost lead-slot claim must not silen
     });
 
     expect(getQuoteEstimate).toHaveBeenCalledTimes(1);
-    expect(sent).toEqual([{ to: TEST_PHONE, body: "I'll pass your message along to our team." }]);
+    // PRODUCTION REGRESSION (2026-10-27): JIR only responds within the
+    // configured Price Sheet's scope — an outOfScope result now sends NO
+    // customer-facing WhatsApp reply at all. Everything else (flag update,
+    // owner notification, claim release) still fires exactly once.
+    expect(sent).toEqual([]);
     expect(sendFollowUpNotificationEmail).toHaveBeenCalledTimes(1); // exactly once, not duplicated
     expect(calls.leadUpdateAttempts).toBe(1);
     expect(calls.leadUpdateApplied).toBe(1);
@@ -2320,18 +2381,18 @@ describe("handleInboundWhatsAppMessage — a lost lead-slot claim must not silen
     expect(calls.lastLeadUpdatePatch?.["flag_reason"]).toContain("Gas line installation");
   });
 
-  // PRODUCTION REGRESSION: a real customer said "Not cooling and needs a
-  // clean" about an air conditioner the business doesn't service. The
-  // out-of-scope decision itself was correct (confirmed against the real
-  // tenant's price sheet — no AC/HVAC item exists), but the handoff reply
-  // was a cold, generic "I'll pass your message along to our team." with
-  // no acknowledgment of what was actually said. getQuoteEstimate now
-  // returns an optional "acknowledgment" alongside outOfScope: true; this
-  // confirms it's actually used when present, in the customer's own
-  // detected language, and that its absence still falls back to the exact
-  // same message as before (no regression for a model response that omits
-  // it).
-  it('out-of-scope handoff includes the AI-generated "acknowledgment" of what the customer described, when present', async () => {
+  // PRODUCTION REGRESSION (2026-10-27): JIR only responds within the
+  // configured Price Sheet's scope — an outOfScope result now sends no
+  // customer-facing reply at all, regardless of whether the model's
+  // "acknowledgment" field is present. (Historical context: this field was
+  // originally added so a cold, generic "I'll pass your message along to
+  // our team." could open with a warmer acknowledgment of what the
+  // customer actually said — real customer regression, "Not cooling and
+  // needs a clean" about an AC unit the business doesn't service. That
+  // wording is now moot for WhatsApp specifically, since no reply is sent
+  // either way — acknowledgment may still matter to other channels this
+  // file doesn't touch.)
+  it("out-of-scope handoff sends no reply whether or not the model provides an acknowledgment", async () => {
     const { admin } = fakeInboundAdmin({
       openLead: {
         id: "lead-ac",
@@ -2364,15 +2425,10 @@ describe("handleInboundWhatsAppMessage — a lost lead-slot claim must not silen
       adapter,
     });
 
-    expect(sent).toEqual([
-      {
-        to: TEST_PHONE,
-        body: "Got it — AC maintenance and cleaning. I'll pass your message along to our team.",
-      },
-    ]);
+    expect(sent).toEqual([]);
   });
 
-  it("out-of-scope handoff falls back to the plain hand-off message when the model omits acknowledgment", async () => {
+  it("out-of-scope handoff still sends no reply when the model omits acknowledgment", async () => {
     const { admin } = fakeInboundAdmin({
       openLead: {
         id: "lead-ac-2",
@@ -2404,7 +2460,7 @@ describe("handleInboundWhatsAppMessage — a lost lead-slot claim must not silen
       adapter,
     });
 
-    expect(sent).toEqual([{ to: TEST_PHONE, body: "I'll pass your message along to our team." }]);
+    expect(sent).toEqual([]);
   });
 
   it("quoted_follow_up/sameJob: claim WON — notification fires exactly once (not duplicated now that it lives outside the claimed callback)", async () => {
@@ -2471,12 +2527,48 @@ const QUOTED_FAUCET_LEAD: FakeOpenLead = {
   flag_type: null,
 };
 
-describe("quoted_follow_up text classification — three-way (same_job / different_job / ambiguous)", () => {
+describe("quoted_follow_up text classification — four-way (same_job / different_job / ambiguous / out_of_scope)", () => {
   beforeEach(() => {
     vi.mocked(getFollowUpAnswer).mockClear();
     vi.mocked(getQuoteEstimate).mockClear();
     vi.mocked(classifyFollowUpIntent).mockClear();
     vi.mocked(createLead).mockClear();
+    vi.mocked(sendFollowUpNotificationEmail).mockClear();
+  });
+
+  // PRODUCTION GAP (2026-10-27): a payment/deposit/administrative message
+  // on an already-quoted lead never went through getQuoteEstimate's RULE 0
+  // at all — classifyFollowUpIntent had no "this isn't a service follow-up"
+  // option, so a message like "Did you receive my payment?" read as
+  // substantively about that job's payment and landed on "same_job",
+  // which getFollowUpAnswer would then confidently answer. This is the
+  // fix: the classifier's new 4th option short-circuits straight to the
+  // same silence treatment as the other three outOfScope branches.
+  it('classification="out_of_scope": a payment message on an already-quoted lead gets NO customer-facing reply, but the lead is flagged and the owner notified', async () => {
+    const { admin, calls } = fakeInboundAdmin({ openLead: QUOTED_FAUCET_LEAD, leadSlotClaimSucceeds: true });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(classifyFollowUpIntent).mockResolvedValue({ classification: "out_of_scope" } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "Did you receive my payment?",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(getFollowUpAnswer).not.toHaveBeenCalled();
+    expect(getQuoteEstimate).not.toHaveBeenCalled();
+    expect(createLead).not.toHaveBeenCalled();
+    expect(sent).toEqual([]);
+    expect(calls.lastLeadUpdatePatch?.["flag_type"]).toBe("outside_service_scope");
+    expect(sendFollowUpNotificationEmail).toHaveBeenCalledTimes(1);
+    const emailArg = vi.mocked(sendFollowUpNotificationEmail).mock.calls[0]![0] as { body: string };
+    expect(emailArg.body).toContain("Did you receive my payment?");
   });
 
   it('classification="different_job": a message about an unrelated appliance gets its own fresh quote, never the faucet\'s diagnosis or $120', async () => {
@@ -2606,6 +2698,343 @@ describe("quoted_follow_up text classification — three-way (same_job / differe
     expect(getFollowUpAnswer).toHaveBeenCalledTimes(1);
     expect(getQuoteEstimate).not.toHaveBeenCalled();
     expect(sent).toEqual([{ to: TEST_PHONE, body: "Yes, still $120 for the faucet." }]);
+  });
+});
+
+// A broad "what do you offer" / "send me your full list" message should
+// never produce a 50+-item AI-generated wall of text — but it also isn't a
+// job to price, a clarification answer, or out of scope, so it doesn't fit
+// getQuoteEstimate's three-way contract. classifyBroadServiceInquiry
+// (estimate-server.ts) is a small, separate, single-purpose classifier
+// checked in handleFreshQuote before getQuoteEstimate is ever called; the
+// reply it produces is always a deterministic template built from the
+// tenant's own price-sheet categories and its own slug, never AI free text.
+const PRICED_ROWS_FOR_OVERVIEW = [
+  {
+    id: "p1",
+    task: "Ceiling fan install",
+    category: "Electrical",
+    keywords: [],
+    pricing_type: "flat",
+    price_min: 150,
+    price_max: 150,
+    hours: 1,
+    bundleable: false,
+    materials_policy: "included",
+    diagnosis_pricing_type: null,
+    diagnosis_fee: null,
+    ai_notes: null,
+  },
+  {
+    id: "p2",
+    task: "Drain clearing",
+    category: "Plumbing",
+    keywords: [],
+    pricing_type: "flat",
+    price_min: 120,
+    price_max: 120,
+    hours: 1,
+    bundleable: false,
+    materials_policy: "included",
+    diagnosis_pricing_type: null,
+    diagnosis_fee: null,
+    ai_notes: null,
+  },
+];
+
+describe("handleFreshQuote — broad service-inquiry short-circuit", () => {
+  beforeEach(() => {
+    vi.mocked(getQuoteEstimate).mockClear();
+    vi.mocked(classifyBroadServiceInquiry).mockClear();
+    vi.mocked(createLead).mockClear();
+    vi.mocked(createClarifyingLead).mockClear();
+    vi.mocked(createFlaggedLead).mockClear();
+  });
+
+  it('classification="broad_overview" with priced services: sends the deterministic category+link template, never calls getQuoteEstimate, creates no lead', async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: null,
+      leadSlotClaimSucceeds: true,
+      priceSheetRows: PRICED_ROWS_FOR_OVERVIEW,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(classifyBroadServiceInquiry).mockResolvedValue({ classification: "broad_overview" } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "What services do you offer?",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(getQuoteEstimate).not.toHaveBeenCalled();
+    expect(createLead).not.toHaveBeenCalled();
+    expect(createFlaggedLead).not.toHaveBeenCalled();
+    expect(sent).toHaveLength(1);
+    const body = sent[0]!.body;
+    expect(body).toContain("Electrical");
+    expect(body).toContain("Plumbing");
+    expect(body).toContain(`https://www.jobitready.com/menu/${TEST_TENANT.slug}`);
+  });
+
+  it('classification="broad_overview" but no priced services exist: never fabricates a menu link, falls through to the normal getQuoteEstimate flow instead', async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: null,
+      leadSlotClaimSucceeds: true,
+      priceSheetRows: [], // nothing priced — nothing honest to list or link to
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(getQuoteEstimate).mockResolvedValue({
+      needsClarification: true,
+      questions: [{ question: "What do you need done?", options: [] }],
+    } as any);
+    vi.mocked(createClarifyingLead).mockResolvedValue({ id: "clarifying-lead-1" } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "What services do you offer?",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    // Gated on categories.length > 0 before the classifier is even called —
+    // with no priced rows at all, there's nothing to short-circuit.
+    expect(classifyBroadServiceInquiry).not.toHaveBeenCalled();
+    expect(getQuoteEstimate).toHaveBeenCalledTimes(1);
+    expect(sent.some((m) => m.body.includes("jobitready.com/menu"))).toBe(false);
+  });
+
+  it('classification="specific_or_other" (regression guard): a real service question still goes through getQuoteEstimate normally', async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: null,
+      leadSlotClaimSucceeds: true,
+      priceSheetRows: PRICED_ROWS_FOR_OVERVIEW,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(classifyBroadServiceInquiry).mockResolvedValue({ classification: "specific_or_other" } as any);
+    vi.mocked(getQuoteEstimate).mockResolvedValue({
+      needsClarification: false,
+      outOfScope: false,
+      isEmergency: false,
+      issueType: "Electrical",
+      severity: "Low",
+      confidence: "High",
+      diagnosis: "Ceiling fan installation.",
+      isDiagnosisOnly: false,
+      hasNoPricedWork: false,
+      hasPartiallyDeferredWork: false,
+      lineItems: [
+        { description: "Ceiling fan install", detail: "", amount: 150, priceSheetItemId: "p1", hours: 1 },
+      ],
+      totalLow: 150,
+      totalHigh: 150,
+    } as any);
+    vi.mocked(createLead).mockResolvedValue({ id: "new-fan-lead" } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "Do you install ceiling fans?",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(getQuoteEstimate).toHaveBeenCalledTimes(1);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body).toContain("150");
+  });
+
+  it("a photo attached never triggers the broad-inquiry classifier, even with priced services and broad-sounding text", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: null,
+      leadSlotClaimSucceeds: true,
+      priceSheetRows: PRICED_ROWS_FOR_OVERVIEW,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(getQuoteEstimate).mockResolvedValue({ needsClarification: true, questions: [] } as any);
+    vi.mocked(createClarifyingLead).mockResolvedValue({ id: "clarifying-lead-2" } as any);
+    const { adapter } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "what do you guys do?",
+      mediaRef: "media-ref-1",
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(classifyBroadServiceInquiry).not.toHaveBeenCalled();
+  });
+
+  it('classification="broad_overview" in Spanish: the overview and menu intro are localized, never default to English', async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: null,
+      leadSlotClaimSucceeds: true,
+      priceSheetRows: PRICED_ROWS_FOR_OVERVIEW,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(classifyBroadServiceInquiry).mockResolvedValue({ classification: "broad_overview" } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "¿Qué servicios ofrecen?",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body).toContain("Ofrecemos servicios de");
+    expect(sent[0]!.body).toContain(`https://www.jobitready.com/menu/${TEST_TENANT.slug}`);
+  });
+});
+
+// Composite regression (2026-10-27, approved during the Price-Sheet-only
+// review): proves the full real-world sequence end to end rather than its
+// individual pieces in isolation — an out-of-scope message must never
+// "poison" the same customer's NEXT, genuinely in-scope request. Two
+// separate handleInboundWhatsAppMessage calls, each against its own fake
+// admin configured to represent the real DB state at that exact moment
+// (the second call's openLead is exactly what message 1's own flagging
+// write would have produced) — the same approach every other sequential-
+// state scenario in this file already uses, since decideLeadRoute/
+// handleLoopGuardPause are themselves stateless functions of whatever the
+// DB currently holds, not of any in-memory history.
+describe("production regression: an out-of-scope message must not suppress the customer's next, legitimate request", () => {
+  it("message 1 (payment, out of scope) is silent and flags the lead; message 2 (a real listed service) reaches normal matching and is NOT suppressed by the loop guard", async () => {
+    // --- Message 1: "Did you receive my payment?" on a brand-new conversation ---
+    const { admin: admin1 } = fakeInboundAdmin({ openLead: null, leadSlotClaimSucceeds: true });
+    vi.mocked(getAdminClient).mockReturnValue(admin1);
+    vi.mocked(getQuoteEstimate).mockReset();
+    vi.mocked(getQuoteEstimate).mockResolvedValueOnce({
+      needsClarification: false,
+      outOfScope: true,
+    } as any);
+    vi.mocked(createFlaggedLead).mockClear();
+    vi.mocked(createFlaggedLead).mockResolvedValue({ id: "lead-payment-1" } as any);
+    vi.mocked(sendFollowUpNotificationEmail).mockClear();
+    const { adapter: adapter1, sent: sent1 } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "Did you receive my payment?",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: "Jordan",
+      channel: "WhatsApp",
+      adapter: adapter1,
+    });
+
+    // Requirement 2: no customer-facing WhatsApp reply for the out-of-scope message.
+    expect(sent1).toEqual([]);
+    expect(createFlaggedLead).toHaveBeenCalledTimes(1);
+    const flaggedCall = vi.mocked(createFlaggedLead).mock.calls[0]![0] as { data: { flagType: string } };
+    expect(flaggedCall.data.flagType).toBe("outside_service_scope");
+    expect(sendFollowUpNotificationEmail).toHaveBeenCalledTimes(1); // owner still told
+
+    // --- Message 2: a real, listed service request from the SAME phone ---
+    // openLead here is exactly the state message 1's own flagging write
+    // produced: the lead createFlaggedLead returned, confidence still
+    // null (never priced), flag_type outside_service_scope. Per
+    // decideLeadRoute's own rule, a flagged lead with no confidence
+    // always routes to fresh_quote — real, pre-existing, intentional
+    // behavior (a flagged/unpriced lead never gets "stuck" re-litigating
+    // the thing that got it flagged); this test's job is to confirm that
+    // restart actually reaches a normal priced reply, unsuppressed by
+    // either decideLeadRoute or the loop guard.
+    const { admin: admin2 } = fakeInboundAdmin({
+      openLead: {
+        id: "lead-payment-1",
+        customer_name: "Jordan",
+        photo_url: null,
+        problem: "Did you receive my payment?",
+        confidence: null,
+        diagnosis: null,
+        flag_type: "outside_service_scope",
+      },
+      leadSlotClaimSucceeds: true,
+      priceSheetRows: PRICED_ROWS_FOR_OVERVIEW,
+      // Explicit, not just the default — the point being verified is that
+      // nothing about message 1's outside_service_scope flag trips the
+      // guard on its own; a real trip is a volume/repeat signal entirely
+      // independent of flag_type (see ALREADY_HANDED_OFF_FLAG_TYPES's own
+      // comment in the source).
+      loopGuardTripped: false,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin2);
+    // mockClear() elsewhere in this file only clears call history, not a
+    // previously-set mockResolvedValue — explicitly restore the real
+    // default here so this message is actually classified normally
+    // ("Do you install ceiling fans?" names a specific service, not a
+    // broad "what do you offer" question) regardless of what the
+    // immediately-preceding test in file-run order last configured this
+    // mock to return.
+    vi.mocked(classifyBroadServiceInquiry).mockResolvedValue({ classification: "specific_or_other" } as any);
+    vi.mocked(getQuoteEstimate).mockReset();
+    vi.mocked(getQuoteEstimate).mockResolvedValueOnce({
+      needsClarification: false,
+      outOfScope: false,
+      isEmergency: false,
+      issueType: "Electrical",
+      severity: "Low",
+      confidence: "High",
+      diagnosis: "Ceiling fan installation.",
+      isDiagnosisOnly: false,
+      hasNoPricedWork: false,
+      hasPartiallyDeferredWork: false,
+      lineItems: [
+        { description: "Ceiling fan install", detail: "", amount: 150, priceSheetItemId: "p1", hours: 1 },
+      ],
+      totalLow: 150,
+      totalHigh: 150,
+    } as any);
+    vi.mocked(createLead).mockClear();
+    vi.mocked(createLead).mockResolvedValue({ id: "lead-fan-2" } as any);
+    const { adapter: adapter2, sent: sent2 } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "Do you install ceiling fans?",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: "Jordan",
+      channel: "WhatsApp",
+      adapter: adapter2,
+    });
+
+    // Requirements 3-5: the legitimate request reaches real service
+    // matching (getQuoteEstimate actually ran against the live price
+    // sheet) and the loop guard did NOT suppress the reply — a real,
+    // priced, customer-facing message went out, not silence and not the
+    // generic loop-pause notice.
+    expect(getQuoteEstimate).toHaveBeenCalledTimes(1);
+    expect(sent2).toHaveLength(1);
+    expect(sent2[0]!.body).not.toBe(LOOP_PAUSE_MESSAGE);
+    expect(sent2[0]!.body).toContain("Ceiling fan installation");
+    expect(sent2[0]!.body).toContain("150");
   });
 });
 
@@ -2816,14 +3245,75 @@ describe("language stays pinned to prior context, never silently resets to Engli
     const call = vi.mocked(createFlaggedLead).mock.calls[0]![0] as { data: Record<string, unknown> };
     expect(call.data["flagType"]).toBe("excluded_service");
     expect(call.data["flagReason"]).toContain("Gas line installation");
-    // The customer-facing message is unaffected — same generic hand-off
-    // as a genuine outside_service_scope case, never revealing "you hit
-    // an exclusion list."
-    expect(sent).toHaveLength(1);
-    expect(sent[0]!.body).toContain("pass your message along to our team");
+    // PRODUCTION REGRESSION (2026-10-27): JIR only responds within the
+    // configured Price Sheet's scope — no customer-facing reply for any
+    // outOfScope result, excluded_service included. The lead is still
+    // correctly flagged (above) without ever revealing "you hit an
+    // exclusion list" to the customer — there's simply no reply at all.
+    expect(sent).toHaveLength(0);
   });
 
-  it("handleFreshQuote main body: a longer English reply ('Thanks anywaya') after Spanish prior context still replies in Spanish", async () => {
+  // PRODUCTION REGRESSION (2026-10-27): the actual reported scenario this
+  // silence mechanism exists for — a payment/deposit confirmation message
+  // (now correctly classified outOfScope by RULE 0, simulated here since
+  // this is a synthetic getQuoteEstimate result, not a live model call)
+  // must send zero WhatsApp replies, while every piece of internal
+  // bookkeeping the owner depends on still happens exactly as before.
+  it("a payment/deposit-confirmation message: zero WhatsApp replies, but lead creation, message logging, and owner notification all still occur", async () => {
+    const { admin, calls } = fakeFreshQuoteAdmin();
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(getQuoteEstimate).mockClear();
+    vi.mocked(getQuoteEstimate).mockResolvedValue({
+      needsClarification: false,
+      outOfScope: true,
+      acknowledgment: "Got it — a payment question.",
+    } as any);
+    vi.mocked(createFlaggedLead).mockClear();
+    vi.mocked(createFlaggedLead).mockResolvedValue({ id: "new-lead-payment" } as any);
+    vi.mocked(sendFollowUpNotificationEmail).mockClear();
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "Hi, I sent the deposit via bank transfer yesterday, can you confirm you received it?",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    // Zero WhatsApp replies — the core requirement.
+    expect(sent).toHaveLength(0);
+
+    // Lead creation still happens, correctly flagged.
+    expect(createFlaggedLead).toHaveBeenCalledTimes(1);
+    const leadCall = vi.mocked(createFlaggedLead).mock.calls[0]![0] as { data: Record<string, unknown> };
+    expect(leadCall.data["flagType"]).toBe("outside_service_scope");
+    expect(leadCall.data["problem"]).toContain("deposit via bank transfer");
+
+    // The inbound message is still logged.
+    expect(calls.leadMessageInserts).toHaveLength(1);
+    expect(calls.leadMessageInserts[0]).toMatchObject({
+      role: "customer",
+      body: expect.stringContaining("deposit via bank transfer"),
+    });
+
+    // The owner is still notified.
+    expect(sendFollowUpNotificationEmail).toHaveBeenCalledTimes(1);
+    const emailArg = vi.mocked(sendFollowUpNotificationEmail).mock.calls[0]![0] as { body: string };
+    expect(emailArg.body).toContain("deposit via bank transfer");
+  });
+
+  // PRODUCTION REGRESSION (2026-10-27): "Thanks anywaya" previously
+  // resolved to Spanish (correctly preserving established context) and the
+  // Spanish hand-off text was the only way to observe that. Now that
+  // outOfScope sends no reply at all, language is instead verified at the
+  // source — getQuoteEstimate's own actual call arguments — which is a
+  // more direct check of the same underlying fix than reading sent text
+  // ever was.
+  it("handleFreshQuote main body: a longer English reply ('Thanks anywaya') after Spanish prior context still resolves Spanish internally, and still sends no reply (outOfScope)", async () => {
     const { admin } = fakeInboundAdmin({
       openLead: {
         id: "lead-1",
@@ -2838,6 +3328,7 @@ describe("language stays pinned to prior context, never silently resets to Engli
       outboundInteractionCount: MAX_AUTOMATED_REPLIES_PER_CONVERSATION - 1,
     });
     vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(getQuoteEstimate).mockClear();
     vi.mocked(getQuoteEstimate).mockResolvedValue({
       needsClarification: false,
       outOfScope: true,
@@ -2856,8 +3347,10 @@ describe("language stays pinned to prior context, never silently resets to Engli
       adapter,
     });
 
-    expect(sent).toHaveLength(1);
-    expect(sent[0]!.body).toBe("Voy a pasar su mensaje a nuestro equipo.");
+    expect(getQuoteEstimate).toHaveBeenCalledTimes(1);
+    const call = vi.mocked(getQuoteEstimate).mock.calls[0]![0] as { data: Record<string, unknown> };
+    expect(call.data["detectedLanguage"]).toBe("es");
+    expect(sent).toHaveLength(0);
   });
 
   it("without any prior context (genuinely first contact), a context-free English word still falls back to English — unchanged, pre-existing behavior", async () => {
@@ -2878,6 +3371,153 @@ describe("language stays pinned to prior context, never silently resets to Engli
 
     expect(sent).toHaveLength(1);
     expect(sent[0]!.body).toContain("Hi! 👋 Thanks for reaching out to");
+  });
+
+  // PRODUCTION REGRESSION (2026-10-27): the actual reported incident — a
+  // real WhatsApp conversation where the customer wrote a substantial
+  // English first message, but this phone had an older lead on file whose
+  // problem text was Spanish (openLead?.problem, folded in here as
+  // priorContextText), and the reply came back in Spanish anyway. Same
+  // handleFreshQuote code path and same fixture shape as the "Thanks
+  // anywaya" test above — the only thing that changed is the current
+  // message is now substantial and unambiguously English, so it must win.
+  it("handleFreshQuote: a substantial English message replies in English despite Spanish prior-lead context (the exact reported incident)", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: {
+        id: "lead-joshua-1",
+        customer_name: "Joshua",
+        photo_url: null,
+        problem: "varias cosas. triturador de basura roto.",
+        confidence: null,
+        diagnosis: null,
+        flag_type: "needs_human_review",
+      },
+      leadSlotClaimSucceeds: true,
+      outboundInteractionCount: MAX_AUTOMATED_REPLIES_PER_CONVERSATION - 1,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(getQuoteEstimate).mockClear();
+    vi.mocked(getQuoteEstimate).mockResolvedValue({
+      needsClarification: false,
+      outOfScope: true,
+    } as any);
+    vi.mocked(createFlaggedLead).mockResolvedValue({ id: "new-lead-joshua" } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "Hi, I'd like to get a quote for a new water heater installation please",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    // PRODUCTION REGRESSION (2026-10-27): language is verified at the
+    // source (getQuoteEstimate's actual call arguments) rather than via
+    // sent reply text, since outOfScope now sends no reply at all.
+    expect(getQuoteEstimate).toHaveBeenCalledTimes(1);
+    const call = vi.mocked(getQuoteEstimate).mock.calls[0]![0] as { data: Record<string, unknown> };
+    expect(call.data["detectedLanguage"]).toBe("en");
+    expect(sent).toHaveLength(0);
+  });
+
+  // Companion reverse-direction case: established English context must not
+  // block an explicit switch to Spanish either.
+  it("handleFreshQuote: a substantial Spanish message resolves Spanish internally despite English prior-lead context, and sends no reply (outOfScope)", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: {
+        id: "lead-reverse-1",
+        customer_name: "Pat",
+        photo_url: null,
+        problem: "a few different things, broken garbage disposal.",
+        confidence: null,
+        diagnosis: null,
+        flag_type: "needs_human_review",
+      },
+      leadSlotClaimSucceeds: true,
+      outboundInteractionCount: MAX_AUTOMATED_REPLIES_PER_CONVERSATION - 1,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(getQuoteEstimate).mockClear();
+    vi.mocked(getQuoteEstimate).mockResolvedValue({
+      needsClarification: false,
+      outOfScope: true,
+    } as any);
+    vi.mocked(createFlaggedLead).mockResolvedValue({ id: "new-lead-reverse" } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "Hola, necesito una cotización para instalar un calentador de agua nuevo",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(getQuoteEstimate).toHaveBeenCalledTimes(1);
+    const call = vi.mocked(getQuoteEstimate).mock.calls[0]![0] as { data: Record<string, unknown> };
+    expect(call.data["detectedLanguage"]).toBe("es");
+    expect(sent).toHaveLength(0);
+  });
+});
+
+// PRODUCTION REGRESSION (2026-10-27), Part 2 — proves the fix at the
+// wiring level, not just the observed reply text: the SAME resolved
+// language actually reaches getQuoteEstimate's own call arguments (used by
+// buildPrompt's languageInstruction), rather than buildPrompt silently
+// re-detecting a possibly different answer from a narrower set of inputs.
+// Companion to this file's existing "getQuoteEstimate call-argument
+// wiring" describe block (exclusions/specialties), same technique: assert
+// on the mock's actual call arguments, not its return value.
+describe("getQuoteEstimate call-argument wiring — the orchestration layer's resolved language actually reaches buildPrompt", () => {
+  beforeEach(() => {
+    vi.mocked(getQuoteEstimate).mockClear();
+  });
+
+  function getQuoteEstimateCallData(): Record<string, unknown> {
+    expect(getQuoteEstimate).toHaveBeenCalledTimes(1);
+    const call = vi.mocked(getQuoteEstimate).mock.calls[0]![0] as { data: Record<string, unknown> };
+    return call.data;
+  }
+
+  it("handleFreshQuote path: detectedLanguage in the call data matches the English reply actually sent", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: {
+        id: "lead-wiring-1",
+        customer_name: "Joshua",
+        photo_url: null,
+        problem: "varias cosas. triturador de basura roto.",
+        confidence: null,
+        diagnosis: null,
+        flag_type: "needs_human_review",
+      },
+      leadSlotClaimSucceeds: true,
+      outboundInteractionCount: MAX_AUTOMATED_REPLIES_PER_CONVERSATION - 1,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(getQuoteEstimate).mockResolvedValue({ needsClarification: false, outOfScope: true } as any);
+    vi.mocked(createFlaggedLead).mockResolvedValue({ id: "new-lead-wiring-1" } as any);
+    const { adapter } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "Hi, I'd like to get a quote for a new water heater installation please",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    const data = getQuoteEstimateCallData();
+    expect(data["detectedLanguage"]).toBe("en");
   });
 });
 
@@ -2940,7 +3580,8 @@ describe("handleInboundWhatsAppMessage — quoted_follow_up with a photo (Priori
     expect(finalizeLeadWithQuote).not.toHaveBeenCalled(); // never treated as the same job
     expect(getQuoteEstimate).toHaveBeenCalledTimes(1); // the fresh-quote path genuinely ran
     expect(createFlaggedLead).toHaveBeenCalledTimes(1); // a NEW lead, not an update to the old one
-    expect(sent).toEqual([{ to: TEST_PHONE, body: "I'll pass your message along to our team." }]);
+    // PRODUCTION REGRESSION (2026-10-27): outOfScope sends no reply now.
+    expect(sent).toEqual([]);
   });
 
   // Scenario: an ambiguous photo that requires clarification.
@@ -4180,7 +4821,12 @@ describe("WhatsApp first-contact greeting", () => {
     expect(sent[0]!.body).toContain(PRICED_RESULT.diagnosis);
   });
 
-  it("first contact, outOfScope hand-off: short greeting (no 'how can I help you today?'), acknowledgment, then hand-off text", async () => {
+  // PRODUCTION REGRESSION (2026-10-27): JIR only responds within the
+  // configured Price Sheet's scope — first-contact outOfScope now sends no
+  // reply at all, acknowledgment present or not (the short-vs-full greeting
+  // mechanism this test originally verified is still covered by the
+  // priced-quote first-contact test above, which still gets a reply).
+  it("first contact, outOfScope hand-off: no reply sent, even with an acknowledgment present", async () => {
     const { admin } = fakeFreshQuoteAdmin();
     vi.mocked(getAdminClient).mockReturnValue(admin);
     vi.mocked(getQuoteEstimate).mockResolvedValue({
@@ -4203,10 +4849,8 @@ describe("WhatsApp first-contact greeting", () => {
       adapter,
     });
 
-    expect(sent).toHaveLength(1);
-    expect(sent[0]!.body.startsWith("Hi! 👋 Thanks for reaching out to")).toBe(true);
-    expect(sent[0]!.body).not.toContain("How can I help you today?");
-    expect(sent[0]!.body).toContain("Got it — roof repair.");
+    expect(createFlaggedLead).toHaveBeenCalledTimes(1);
+    expect(sent).toHaveLength(0);
   });
 
   // PRODUCTION REGRESSION: a real WhatsApp conversation showed "Hi! 👋"
@@ -4451,11 +5095,10 @@ describe("WhatsApp first-contact greeting", () => {
       adapter,
     });
 
-    expect(sent).toHaveLength(1);
-    const body = sent[0]!.body;
-    expect(body).not.toContain("Hi! 👋");
-    expect(body).not.toContain("Hello!");
-    expect(body).not.toContain("¡Hola!");
+    // PRODUCTION REGRESSION (2026-10-27): outOfScope now sends no reply at
+    // all, which structurally eliminates the greeting-duplication risk this
+    // test originally checked for (no message means no greeting to find).
+    expect(sent).toHaveLength(0);
   });
 
   it("a different job within the existing 48-hour window does not trigger another greeting", async () => {

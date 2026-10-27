@@ -387,3 +387,5 @@ export const embedSnippet = (slug: string) =>
         async></script>`;
 
 export const quoteLink = (slug: string) => `https://www.jobitready.com/quote/${slug}`;
+
+export const menuLink = (slug: string) => `https://www.jobitready.com/menu/${slug}`;

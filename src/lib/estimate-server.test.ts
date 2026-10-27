@@ -15,6 +15,8 @@ import {
   MAX_IMAGE_BASE64_CHARS,
   SERVICE_CALL_SENTINEL_ID,
   NO_DESCRIPTION_PLACEHOLDER,
+  detectLanguage,
+  detectCurrentLanguage,
   type PriceSheetItem,
   type QuoteInput,
   type QuoteResult,
@@ -585,6 +587,332 @@ describe("buildPrompt", () => {
     expect(prompt).toContain(
       "No description was provided — a photo alone rarely tells you everything (what's actually needed, relevant history, what the customer wants done), so make your first clarifying question an open-ended request for the customer to describe what they need in their own words, rather than guessing from the image alone or asking a narrower multiple-choice question first. Phrase it naturally for whatever this business actually does — not every photo represents something broken (a repair job, a grooming request, an installation) — don't assume 'problem' framing where it doesn't fit.",
     );
+  });
+
+  // PRODUCTION REGRESSION (2026-10-27), Part 2 — the orchestration layer
+  // (whatsapp-conversation-server.ts) and buildPrompt used to detect
+  // language independently, from different inputs, and could disagree
+  // within the same turn. QuoteInput.detectedLanguage lets a caller that's
+  // already resolved the language (factoring in conversation context
+  // buildPrompt has no visibility into) hand that decision to buildPrompt
+  // directly, instead of it re-deriving a possibly different answer.
+  describe("QuoteInput.detectedLanguage — keeping orchestration and buildPrompt consistent", () => {
+    it("an explicitly provided detectedLanguage is used even when it disagrees with the description's own language", () => {
+      // English description, but the caller has already resolved Spanish
+      // from conversation context buildPrompt can't see — buildPrompt must
+      // defer to it, not re-detect English from the description alone.
+      const prompt = buildPrompt(
+        baseInput({ description: "Can you fix this?", detectedLanguage: "es" }),
+      );
+      expect(prompt).toContain("IMPORTANT: The customer is writing in Spanish.");
+    });
+
+    it("an explicit English detectedLanguage suppresses the language instruction even with a Spanish-looking description", () => {
+      const prompt = buildPrompt(
+        baseInput({ description: "Necesito ayuda con mi fuga.", detectedLanguage: "en" }),
+      );
+      expect(prompt).not.toContain("IMPORTANT: The customer is writing in");
+    });
+
+    it("falls back to self-contained detection (description + answers) when detectedLanguage is omitted — unchanged behavior for /demo and the public quote page/widget", () => {
+      const prompt = buildPrompt(baseInput({ description: "Necesito ayuda con mi fuga." }));
+      expect(prompt).toContain("IMPORTANT: The customer is writing in Spanish.");
+    });
+  });
+
+  // PRODUCTION REGRESSION (2026-10-27): JIR is a Price-Sheet-only assistant,
+  // not a general-purpose one — a real conversation showed a payment/
+  // deposit-confirmation message get treated as if it might be a service
+  // request (at risk of being matched to the service call fee via the
+  // "don't leave an ambiguous-but-plausible problem as a null match"
+  // guidance, which has no carve-out for a message that was never
+  // attempting to describe a service at all). Fixed with a new RULE 0,
+  // checked before RULE 1, plus a narrowing clause on both service-call-fee
+  // variants (fixed and negotiated mode) scoping that guidance to messages
+  // that ARE genuinely describing a service need.
+  describe("RULE 0 — payment/administrative messages are never a service description", () => {
+    const RULE_0_MARKER =
+      "payment, a deposit, an invoice, a receipt, a bank transfer, or asking whether something was sent/received is never a service description";
+
+    // 1. A price-sheet-listed service, regression — RULE 0 must not
+    // interfere with ordinary, genuine service matching.
+    it("a listed service still matches normally — RULE 0 present but inert for a real service description", () => {
+      const prompt = buildPrompt(baseInput({ description: "My doorknob is loose." }));
+      expect(prompt).toContain(RULE_0_MARKER);
+      expect(prompt).toContain("ps-1");
+      expect(prompt).toContain("Quick fix / minor repair");
+    });
+
+    // 2. A listed service with a configured price, regression.
+    it("a listed service's configured price still appears correctly", () => {
+      const prompt = buildPrompt(baseInput({ description: "My drain is clogged." }));
+      expect(prompt).toContain("ps-2");
+      expect(prompt).toContain("$150-$250");
+    });
+
+    // 3. A service inquiry for something absent from the price sheet,
+    // regression — RULE 1's own outOfScope framing must remain intact,
+    // byte-for-byte, alongside the new RULE 0.
+    it("RULE 1's existing non-match outOfScope instruction remains byte-for-byte unchanged", () => {
+      const prompt = buildPrompt(baseInput());
+      expect(prompt).toContain(
+        'check whether what\'s being described is already clearly unrelated to everything on the price sheet (a genuinely different kind of job this business doesn\'t do at all, not just one you need more detail about). If so, skip clarification entirely and respond with {"needsClarification": false, "outOfScope": true, "acknowledgment": "..."} immediately',
+      );
+    });
+
+    // 4. The exact reported scenario: a deposit/payment confirmation.
+    it("a deposit-confirmation message: RULE 0 explicitly covers it, and the service-call-fee guidance is scoped away from it", () => {
+      const prompt = buildPrompt(
+        baseInput({
+          description: "Hi, I sent the deposit via bank transfer yesterday, can you confirm you received it?",
+        }),
+      );
+      expect(prompt).toContain(RULE_0_MARKER);
+      expect(prompt).toContain(
+        'Never match it to the service call fee, a per-service diagnosis fee, or any price-sheet item "just in case it\'s plausible"',
+      );
+      expect(prompt).toContain(
+        "This ambiguity-resolution guidance applies only when the customer IS genuinely describing some physical problem or service need",
+      );
+    });
+
+    // 5. A follow-up asking the owner to verify a payment — RULE 0 is not
+    // conditioned on first-round vs. follow-up; it must apply identically
+    // on a later round (answers populated).
+    it("a follow-up payment-verification message gets the same RULE 0 coverage on a later round", () => {
+      const prompt = buildPrompt(
+        baseInput({
+          description: "I need some work done.",
+          answers: [
+            { question: "What do you need help with?", answer: "Can you confirm you got my payment?" },
+          ],
+        }),
+      );
+      expect(prompt).toContain(RULE_0_MARKER);
+    });
+
+    // 6. Two separate administrative messages, each its own turn — RULE 0
+    // must apply consistently and independently to each, not just the
+    // first.
+    it("RULE 0 applies consistently to two independent administrative messages, each its own prompt", () => {
+      const firstPrompt = buildPrompt(
+        baseInput({ description: "Did you receive the deposit I sent?" }),
+      );
+      const secondPrompt = buildPrompt(
+        baseInput({ description: "Just checking in — did you see my message about the payment?" }),
+      );
+      expect(firstPrompt).toContain(RULE_0_MARKER);
+      expect(secondPrompt).toContain(RULE_0_MARKER);
+    });
+
+    // 7. A genuinely ambiguous but real service request must still trigger
+    // normal clarification — confirms RULE 0 doesn't over-correct into
+    // suppressing legitimate clarifying questions.
+    it("a genuinely ambiguous service request still gets the normal clarifying-question treatment, unaffected by RULE 0", () => {
+      const prompt = buildPrompt(baseInput({ description: "My AC isn't working right." }));
+      expect(prompt).toContain(
+        "respond with 1-2 short clarifying questions instead of guessing",
+      );
+      expect(prompt).toContain("ps-3");
+    });
+
+    // 8. Conversation history/answers containing unrelated administrative
+    // content must not expand scope or contaminate matching for the
+    // actual, separate service request under discussion.
+    it("an unrelated administrative mention inside prior answers does not alter the price-sheet section or suppress RULE 0", () => {
+      const prompt = buildPrompt(
+        baseInput({
+          description: "My drain is clogged.",
+          answers: [
+            { question: "Anything else?", answer: "Also, did you get the deposit I sent last week?" },
+          ],
+        }),
+      );
+      expect(prompt).toContain(RULE_0_MARKER);
+      // The price sheet itself is passed through unfiltered/unaltered —
+      // both real items are still present, uncontaminated by the
+      // unrelated answer text.
+      expect(prompt).toContain("ps-1");
+      expect(prompt).toContain("ps-2");
+      expect(prompt).toContain("ps-3");
+    });
+
+    // 9. Tenant isolation — already structurally guaranteed (buildPrompt
+    // takes input fresh per call, no shared/global state); this confirms
+    // it, rather than introducing any new mechanism.
+    it("tenant isolation: one tenant's price sheet and business name never appear in another tenant's prompt", () => {
+      const tenantAPrompt = buildPrompt(
+        baseInput({
+          businessName: "Tenant A Plumbing",
+          priceSheet: [
+            {
+              id: "tenant-a-item",
+              task: "Tenant A exclusive service",
+              category: "General",
+              keywords: ["tenant a"],
+              pricingType: "flat",
+              priceMin: 99,
+              priceMax: 99,
+              hours: 1,
+              bundleable: false,
+              materialsPolicy: "included",
+              diagnosisFee: null,
+              aiNotes: null,
+            },
+          ],
+          description: "Did you receive my deposit?",
+        }),
+      );
+      const tenantBPrompt = buildPrompt(
+        baseInput({
+          businessName: "Tenant B Salon",
+          priceSheet: [
+            {
+              id: "tenant-b-item",
+              task: "Tenant B exclusive service",
+              category: "General",
+              keywords: ["tenant b"],
+              pricingType: "flat",
+              priceMin: 55,
+              priceMax: 55,
+              hours: 1,
+              bundleable: false,
+              materialsPolicy: "included",
+              diagnosisFee: null,
+              aiNotes: null,
+            },
+          ],
+          description: "Did you receive my deposit?",
+        }),
+      );
+
+      expect(tenantAPrompt).toContain("Tenant A exclusive service");
+      expect(tenantAPrompt).not.toContain("Tenant B exclusive service");
+      expect(tenantAPrompt).not.toContain("Tenant B Salon");
+
+      expect(tenantBPrompt).toContain("Tenant B exclusive service");
+      expect(tenantBPrompt).not.toContain("Tenant A exclusive service");
+      expect(tenantBPrompt).not.toContain("Tenant A Plumbing");
+
+      // Both still get RULE 0 identically — scope boundary is generic,
+      // never tenant-specific.
+      expect(tenantAPrompt).toContain(RULE_0_MARKER);
+      expect(tenantBPrompt).toContain(RULE_0_MARKER);
+    });
+  });
+});
+
+// PRODUCTION REGRESSION (2026-10-27): a real WhatsApp conversation showed a
+// Spanish greeting sent in reply to a substantial English first message —
+// root cause traced to detectLanguage's plain "combine everything and
+// test," which has no precedence between a customer's current message and
+// older/stale context. detectCurrentLanguage is the fix: see its own
+// extensive comment in estimate-server.ts for the full reasoning,
+// including two real test cases below that a cruder, character-length-only
+// first draft of this function got wrong.
+describe("detectCurrentLanguage", () => {
+  it("a substantial current English message wins over Spanish prior context (the exact reported bug)", () => {
+    expect(
+      detectCurrentLanguage(
+        "Hi, I'd like to get a quote for a new water heater installation please",
+        "Necesito ayuda con una fuga en el baño.",
+      ),
+    ).toBe("en");
+  });
+
+  it("a substantial current Spanish message wins over English prior context (explicit switch, reverse direction)", () => {
+    expect(
+      detectCurrentLanguage(
+        "Hola, necesito ayuda con una fuga en el baño por favor",
+        "I need a quote for a new water heater.",
+      ),
+    ).toBe("es");
+  });
+
+  it("a short, low-signal current message ('Ok') preserves established Spanish context", () => {
+    expect(detectCurrentLanguage("Ok", "Necesito ayuda con una fuga en el baño.")).toBe("es");
+  });
+
+  it("a short, low-signal current message ('Fixed') preserves established English context", () => {
+    expect(detectCurrentLanguage("Fixed", "I have a leak under the sink.")).toBe("en");
+  });
+
+  // The exact real production regression test this fix was built against:
+  // "Thanks anywaya" is 14 characters (would pass a pure character-length
+  // threshold) but only two throwaway words carrying no real content —
+  // established Spanish context must still win.
+  it("'Thanks anywaya' (14 characters, two words) does not override established Spanish context", () => {
+    expect(
+      detectCurrentLanguage("Thanks anywaya", "varias cosas. triturador de basura roto."),
+    ).toBe("es");
+  });
+
+  it("a short Spanish message that itself contains a recognized keyword still wins immediately, regardless of word count", () => {
+    expect(detectCurrentLanguage("No gracias", "I need a quote.")).toBe("es");
+  });
+
+  it("a short Spanish reply relying only on an accented vowel (no keyword match) still wins immediately", () => {
+    // Real production regression input — "así" carries no keyword-pattern
+    // match, only an accented vowel.
+    expect(detectCurrentLanguage("así", "I need a quote.")).toBe("es");
+  });
+
+  it("boundary: exactly at the word-count threshold (2 words) is NOT substantial — falls back to prior context", () => {
+    expect(detectCurrentLanguage("ok then", "Necesito ayuda.")).toBe("es");
+  });
+
+  it("boundary: one word over the threshold (3 words) IS substantial — current message wins", () => {
+    expect(detectCurrentLanguage("ok then thanks", "Necesito ayuda.")).toBe("en");
+  });
+
+  it("an undefined current message falls through entirely to prior context", () => {
+    expect(detectCurrentLanguage(undefined, "Necesito ayuda con mi fuga.")).toBe("es");
+  });
+
+  it("no current message and no prior context defaults to English, same as detectLanguage", () => {
+    expect(detectCurrentLanguage(undefined)).toBe("en");
+  });
+
+  it("with no prior context at all, a substantial current message is still judged correctly on its own", () => {
+    expect(detectCurrentLanguage("I need a quote for a new water heater installation")).toBe("en");
+  });
+});
+
+// Confirms the new Spanish accented-vowel pattern (added to close the gap
+// detectCurrentLanguage's own tests above surfaced) doesn't regress
+// detectLanguage's existing combine-everything behavior for callers that
+// were never touched by this fix — getFollowUpAnswer (question + diagnosis
+// + full conversation history, spread last) and buildSuggestedReply
+// (problem + diagnosis) both call detectLanguage directly, unchanged.
+describe("detectLanguage — unchanged direct callers (getFollowUpAnswer-shaped, reply-composer-shaped inputs)", () => {
+  it("getFollowUpAnswer-shaped call: question + diagnosis + full history array, Spanish signal anywhere still detected", () => {
+    expect(
+      detectLanguage(
+        "What should I tell them?",
+        "Standard repair.",
+        "Customer: Necesito ayuda.",
+        "You: Sure, one moment.",
+      ),
+    ).toBe("es");
+  });
+
+  it("getFollowUpAnswer-shaped call: all-English inputs still resolve English", () => {
+    expect(
+      detectLanguage(
+        "What should I tell them?",
+        "Standard repair.",
+        "Customer: I need help with this.",
+        "You: Sure, one moment.",
+      ),
+    ).toBe("en");
+  });
+
+  it("reply-composer-shaped call (problem + diagnosis): Spanish problem still detected even with an English-looking diagnosis", () => {
+    expect(detectLanguage("Tengo una fuga de agua.", "Standard shut-off valve repair.")).toBe("es");
+  });
+
+  it("the new accented-vowel pattern does not fire on plain English text", () => {
+    expect(detectLanguage("I have a leak under the kitchen sink, can you help?")).toBe("en");
   });
 });
 

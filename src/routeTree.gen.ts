@@ -30,6 +30,7 @@ import { Route as DashboardLeadsRouteImport } from './routes/dashboard.leads'
 import { Route as DashboardPriceSheetRouteImport } from './routes/dashboard.price-sheet'
 import { Route as DashboardWhatsappGuideRouteImport } from './routes/dashboard.whatsapp-guide'
 import { Route as DashboardWidgetRouteImport } from './routes/dashboard.widget'
+import { Route as MenuSlugRouteImport } from './routes/menu.$slug'
 import { Route as OnboardingIndexRouteImport } from './routes/onboarding.index'
 import { Route as QuoteSlugRouteImport } from './routes/quote.$slug'
 import { Route as WidgetSlugRouteImport } from './routes/widget.$slug'
@@ -152,6 +153,11 @@ const DashboardWidgetRoute = DashboardWidgetRouteImport.update({
   path: '/widget',
   getParentRoute: () => DashboardRoute,
 } as any)
+const MenuSlugRoute = MenuSlugRouteImport.update({
+  id: '/menu/$slug',
+  path: '/menu/$slug',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const OnboardingIndexRoute = OnboardingIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -259,6 +265,7 @@ export interface FileRoutesByFullPath {
   '/dashboard/price-sheet': typeof DashboardPriceSheetRoute
   '/dashboard/whatsapp-guide': typeof DashboardWhatsappGuideRoute
   '/dashboard/widget': typeof DashboardWidgetRoute
+  '/menu/$slug': typeof MenuSlugRoute
   '/quote/$slug': typeof QuoteSlugRoute
   '/widget/$slug': typeof WidgetSlugRoute
   '/dashboard/': typeof DashboardIndexRoute
@@ -295,6 +302,7 @@ export interface FileRoutesByTo {
   '/dashboard/price-sheet': typeof DashboardPriceSheetRoute
   '/dashboard/whatsapp-guide': typeof DashboardWhatsappGuideRoute
   '/dashboard/widget': typeof DashboardWidgetRoute
+  '/menu/$slug': typeof MenuSlugRoute
   '/quote/$slug': typeof QuoteSlugRoute
   '/widget/$slug': typeof WidgetSlugRoute
   '/dashboard': typeof DashboardIndexRoute
@@ -334,6 +342,7 @@ export interface FileRoutesById {
   '/dashboard/price-sheet': typeof DashboardPriceSheetRoute
   '/dashboard/whatsapp-guide': typeof DashboardWhatsappGuideRoute
   '/dashboard/widget': typeof DashboardWidgetRoute
+  '/menu/$slug': typeof MenuSlugRoute
   '/quote/$slug': typeof QuoteSlugRoute
   '/widget/$slug': typeof WidgetSlugRoute
   '/dashboard/': typeof DashboardIndexRoute
@@ -375,6 +384,7 @@ export interface FileRouteTypes {
     | '/dashboard/price-sheet'
     | '/dashboard/whatsapp-guide'
     | '/dashboard/widget'
+    | '/menu/$slug'
     | '/quote/$slug'
     | '/widget/$slug'
     | '/dashboard/'
@@ -411,6 +421,7 @@ export interface FileRouteTypes {
     | '/dashboard/price-sheet'
     | '/dashboard/whatsapp-guide'
     | '/dashboard/widget'
+    | '/menu/$slug'
     | '/quote/$slug'
     | '/widget/$slug'
     | '/dashboard'
@@ -449,6 +460,7 @@ export interface FileRouteTypes {
     | '/dashboard/price-sheet'
     | '/dashboard/whatsapp-guide'
     | '/dashboard/widget'
+    | '/menu/$slug'
     | '/quote/$slug'
     | '/widget/$slug'
     | '/dashboard/'
@@ -484,6 +496,7 @@ export interface RootRouteChildren {
   SignupRoute: typeof SignupRoute
   SimulationRoute: typeof SimulationRoute
   TermsRoute: typeof TermsRoute
+  MenuSlugRoute: typeof MenuSlugRoute
   QuoteSlugRoute: typeof QuoteSlugRoute
   WidgetSlugRoute: typeof WidgetSlugRoute
   ApiCronKeepAliveRoute: typeof ApiCronKeepAliveRoute
@@ -639,6 +652,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/dashboard/widget'
       preLoaderRoute: typeof DashboardWidgetRouteImport
       parentRoute: typeof DashboardRoute
+    }
+    '/menu/$slug': {
+      id: '/menu/$slug'
+      path: '/menu/$slug'
+      fullPath: '/menu/$slug'
+      preLoaderRoute: typeof MenuSlugRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/onboarding/': {
       id: '/onboarding/'
@@ -845,6 +865,7 @@ const rootRouteChildren: RootRouteChildren = {
   SignupRoute: SignupRoute,
   SimulationRoute: SimulationRoute,
   TermsRoute: TermsRoute,
+  MenuSlugRoute: MenuSlugRoute,
   QuoteSlugRoute: QuoteSlugRoute,
   WidgetSlugRoute: WidgetSlugRoute,
   ApiCronKeepAliveRoute: ApiCronKeepAliveRoute,

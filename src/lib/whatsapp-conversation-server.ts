@@ -3,8 +3,10 @@ import {
   getFollowUpAnswer,
   classifyFollowUpIntent,
   classifyFollowUpPhotoIntent,
+  classifyBroadServiceInquiry,
   isSupportedImageBase64,
   detectLanguage,
+  detectCurrentLanguage,
   NO_DESCRIPTION_PLACEHOLDER,
   UNSUPPORTED_IMAGE_MESSAGE,
   type Answer,
@@ -20,7 +22,7 @@ import {
 } from "@/lib/public-lead-server";
 import { sendFollowUpNotificationEmail } from "@/lib/notify-server";
 import { getActiveCapabilitiesForTenant } from "@/lib/capabilities-server";
-import { lineItemAmount, money } from "@/lib/mock-data";
+import { lineItemAmount, money, menuLink } from "@/lib/mock-data";
 import {
   evaluateInboundInteraction,
   evaluateOutboundInteraction,
@@ -120,17 +122,27 @@ const LOOP_NOTICE_MARK_SENT_RETRY_DELAY_MS = 200;
 // message arrives, per the documented at-least-once guarantee.
 // flag_type values that mean the customer was ALREADY sent a real,
 // specific message about this exact situation needing a human
-// (localizedPassAlongMessage for outside_service_scope,
-// localizedRecoveryMessage for needs_human_review — both sent in the same
-// breath as the flag being set). Production regression: a customer got
-// "I'll pass your message along to our team." immediately followed, on
-// their very next message, by the loop guard's own generic "We've paused
-// automated replies... our team will follow up with you directly." — true
-// but redundant, since they were just told exactly that. Suppressing the
-// SECOND message doesn't weaken the guard itself: the trip state (and the
-// future-message pause it causes) lives entirely in whatsapp_loop_guards,
-// untouched by this — only the repeat customer-facing text is skipped.
-const ALREADY_HANDED_OFF_FLAG_TYPES = new Set(["outside_service_scope", "needs_human_review"]);
+// (localizedRecoveryMessage for needs_human_review, sent in the same
+// breath as the flag being set). Production regression (original intent):
+// a customer got "I'll pass your message along to our team." immediately
+// followed, on their very next message, by the loop guard's own generic
+// "We've paused automated replies... our team will follow up with you
+// directly." — true but redundant, since they were just told exactly that.
+//
+// "outside_service_scope" deliberately removed (2026-10-27): that flag's
+// premise stopped being true once outOfScope results became genuinely
+// silent (see sendGuardedReply's callers — localizedPassAlongMessage is no
+// longer sent for this flag type at all). Demonstrated impact of leaving
+// it in this set: whatsapp_loop_guards trips never auto-clear, so once a
+// phone trips for ANY reason, every future message — including a later,
+// genuinely in-scope service question — gets no automated reply until a
+// human clears it. The only customer-facing signal a trip produces is this
+// pause notice; skipping it on the stale premise left that customer in
+// total, unexplained silence, forever, with no "something's different, a
+// human will follow up" to even hint that anything needs their attention.
+// Keeping "needs_human_review" here is still correct — localizedRecoveryMessage
+// really is sent for that flag, so the premise still holds for it.
+const ALREADY_HANDED_OFF_FLAG_TYPES = new Set(["needs_human_review"]);
 
 export async function handleLoopGuardPause(params: {
   admin: ReturnType<typeof getAdminClient>;
@@ -722,6 +734,33 @@ function localizedPassAlongMessage(language: DetectedLanguage): string {
     : "I'll pass your message along to our team.";
 }
 
+// Reply for a broad "what do you offer" / "send me your full list" message
+// (see classifyBroadServiceInquiry in estimate-server.ts) — always built
+// deterministically from the tenant's own price-sheet categories and its
+// own slug, never AI free text, so it can never invent a service or
+// fabricate a menu URL. menuUrl is null when the tenant has no priced
+// services yet (categories is then also empty and the caller never reaches
+// this function at all — see handleFreshQuote), so this never has to
+// pretend a menu exists when nothing is actually priced.
+function localizedServiceOverviewMessage(
+  language: DetectedLanguage,
+  categories: string[],
+  menuUrl: string | null,
+): string {
+  const shown = categories.slice(0, 5);
+  const more = categories.length > shown.length;
+  if (isEs(language)) {
+    const intro = `Ofrecemos servicios de ${shown.join(", ")}${more ? ", y más" : ""}.`;
+    return menuUrl
+      ? `${intro} Aquí está la lista completa: ${menuUrl}`
+      : `${intro} Cuénteme qué necesita y le doy un precio.`;
+  }
+  const intro = `We handle ${shown.join(", ")}${more ? ", and more" : ""}.`;
+  return menuUrl
+    ? `${intro} Here's our full list: ${menuUrl}`
+    : `${intro} Tell me what you need and I'll get you a price.`;
+}
+
 function localizedPhotoLoadFailedMessage(language: DetectedLanguage): string {
   return isEs(language)
     ? "No pude cargar esa foto — ¿podría intentar enviarla de nuevo?"
@@ -735,10 +774,11 @@ function localizedPhotoDisambiguationQuestion(language: DetectedLanguage): strin
 }
 
 // Text equivalent of the photo disambiguation question above — same
-// "ambiguous" classification outcome (classifyFollowUpIntent now returns a
-// 3-way same_job/different_job/ambiguous result, mirroring
-// classifyFollowUpPhotoIntent), just without the "resend the photo"
-// instruction, which only makes sense for the photo path.
+// "ambiguous" classification outcome (classifyFollowUpIntent returns a
+// 4-way same_job/different_job/ambiguous/out_of_scope result; this is the
+// reply for "ambiguous" specifically, mirroring classifyFollowUpPhotoIntent),
+// just without the "resend the photo" instruction, which only makes sense
+// for the photo path.
 function localizedTextDisambiguationQuestion(language: DetectedLanguage): string {
   return isEs(language)
     ? "¿Esto es sobre el trabajo que ya cotizamos, o es algo diferente que le gustaría que cotizáramos?"
@@ -1061,7 +1101,22 @@ export async function attemptConversationResume(params: {
     ),
   );
 
-  const plausible = routable.filter((_, i) => classifications[i]!.classification !== "different_job");
+  // "out_of_scope" excluded from "plausible" the same as "different_job":
+  // this message isn't about ANY candidate's job (it's a payment/
+  // administrative message, see classifyFollowUpIntent's RULE-0-style
+  // check), so it must never produce the "which job is this about?"
+  // disambiguation reply below — that would be a customer-facing message
+  // about an out-of-scope message, exactly what the Price-Sheet-only
+  // boundary forbids. When every candidate agrees it's out_of_scope,
+  // plausible.length is 0 and this falls through to the existing
+  // "no_match" return, which lets this proceed to the normal fresh_quote
+  // path — where RULE 0 in buildPrompt classifies it outOfScope and stays
+  // silent, same as any other out-of-scope message with no conversation
+  // history at all.
+  const plausible = routable.filter((_, i) => {
+    const classification = classifications[i]!.classification;
+    return classification !== "different_job" && classification !== "out_of_scope";
+  });
   const confidentMatches = routable.filter((_, i) => classifications[i]!.classification === "same_job");
 
   if (plausible.length === 0) {
@@ -1074,7 +1129,7 @@ export async function attemptConversationResume(params: {
 
   if (plausible.length === 1 && confidentMatches.length === 1) {
     const resumedLead = confidentMatches[0]!;
-    const resumeLanguage = detectLanguage(resumedLead.problem, body);
+    const resumeLanguage = detectCurrentLanguage(body, resumedLead.problem);
     const acknowledgment = localizedResumeAcknowledgment(resumeLanguage, resumedLead.problem);
     const { sent } = await sendGuardedReply({
       admin,
@@ -1138,7 +1193,7 @@ async function handleAutomatedReplyCapReached(params: {
   // wrong-language trap that got the conversation here in the first place
   // (a fresh, context-free round detecting language from a single
   // short/captionless message alone).
-  const language = detectLanguage(openLead?.problem, openLead?.diagnosis ?? undefined, body);
+  const language = detectCurrentLanguage(body, openLead?.problem, openLead?.diagnosis ?? undefined);
 
   if (openLead) {
     // Keep the human-readable thread complete for whoever reviews this —
@@ -1416,7 +1471,7 @@ export async function handleInboundWhatsAppMessage(params: {
       // prompt instruction) — keeps every reply in one conversation turn in
       // the same language, rather than redetecting (and risking a
       // different outcome) per message.
-      const language = detectLanguage(openLead.problem, body);
+      const language = detectCurrentLanguage(body, openLead.problem);
 
       const { data: priorMessages } = await admin
         .from("lead_messages")
@@ -1505,6 +1560,7 @@ export async function handleInboundWhatsAppMessage(params: {
             exclusions: clarifyCapabilities.exclusions,
             specialties: clarifyCapabilities.specialties,
             description: openLead.problem,
+            detectedLanguage: language,
             ...(clarifyImageBase64 !== undefined ? { imageBase64: clarifyImageBase64 } : {}),
             ...(clarifyImageMediaType !== undefined
               ? { imageMediaType: clarifyImageMediaType }
@@ -1593,12 +1649,18 @@ export async function handleInboundWhatsAppMessage(params: {
       }
 
       if (clarifyResult.outOfScope) {
-        const acknowledgmentPrefix = clarifyResult.acknowledgment ? `${clarifyResult.acknowledgment} ` : "";
-        const passAlongMessage = `${acknowledgmentPrefix}${localizedPassAlongMessage(language)}`;
-        // Flag update and owner notification happen regardless of guard
-        // state — if automation is paused, the owner needs to know even
-        // more, not less, so they can follow up manually. Only the
-        // customer-facing pass-along message itself is subject to the guard.
+        // JIR only ever responds within the configured Price Sheet's scope
+        // — an outOfScope result gets no customer-facing WhatsApp reply at
+        // all, a deliberate, scoped exception to this file's usual "the
+        // customer must never be met with silence" posture (see
+        // sendGuardedReply's own callers elsewhere). Everything the owner
+        // needs still happens: the lead is flagged, the inbound message is
+        // already logged (above, before this branch runs), and the owner
+        // gets notified — only the outbound send and its own lead_messages
+        // "assistant" row (there's nothing to log; none was sent) are
+        // skipped. Flag update and owner notification happen unconditionally,
+        // same as before this change — if automation is paused for other
+        // reasons, the owner needs to know even more, not less.
         await admin
           .from("leads")
           .update({
@@ -1609,20 +1671,6 @@ export async function handleInboundWhatsAppMessage(params: {
               : `Nothing on the price sheet covers: ${openLead.problem}`,
           })
           .eq("id", openLead.id);
-        await sendGuardedReply({
-          admin,
-          tenant,
-          fromPhone,
-          adapter,
-          leadId: openLead.id,
-          signature: { kind: "text", text: passAlongMessage },
-          messageText: passAlongMessage,
-          onSent: async () => {
-            await admin
-              .from("lead_messages")
-              .insert({ lead_id: openLead.id, role: "assistant", body: passAlongMessage });
-          },
-        });
         void sendFollowUpNotificationEmail({
           tenant: { name: tenant.name, email: tenant.email, currency: tenant.currency },
           customerName: openLead.customer_name || profileName || "A customer",
@@ -1756,6 +1804,34 @@ export async function handleInboundWhatsAppMessage(params: {
         },
       });
 
+      // Payment/deposit/administrative message on an already-quoted lead —
+      // the exact same silence treatment as the three outOfScope branches
+      // that call getQuoteEstimate directly (see RULE 0 in buildPrompt),
+      // applied here because this call site never goes through
+      // getQuoteEstimate at all: classifyFollowUpIntent routes straight to
+      // getFollowUpAnswer, which would otherwise confidently generate and
+      // send a customer-facing reply about the payment. No sendGuardedReply,
+      // no new lead_messages "assistant" row (nothing was sent); the
+      // inbound message is already logged above, and the lead is flagged
+      // and the owner notified exactly like the other out-of-scope
+      // branches.
+      if (classification === "out_of_scope") {
+        await admin
+          .from("leads")
+          .update({
+            status: "flagged",
+            flag_type: "outside_service_scope",
+            flag_reason: `Payment/administrative follow-up on an already-quoted lead: ${body}`,
+          })
+          .eq("id", openLead.id);
+        void sendFollowUpNotificationEmail({
+          tenant: { name: tenant.name, email: tenant.email, currency: tenant.currency },
+          customerName: openLead.customer_name || profileName || "A customer",
+          body: `[Outside price sheet, on a quoted lead] ${body}`,
+        });
+        return;
+      }
+
       // Genuinely unclear whether this continues the open job or starts a
       // new one — ask rather than guess. This is the fix for a confirmed
       // production bug: a message about a completely different job
@@ -1767,7 +1843,7 @@ export async function handleInboundWhatsAppMessage(params: {
       // for the photo path. No lead is created, nothing is priced, and the
       // old job's diagnosis/line items are never referenced in the reply.
       if (classification === "ambiguous") {
-        const language = detectLanguage(openLead.problem, body);
+        const language = detectCurrentLanguage(body, openLead.problem);
         const disambiguationQuestion = localizedTextDisambiguationQuestion(language);
         await sendGuardedReply({
           admin,
@@ -1956,7 +2032,7 @@ export async function handleInboundWhatsAppMessage(params: {
     // like "Fixed" or "Repaired" has no language signal of its own and
     // would otherwise silently reset an established Spanish conversation
     // to English.
-    const thinDescriptionLanguage = detectLanguage(openLead?.problem, body);
+    const thinDescriptionLanguage = detectCurrentLanguage(body, openLead?.problem);
     await sendGuardedReply({
       admin,
       tenant,
@@ -2055,7 +2131,7 @@ async function handleQuotedFollowUpPhoto(params: {
   // openLead.diagnosis, which meant a lead whose diagnosis happened to
   // read differently than the customer's own problem/reply text could
   // flip the detected language out from under them.
-  const language = detectLanguage(openLead.problem, body);
+  const language = detectCurrentLanguage(body, openLead.problem);
 
   let imageBase64: string;
   let imageMediaType: string;
@@ -2195,6 +2271,7 @@ async function handleQuotedFollowUpPhoto(params: {
             exclusions: reassessCapabilities.exclusions,
             specialties: reassessCapabilities.specialties,
             description: updatedDescription || NO_DESCRIPTION_PLACEHOLDER,
+            detectedLanguage: language,
             imageBase64,
             imageMediaType,
           },
@@ -2239,20 +2316,16 @@ async function handleQuotedFollowUpPhoto(params: {
         return;
       }
       if (reassessed.outOfScope) {
-        await sendGuardedReply({
-          admin,
-          tenant,
-          fromPhone,
-          adapter,
-          leadId: openLead.id,
-          signature: { kind: "text", text: askToConfirmMessage },
-          messageText: askToConfirmMessage,
-          onSent: async () => {
-            await admin
-              .from("lead_messages")
-              .insert({ lead_id: openLead.id, role: "assistant", body: askToConfirmMessage });
-          },
-        });
+        // Same scoped silence exception as the other two outOfScope
+        // branches — JIR only responds within the configured Price Sheet's
+        // scope. Unlike needsClarification just above (a legitimate,
+        // in-scope ambiguity that still gets askToConfirmMessage), this is
+        // the same outOfScope signal RULE 0/RULE 1 produce everywhere else
+        // in getQuoteEstimate, so it gets the same treatment: no customer-
+        // facing reply, and — exactly as before this change — no lead
+        // flagging either, since this branch never flagged the lead to
+        // begin with (the lead stays in its existing quoted state; only
+        // the reply is affected).
         return;
       }
 
@@ -2393,7 +2466,7 @@ async function handleFreshQuote(params: {
     isFirstContact,
     priorContextText,
   } = params;
-  const language = detectLanguage(priorContextText, body);
+  const language = detectCurrentLanguage(body, priorContextText);
   // "short" variant: by the time this is used (outOfScope hand-off, or a
   // priced quote below), the customer's first message already told us why
   // they're reaching out and a real response follows immediately — the
@@ -2426,6 +2499,45 @@ async function handleFreshQuote(params: {
     aiNotes: row.ai_notes,
   }));
   const freshQuoteCapabilities = await fetchCapabilitiesForQuote(admin, tenant.id);
+
+  // "What services do you offer?" / "Can you send me your full list?" —
+  // never a job to price, never a clarification answer, never out of
+  // scope either (it's squarely within what JIR is allowed to talk
+  // about), so it doesn't fit getQuoteEstimate's three-way contract at
+  // all. Checked only when no photo is attached — a photo is always
+  // evidence of a specific job, never a broad "what do you offer"
+  // question. The reply is always this deterministic template, built from
+  // the tenant's own price-sheet categories and its own slug — never AI
+  // free text — so it can never invent a service or fabricate a menu URL.
+  // No lead is created and nothing is logged to lead_messages, mirroring
+  // the thin-description short-circuit above this function for the same
+  // reason: this isn't a job, so there's no lead for a message to belong
+  // to. Gated on at least one real priced service existing — with none,
+  // there's nothing honest to list or link to, so this falls through to
+  // the normal getQuoteEstimate flow instead of pretending a menu exists.
+  if (!mediaRef) {
+    const categories = Array.from(
+      new Set(priceSheet.filter((item) => item.priceMin > 0).map((item) => item.category).filter(Boolean)),
+    );
+    if (categories.length > 0) {
+      const { classification: broadClassification } = await classifyBroadServiceInquiry({
+        data: { message: body },
+      });
+      if (broadClassification === "broad_overview") {
+        const overviewMessage = localizedServiceOverviewMessage(language, categories, menuLink(tenant.slug));
+        await sendGuardedReply({
+          admin,
+          tenant,
+          fromPhone,
+          adapter,
+          leadId: null,
+          signature: { kind: "text", text: "canned:service-overview" },
+          messageText: `${firstContactGreeting}${overviewMessage}`,
+        });
+        return;
+      }
+    }
+  }
 
   let imageBase64: string | undefined;
   let imageMediaType: string | undefined;
@@ -2463,6 +2575,7 @@ async function handleFreshQuote(params: {
         exclusions: freshQuoteCapabilities.exclusions,
         specialties: freshQuoteCapabilities.specialties,
         description: body || NO_DESCRIPTION_PLACEHOLDER,
+        detectedLanguage: language,
         ...(imageBase64 !== undefined ? { imageBase64 } : {}),
         ...(imageMediaType !== undefined ? { imageMediaType } : {}),
       },
@@ -2557,9 +2670,12 @@ async function handleFreshQuote(params: {
   }
 
   if (result.outOfScope) {
+    // JIR only ever responds within the configured Price Sheet's scope —
+    // see the matching comment on the mid-clarification outOfScope branch
+    // above for the full reasoning. No customer-facing WhatsApp reply for
+    // an outOfScope result; the lead is still created and flagged, the
+    // inbound message is still logged, and the owner is still notified.
     const openingProblem = body || NO_DESCRIPTION_PLACEHOLDER;
-    const acknowledgmentPrefix = result.acknowledgment ? `${result.acknowledgment} ` : "";
-    const passAlongMessage = `${firstContactGreeting}${acknowledgmentPrefix}${localizedPassAlongMessage(language)}`;
     const { id: leadId } = await createFlaggedLead({
       data: {
         tenantSlug: tenant.slug,
@@ -2577,20 +2693,6 @@ async function handleFreshQuote(params: {
     await admin
       .from("lead_messages")
       .insert({ lead_id: leadId, role: "customer", body: openingProblem });
-    await sendGuardedReply({
-      admin,
-      tenant,
-      fromPhone,
-      adapter,
-      leadId,
-      signature: { kind: "text", text: passAlongMessage },
-      messageText: passAlongMessage,
-      onSent: async () => {
-        await admin
-          .from("lead_messages")
-          .insert({ lead_id: leadId, role: "assistant", body: passAlongMessage });
-      },
-    });
     void sendFollowUpNotificationEmail({
       tenant: { name: tenant.name, email: tenant.email, currency: tenant.currency },
       customerName: profileName || "A customer",

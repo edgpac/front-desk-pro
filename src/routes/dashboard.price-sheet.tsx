@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { Download, Plus, RotateCcw, Settings, Trash2, Upload } from "lucide-react";
+import { Copy, Download, ExternalLink, Plus, RotateCcw, Settings, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
 
 import { PageHeader, Panel } from "@/components/app/DashboardShell";
@@ -21,12 +21,14 @@ import {
 } from "@/lib/price-sheet-server";
 import {
   formatPrice,
+  menuLink,
   PRICE_SHEET,
   type PriceSheetRow,
   type PricingType,
   type MaterialsPolicy,
 } from "@/lib/mock-data";
 import { downloadPriceSheetBackup, parsePriceSheetBackup } from "@/lib/price-sheet-backup";
+import { copyText } from "@/lib/clipboard";
 
 export const Route = createFileRoute("/dashboard/price-sheet")({
   component: PriceSheetPage,
@@ -115,6 +117,7 @@ function PriceSheetPage() {
   // it must never touch, resend, or risk clobbering the price sheet or
   // vice versa.
   const [businessName, setBusinessName] = useState("");
+  const [tenantSlug, setTenantSlug] = useState("");
   const [greetingMode, setGreetingMode] = useState<"recommended" | "custom">("recommended");
   const [customGreetingEn, setCustomGreetingEn] = useState("");
   const [customGreetingEs, setCustomGreetingEs] = useState("");
@@ -162,6 +165,7 @@ function PriceSheetPage() {
         if (!active) return;
         setCurrency(tenant.currency);
         setBusinessName(tenant.name);
+        setTenantSlug(tenant.slug);
         setGreetingMode(tenant.greetingMode);
         setCustomGreetingEn(tenant.customGreetingEn ?? "");
         setCustomGreetingEs(tenant.customGreetingEs ?? "");
@@ -408,6 +412,32 @@ function PriceSheetPage() {
             />
             <Button variant="outline" size="sm" onClick={() => restoreFileRef.current?.click()}>
               <RotateCcw className="mr-2 h-4 w-4" /> Restore from backup
+            </Button>
+          </div>
+        </Panel>
+      )}
+
+      {user && tenantSlug && (
+        <Panel title="Shareable Service Menu">
+          <p className="text-xs text-muted-foreground">
+            Create a customer-friendly menu from your Price Sheet. Share it with customers on WhatsApp, Facebook,
+            or your website. Only services with a price configured are included — nothing internal (bundling,
+            materials policy, diagnosis fees, AI notes) is ever shown to customers. Always generated live from the
+            table below, so it's never out of date and never changes anything here.
+          </p>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              onClick={() => window.open(menuLink(tenantSlug), "_blank", "noopener,noreferrer")}
+            >
+              <ExternalLink className="mr-2 h-4 w-4" /> Generate Service Menu
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void copyText(menuLink(tenantSlug), "Menu link copied")}
+            >
+              <Copy className="mr-2 h-4 w-4" /> Copy link
             </Button>
           </div>
         </Panel>
