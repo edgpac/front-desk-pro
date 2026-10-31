@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatCommunicationProfile } from "./communication-profile";
+import { formatCommunicationProfile, generalNotesText } from "./communication-profile";
 import type { CommunicationProfile, ProfileFieldValue } from "./communication-profile";
 
 function strField(
@@ -67,6 +67,43 @@ describe("formatCommunicationProfile", () => {
     expect(withoutNotes).not.toContain("General notes:");
   });
 
+  it("renders an evidence-backed (AI-generated) general note with its source/confidence/evidence, like any other field", () => {
+    const output = formatCommunicationProfile({
+      generalNotes: strField("Responds quickly in the mornings.", {
+        evidence: [{ messageId: "11111111-1111-1111-1111-111111111111" }],
+      }),
+    });
+    expect(output).toContain("General notes: Responds quickly in the mornings.");
+    expect(output).toContain(
+      "AI-observed pattern, confidence: high, evidence: msg #11111111-1111-1111-1111-111111111111",
+    );
+  });
+
+  it("formats the new sentenceStructure string field", () => {
+    const profile: CommunicationProfile = {
+      sentenceStructure: strField("Short, direct sentences — rarely more than one clause."),
+    };
+    const output = formatCommunicationProfile(profile);
+    expect(output).toContain(
+      "Sentence length and structure: Short, direct sentences — rarely more than one clause.",
+    );
+  });
+
+  it("formats the new commonPhrasesAndExpressions list field", () => {
+    const profile: CommunicationProfile = {
+      commonPhrasesAndExpressions: {
+        value: ["Sounds good!", "I'll take care of it"],
+        source: "ai_observed",
+        confidence: "medium",
+        evidence: [],
+      },
+    };
+    const output = formatCommunicationProfile(profile);
+    expect(output).toContain("Common phrases and expressions:");
+    expect(output).toContain("  - Sounds good!");
+    expect(output).toContain("  - I'll take care of it");
+  });
+
   it("only renders fields that are actually set, in the fixed field order", () => {
     const profile: CommunicationProfile = {
       businessPoliciesAndBoundaries: strField("Standard policy text"),
@@ -78,5 +115,19 @@ describe("formatCommunicationProfile", () => {
     expect(toneIndex).toBeGreaterThanOrEqual(0);
     expect(policiesIndex).toBeGreaterThan(toneIndex);
     expect(output).not.toContain("Greeting style");
+  });
+});
+
+describe("generalNotesText", () => {
+  it("returns a plain string as-is", () => {
+    expect(generalNotesText("hello")).toBe("hello");
+  });
+
+  it("extracts .value from an evidence-backed note", () => {
+    expect(generalNotesText(strField("hello"))).toBe("hello");
+  });
+
+  it("returns an empty string when undefined", () => {
+    expect(generalNotesText(undefined)).toBe("");
   });
 });

@@ -257,6 +257,37 @@ describe("validateCommunicationProfileShape", () => {
     expect(validateCommunicationProfileShape({ generalNotes: "be warm" }).ok).toBe(true);
     expect(validateCommunicationProfileShape({ generalNotes: 123 }).ok).toBe(false);
   });
+
+  it("accepts generalNotes in the evidence-backed object shape too", () => {
+    const result = validateCommunicationProfileShape({
+      generalNotes: {
+        value: "be warm",
+        source: "ai_observed",
+        confidence: "high",
+        evidence: [{ messageId: "11111111-1111-1111-1111-111111111111" }],
+      },
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it("rejects a malformed evidence-backed generalNotes object (invalid confidence)", () => {
+    const result = validateCommunicationProfileShape({
+      generalNotes: {
+        value: "be warm",
+        source: "ai_observed",
+        confidence: "very sure",
+        evidence: [],
+      },
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it("rejects a malformed evidence-backed generalNotes object (evidence missing messageId)", () => {
+    const result = validateCommunicationProfileShape({
+      generalNotes: { value: "be warm", source: "ai_observed", confidence: "high", evidence: [{}] },
+    });
+    expect(result.ok).toBe(false);
+  });
 });
 
 describe("createCommunicationProfileVersion", () => {
@@ -274,10 +305,10 @@ describe("createCommunicationProfileVersion", () => {
     const client = fakeClient({ communication_profile_versions: versions });
     const created = await createCommunicationProfileVersion(client, "tenant-A", {
       profile: VALID_PROFILE,
-      sourceLeadIds: ["lead-1"],
+      sourceImportIds: ["lead-1"],
     });
     expect(created.version).toBe(1);
-    expect(created.sourceLeadIds).toEqual(["lead-1"]);
+    expect(created.sourceImportIds).toEqual(["lead-1"]);
     expect(created.status).toBe("pending");
   });
 
@@ -287,7 +318,7 @@ describe("createCommunicationProfileVersion", () => {
         tenant_id: "tenant-A",
         version: 1,
         profile_json: VALID_PROFILE,
-        source_lead_ids: [],
+        source_import_ids: [],
         restored_from_version: null,
         created_at: "t1",
       },
@@ -295,7 +326,7 @@ describe("createCommunicationProfileVersion", () => {
         tenant_id: "tenant-A",
         version: 2,
         profile_json: VALID_PROFILE,
-        source_lead_ids: [],
+        source_import_ids: [],
         restored_from_version: null,
         created_at: "t2",
       },
@@ -313,7 +344,7 @@ describe("createCommunicationProfileVersion", () => {
         tenant_id: "tenant-B",
         version: 1,
         profile_json: VALID_PROFILE,
-        source_lead_ids: [],
+        source_import_ids: [],
         restored_from_version: null,
         created_at: "t1",
       },
@@ -321,7 +352,7 @@ describe("createCommunicationProfileVersion", () => {
         tenant_id: "tenant-B",
         version: 2,
         profile_json: VALID_PROFILE,
-        source_lead_ids: [],
+        source_import_ids: [],
         restored_from_version: null,
         created_at: "t2",
       },
@@ -351,7 +382,7 @@ describe("createCommunicationProfileVersion", () => {
         tenant_id: "tenant-A",
         version: 1,
         profile_json: VALID_PROFILE,
-        source_lead_ids: [],
+        source_import_ids: [],
         restored_from_version: null,
         created_at: "concurrent-winner",
       },
@@ -396,7 +427,7 @@ describe("listCommunicationProfileVersions / getCommunicationProfileVersion / st
         tenant_id: "tenant-A",
         version: 1,
         profile_json: { toneAndStyle: strField("v1") },
-        source_lead_ids: [],
+        source_import_ids: [],
         restored_from_version: null,
         created_at: "t1",
       },
@@ -404,7 +435,7 @@ describe("listCommunicationProfileVersions / getCommunicationProfileVersion / st
         tenant_id: "tenant-A",
         version: 2,
         profile_json: { toneAndStyle: strField("v2") },
-        source_lead_ids: [],
+        source_import_ids: [],
         restored_from_version: null,
         created_at: "t2",
       },
@@ -412,7 +443,7 @@ describe("listCommunicationProfileVersions / getCommunicationProfileVersion / st
         tenant_id: "tenant-A",
         version: 3,
         profile_json: { toneAndStyle: strField("v3") },
-        source_lead_ids: [],
+        source_import_ids: [],
         restored_from_version: null,
         created_at: "t3",
       },
@@ -420,7 +451,7 @@ describe("listCommunicationProfileVersions / getCommunicationProfileVersion / st
         tenant_id: "tenant-B",
         version: 1,
         profile_json: { toneAndStyle: strField("other tenant") },
-        source_lead_ids: [],
+        source_import_ids: [],
         restored_from_version: null,
         created_at: "t1",
       },
@@ -467,7 +498,7 @@ describe("active profile and pending draft derivation", () => {
         tenant_id: "tenant-A",
         version: 1,
         profile_json: { toneAndStyle: strField("v1") },
-        source_lead_ids: [],
+        source_import_ids: [],
         restored_from_version: null,
         created_at: "t1",
       },
@@ -475,7 +506,7 @@ describe("active profile and pending draft derivation", () => {
         tenant_id: "tenant-A",
         version: 2,
         profile_json: { toneAndStyle: strField("v2") },
-        source_lead_ids: [],
+        source_import_ids: [],
         restored_from_version: null,
         created_at: "t2",
       },
@@ -515,7 +546,7 @@ describe("active profile and pending draft derivation", () => {
         tenant_id: "tenant-A",
         version: 1,
         profile_json: VALID_PROFILE,
-        source_lead_ids: [],
+        source_import_ids: [],
         restored_from_version: null,
         created_at: "t1",
       },
@@ -536,7 +567,7 @@ describe("active profile and pending draft derivation", () => {
         tenant_id: "tenant-A",
         version: 1,
         profile_json: VALID_PROFILE,
-        source_lead_ids: [],
+        source_import_ids: [],
         restored_from_version: null,
         created_at: "t1",
       },
@@ -544,7 +575,7 @@ describe("active profile and pending draft derivation", () => {
         tenant_id: "tenant-A",
         version: 2,
         profile_json: VALID_PROFILE,
-        source_lead_ids: [],
+        source_import_ids: [],
         restored_from_version: null,
         created_at: "t2",
       },
@@ -552,7 +583,7 @@ describe("active profile and pending draft derivation", () => {
         tenant_id: "tenant-A",
         version: 3,
         profile_json: VALID_PROFILE,
-        source_lead_ids: [],
+        source_import_ids: [],
         restored_from_version: null,
         created_at: "t3",
       },
@@ -574,7 +605,7 @@ describe("active profile and pending draft derivation", () => {
         tenant_id: "tenant-A",
         version: 1,
         profile_json: VALID_PROFILE,
-        source_lead_ids: [],
+        source_import_ids: [],
         restored_from_version: null,
         created_at: "t1",
       },
@@ -597,7 +628,7 @@ describe("recordCommunicationProfileDecision", () => {
         tenant_id: "tenant-A",
         version: 1,
         profile_json: VALID_PROFILE,
-        source_lead_ids: [],
+        source_import_ids: [],
         restored_from_version: null,
         created_at: "t1",
       },
@@ -639,7 +670,7 @@ describe("recordCommunicationProfileDecision", () => {
         tenant_id: "tenant-A",
         version: 1,
         profile_json: VALID_PROFILE,
-        source_lead_ids: [],
+        source_import_ids: [],
         restored_from_version: null,
         created_at: "t1",
       },
@@ -665,7 +696,7 @@ describe("recordCommunicationProfileDecision", () => {
         tenant_id: "tenant-B",
         version: 1,
         profile_json: VALID_PROFILE,
-        source_lead_ids: [],
+        source_import_ids: [],
         restored_from_version: null,
         created_at: "t1",
       },
@@ -693,7 +724,7 @@ describe("recordCommunicationProfileDecision", () => {
         tenant_id: "tenant-A",
         version: 1,
         profile_json: VALID_PROFILE,
-        source_lead_ids: [],
+        source_import_ids: [],
         restored_from_version: null,
         created_at: "t1",
       },
@@ -724,7 +755,7 @@ describe("recordCommunicationProfileDecision", () => {
         tenant_id: "tenant-A",
         version: 1,
         profile_json: VALID_PROFILE,
-        source_lead_ids: [],
+        source_import_ids: [],
         restored_from_version: null,
         created_at: "t1",
       },
@@ -756,7 +787,7 @@ describe("cross-tenant isolation of every query this file issues", () => {
         tenant_id: "tenant-A",
         version: 1,
         profile_json: VALID_PROFILE,
-        source_lead_ids: [],
+        source_import_ids: [],
         restored_from_version: null,
         created_at: "t1",
       },
@@ -764,7 +795,7 @@ describe("cross-tenant isolation of every query this file issues", () => {
         tenant_id: "tenant-B",
         version: 1,
         profile_json: VALID_PROFILE,
-        source_lead_ids: [],
+        source_import_ids: [],
         restored_from_version: null,
         created_at: "t1",
       },
@@ -787,7 +818,7 @@ describe("cross-tenant isolation of every query this file issues", () => {
         tenant_id: "tenant-A",
         version: 1,
         profile_json: VALID_PROFILE,
-        source_lead_ids: [],
+        source_import_ids: [],
         restored_from_version: null,
         created_at: "t1",
       },

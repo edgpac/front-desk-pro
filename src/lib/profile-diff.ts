@@ -1,4 +1,8 @@
-import { PROFILE_LIST_FIELDS, PROFILE_STRING_FIELDS } from "./communication-profile";
+import {
+  PROFILE_LIST_FIELDS,
+  PROFILE_STRING_FIELDS,
+  generalNotesText,
+} from "./communication-profile";
 import type { CommunicationProfile } from "./communication-profile";
 
 export type ProfileFieldDiff = {
@@ -48,7 +52,12 @@ export function diffCommunicationProfiles(
     }
   }
 
-  const generalNotesChanged = (active?.generalNotes ?? "") !== (draft.generalNotes ?? "");
+  // Compared by VALUE, not by shape — a manually-entered plain string
+  // and an evidence-backed note carrying the identical text are not a
+  // "change" a human reviewer needs to see; only the actual guidance
+  // changing matters here, same as every other field above.
+  const generalNotesChanged =
+    generalNotesText(active?.generalNotes) !== generalNotesText(draft.generalNotes);
   const hasChanges = fields.some((f) => f.kind !== "unchanged") || generalNotesChanged;
 
   return { fields, generalNotesChanged, hasChanges };

@@ -90,6 +90,28 @@ describe("diffCommunicationProfiles", () => {
     expect(f.kind).toBe("changed");
   });
 
+  it("diffs the new sentenceStructure field like any other string field", () => {
+    const diff = diffCommunicationProfiles(
+      { sentenceStructure: strField("long and explanatory") },
+      { sentenceStructure: strField("short and direct") },
+    );
+    const f = diff.fields.find((f) => f.key === "sentenceStructure")!;
+    expect(f.kind).toBe("changed");
+  });
+
+  it("diffs the new commonPhrasesAndExpressions field like any other list field", () => {
+    const diff = diffCommunicationProfiles(null, {
+      commonPhrasesAndExpressions: {
+        value: ["Sounds good!"],
+        source: "ai_observed",
+        confidence: "medium",
+        evidence: [],
+      },
+    });
+    const f = diff.fields.find((f) => f.key === "commonPhrasesAndExpressions")!;
+    expect(f.kind).toBe("added");
+  });
+
   it("detects a generalNotes change independently of field changes", () => {
     const diff = diffCommunicationProfiles(
       { generalNotes: "old note" },
@@ -97,6 +119,22 @@ describe("diffCommunicationProfiles", () => {
     );
     expect(diff.generalNotesChanged).toBe(true);
     expect(diff.hasChanges).toBe(true);
+  });
+
+  it("treats a plain-string note and an evidence-backed note with the SAME text as unchanged", () => {
+    const diff = diffCommunicationProfiles(
+      { generalNotes: "Responds quickly in the mornings." },
+      { generalNotes: strField("Responds quickly in the mornings.") },
+    );
+    expect(diff.generalNotesChanged).toBe(false);
+  });
+
+  it("detects a change between a plain-string note and an evidence-backed note with DIFFERENT text", () => {
+    const diff = diffCommunicationProfiles(
+      { generalNotes: "old note" },
+      { generalNotes: strField("new note") },
+    );
+    expect(diff.generalNotesChanged).toBe(true);
   });
 });
 

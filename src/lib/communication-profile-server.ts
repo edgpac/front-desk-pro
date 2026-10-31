@@ -66,6 +66,55 @@ export type CommunicationProfileValidationResult =
 // actually decides what's allowed to be saved — but returns a list of
 // reasons rather than a single message, since a profile has many
 // independently-checkable fields.
+// Validates a single ProfileFieldValue-shaped object (value/source/
+// confidence/evidence), appending to `errors` in place. Shared by every
+// PROFILE_STRING_FIELDS/PROFILE_LIST_FIELDS entry and by generalNotes
+// when it's given in its evidence-backed object form, so both paths
+// enforce the identical rules rather than two hand-maintained copies.
+function validateFieldValueShape(
+  key: string,
+  field: unknown,
+  isListField: boolean,
+  errors: string[],
+): void {
+  if (typeof field !== "object" || field === null || Array.isArray(field)) {
+    errors.push(`"${key}" must be an object with value/source/confidence/evidence`);
+    return;
+  }
+  const f = field as Record<string, unknown>;
+
+  const validValue = isListField
+    ? Array.isArray(f["value"]) && f["value"].every((v) => typeof v === "string")
+    : typeof f["value"] === "string";
+  if (!validValue) {
+    errors.push(`"${key}.value" must be ${isListField ? "a list of strings" : "a string"}`);
+  }
+
+  if (
+    typeof f["source"] !== "string" ||
+    !VALID_SOURCES.includes(f["source"] as ProfileFieldSource)
+  ) {
+    errors.push(`"${key}.source" must be one of ${VALID_SOURCES.join(", ")}`);
+  }
+  if (
+    typeof f["confidence"] !== "string" ||
+    !VALID_CONFIDENCE.includes(f["confidence"] as ProfileConfidence)
+  ) {
+    errors.push(`"${key}.confidence" must be one of ${VALID_CONFIDENCE.join(", ")}`);
+  }
+  if (
+    !Array.isArray(f["evidence"]) ||
+    !f["evidence"].every(
+      (e) =>
+        typeof e === "object" &&
+        e !== null &&
+        typeof (e as Record<string, unknown>)["messageId"] === "string",
+    )
+  ) {
+    errors.push(`"${key}.evidence" must be a list of { messageId: string }`);
+  }
+}
+
 export function validateCommunicationProfileShape(
   raw: unknown,
 ): CommunicationProfileValidationResult {
@@ -82,54 +131,25 @@ export function validateCommunicationProfileShape(
     }
   }
 
-  if (
-    "generalNotes" in input &&
-    input["generalNotes"] !== undefined &&
-    typeof input["generalNotes"] !== "string"
-  ) {
-    errors.push('"generalNotes" must be a string when provided');
+  // generalNotes accepts EITHER shape: a plain string (manually/owner-
+  // authored, trusted directly — preserves compatibility with profiles
+  // created before evidence-backing existed and with manual entry) or
+  // the same evidence-backed object shape every other field uses (for
+  // AI-generated notes — see profile-generation-server.ts, which
+  // additionally requires THIS shape specifically and validates its
+  // evidence; this function only checks structural validity, not which
+  // shape a given caller ought to use).
+  if ("generalNotes" in input && input["generalNotes"] !== undefined) {
+    const notes = input["generalNotes"];
+    if (typeof notes !== "string") {
+      validateFieldValueShape("generalNotes", notes, false, errors);
+    }
   }
 
   for (const [key] of [...PROFILE_STRING_FIELDS, ...PROFILE_LIST_FIELDS]) {
     const field = input[key];
     if (field === undefined) continue;
-    if (typeof field !== "object" || field === null || Array.isArray(field)) {
-      errors.push(`"${key}" must be an object with value/source/confidence/evidence`);
-      continue;
-    }
-    const f = field as Record<string, unknown>;
-
-    const isListField = LIST_FIELD_KEYS.has(key);
-    const validValue = isListField
-      ? Array.isArray(f["value"]) && f["value"].every((v) => typeof v === "string")
-      : typeof f["value"] === "string";
-    if (!validValue) {
-      errors.push(`"${key}.value" must be ${isListField ? "a list of strings" : "a string"}`);
-    }
-
-    if (
-      typeof f["source"] !== "string" ||
-      !VALID_SOURCES.includes(f["source"] as ProfileFieldSource)
-    ) {
-      errors.push(`"${key}.source" must be one of ${VALID_SOURCES.join(", ")}`);
-    }
-    if (
-      typeof f["confidence"] !== "string" ||
-      !VALID_CONFIDENCE.includes(f["confidence"] as ProfileConfidence)
-    ) {
-      errors.push(`"${key}.confidence" must be one of ${VALID_CONFIDENCE.join(", ")}`);
-    }
-    if (
-      !Array.isArray(f["evidence"]) ||
-      !f["evidence"].every(
-        (e) =>
-          typeof e === "object" &&
-          e !== null &&
-          typeof (e as Record<string, unknown>)["messageId"] === "string",
-      )
-    ) {
-      errors.push(`"${key}.evidence" must be a list of { messageId: string }`);
-    }
+    validateFieldValueShape(key, field, LIST_FIELD_KEYS.has(key), errors);
   }
 
   if (errors.length > 0) return { ok: false, errors };
@@ -141,7 +161,7 @@ export type ProfileVersionStatus = "pending" | "approved" | "archived" | "reject
 export type StoredCommunicationProfileVersion = {
   version: number;
   profile: CommunicationProfile;
-  sourceLeadIds: string[];
+  sourceImportIds: string[];
   restoredFromVersion: number | null;
   createdAt: string;
   status: ProfileVersionStatus;
@@ -152,7 +172,7 @@ export type StoredCommunicationProfileVersion = {
 type VersionRow = {
   version: number;
   profile_json: unknown;
-  source_lead_ids: string[];
+  source_import_ids: string[];
   restored_from_version: number | null;
   created_at: string;
 };
@@ -274,7 +294,7 @@ function toStored(
   return {
     version: version.version,
     profile: version.profile_json as CommunicationProfile,
-    sourceLeadIds: version.source_lead_ids,
+    sourceImportIds: version.source_import_ids,
     restoredFromVersion: version.restored_from_version,
     createdAt: version.created_at,
     status: deriveStatus(version, decisions, activeVersion),
@@ -289,7 +309,7 @@ async function fetchAllVersions(
 ): Promise<VersionRow[]> {
   const { data, error } = await supabase
     .from("communication_profile_versions")
-    .select("version, profile_json, source_lead_ids, restored_from_version, created_at")
+    .select("version, profile_json, source_import_ids, restored_from_version, created_at")
     .eq("tenant_id", tenantId)
     .order("version", { ascending: true });
   if (error) throw new Error(`Could not load communication profile versions: ${error.message}`);
@@ -404,7 +424,7 @@ export const getPendingCommunicationProfileDraft = createServerOnlyFn(
 
 export type CreateCommunicationProfileVersionInput = {
   profile: unknown;
-  sourceLeadIds?: string[];
+  sourceImportIds?: string[];
   restoredFromVersion?: number | null;
 };
 
@@ -454,10 +474,10 @@ export const createCommunicationProfileVersion = createServerOnlyFn(
           tenant_id: tenantId,
           version: nextVersion,
           profile_json: validation.value,
-          source_lead_ids: input.sourceLeadIds ?? [],
+          source_import_ids: input.sourceImportIds ?? [],
           restored_from_version: input.restoredFromVersion ?? null,
         })
-        .select("version, profile_json, source_lead_ids, restored_from_version, created_at")
+        .select("version, profile_json, source_import_ids, restored_from_version, created_at")
         .single();
 
       if (!insertError && inserted) {
@@ -498,7 +518,7 @@ export const recordCommunicationProfileDecision = createServerOnlyFn(
   ): Promise<StoredCommunicationProfileVersion> => {
     const { data: versionRow, error: versionError } = await supabase
       .from("communication_profile_versions")
-      .select("version, profile_json, source_lead_ids, restored_from_version, created_at")
+      .select("version, profile_json, source_import_ids, restored_from_version, created_at")
       .eq("tenant_id", tenantId)
       .eq("version", input.version)
       .maybeSingle();

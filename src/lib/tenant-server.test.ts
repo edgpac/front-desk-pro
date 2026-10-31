@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   performUpdateMyGreetingSettings,
+  performUpdateMyWhatsAppOwnerAliases,
+  performGetMyWhatsAppOwnerAliases,
   MAX_CUSTOM_GREETING_LENGTH,
+  MAX_WHATSAPP_OWNER_ALIASES,
+  MAX_WHATSAPP_OWNER_ALIAS_LENGTH,
   type GreetingSettingsInput,
 } from "./tenant-server";
 
@@ -20,7 +24,9 @@ type UpdateCall = { table: string; patch: Record<string, unknown>; column: strin
 // eq-value performUpdateMyGreetingSettings actually sent, so the tenant-
 // scoping guarantee (always userId, never anything from `data`) is a
 // provable assertion, not an inspection.
-function fakeTenantsClient(opts: { error?: { message: string } } = {}) {
+function fakeTenantsClient(
+  opts: { error?: { message: string }; readRow?: Record<string, unknown> } = {},
+) {
   const calls: UpdateCall[] = [];
   const client = {
     from: (table: string) => ({
@@ -29,6 +35,15 @@ function fakeTenantsClient(opts: { error?: { message: string } } = {}) {
           calls.push({ table, patch, column, value });
           return { error: opts.error ?? null };
         },
+      }),
+      select: () => ({
+        eq: (column: string, value: unknown) => ({
+          single: async () => {
+            calls.push({ table, patch: {}, column, value });
+            if (opts.error) return { data: null, error: opts.error };
+            return { data: opts.readRow ?? {}, error: null };
+          },
+        }),
       }),
     }),
   };
@@ -179,7 +194,7 @@ describe("performUpdateMyGreetingSettings — tenant isolation", () => {
     // that structural guarantee: the eq() call is scoped by the function's
     // own userId argument, which the caller (updateMyGreetingSettings's
     // createServerFn handler) always derives from the authenticated
-        // session's context.userId — never from client-supplied data.
+    // session's context.userId — never from client-supplied data.
     const { client: clientA, calls: callsA } = fakeTenantsClient();
     const { client: clientB, calls: callsB } = fakeTenantsClient();
 
@@ -209,5 +224,103 @@ describe("performUpdateMyGreetingSettings — tenant isolation", () => {
     });
     expect(calls[0]!.patch).not.toHaveProperty("userId");
     expect(calls[0]!.patch).not.toHaveProperty("tenant_id");
+  });
+});
+
+describe("performUpdateMyWhatsAppOwnerAliases", () => {
+  it("saves a trimmed, deduped list scoped to the given user_id", async () => {
+    const { client, calls } = fakeTenantsClient();
+    const result = await performUpdateMyWhatsAppOwnerAliases(client, "user-A", [
+      "  Jane Owner  ",
+      "+1 555-0100",
+      "jane owner", // case-insensitive duplicate of the first entry
+    ]);
+    expect(result.aliases).toEqual(["Jane Owner", "+1 555-0100"]);
+    expect(calls[0]!.column).toBe("user_id");
+    expect(calls[0]!.value).toBe("user-A");
+    expect(calls[0]!.patch).toEqual({ whatsapp_owner_aliases: ["Jane Owner", "+1 555-0100"] });
+  });
+
+  it("drops empty/whitespace-only entries", async () => {
+    const { client } = fakeTenantsClient();
+    const result = await performUpdateMyWhatsAppOwnerAliases(client, "user-A", ["Jane", "   ", ""]);
+    expect(result.aliases).toEqual(["Jane"]);
+  });
+
+  it("rejects a non-array input", async () => {
+    const { client, calls } = fakeTenantsClient();
+    await expect(
+      performUpdateMyWhatsAppOwnerAliases(client, "user-A", "Jane" as unknown as string[]),
+    ).rejects.toThrow(/must be a list of text values/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("rejects a non-string entry (malformed input bypassing the TS type)", async () => {
+    const { client, calls } = fakeTenantsClient();
+    await expect(
+      performUpdateMyWhatsAppOwnerAliases(client, "user-A", [42 as unknown as string]),
+    ).rejects.toThrow(/must be a list of text values/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("rejects an alias over the per-alias length limit", async () => {
+    const { client, calls } = fakeTenantsClient();
+    const tooLong = "x".repeat(MAX_WHATSAPP_OWNER_ALIAS_LENGTH + 1);
+    await expect(performUpdateMyWhatsAppOwnerAliases(client, "user-A", [tooLong])).rejects.toThrow(
+      /characters or fewer/,
+    );
+    expect(calls).toHaveLength(0);
+  });
+
+  it("rejects more than the maximum number of (deduped) aliases", async () => {
+    const { client, calls } = fakeTenantsClient();
+    const tooMany = Array.from({ length: MAX_WHATSAPP_OWNER_ALIASES + 1 }, (_, i) => `Alias ${i}`);
+    await expect(performUpdateMyWhatsAppOwnerAliases(client, "user-A", tooMany)).rejects.toThrow(
+      /No more than/,
+    );
+    expect(calls).toHaveLength(0);
+  });
+
+  it("accepts exactly the maximum number of aliases (boundary, not off-by-one)", async () => {
+    const { client, calls } = fakeTenantsClient();
+    const exact = Array.from({ length: MAX_WHATSAPP_OWNER_ALIASES }, (_, i) => `Alias ${i}`);
+    const result = await performUpdateMyWhatsAppOwnerAliases(client, "user-A", exact);
+    expect(result.aliases).toHaveLength(MAX_WHATSAPP_OWNER_ALIASES);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("propagates a database error as a clear thrown Error", async () => {
+    const { client } = fakeTenantsClient({ error: { message: "connection reset" } });
+    await expect(performUpdateMyWhatsAppOwnerAliases(client, "user-A", ["Jane"])).rejects.toThrow(
+      /Could not save WhatsApp owner aliases: connection reset/,
+    );
+  });
+
+  it('tenant isolation: the eq("user_id", ...) value is always the caller\'s own userId parameter', async () => {
+    const { client: clientA, calls: callsA } = fakeTenantsClient();
+    const { client: clientB, calls: callsB } = fakeTenantsClient();
+    await performUpdateMyWhatsAppOwnerAliases(clientA, "user-A", ["Jane"]);
+    await performUpdateMyWhatsAppOwnerAliases(clientB, "user-B", ["Jane"]);
+    expect(callsA[0]!.value).toBe("user-A");
+    expect(callsB[0]!.value).toBe("user-B");
+  });
+});
+
+describe("performGetMyWhatsAppOwnerAliases", () => {
+  it("returns the stored aliases for the given user", async () => {
+    const { client } = fakeTenantsClient({ readRow: { whatsapp_owner_aliases: ["Jane"] } });
+    await expect(performGetMyWhatsAppOwnerAliases(client, "user-A")).resolves.toEqual(["Jane"]);
+  });
+
+  it("returns an empty array when the column is null", async () => {
+    const { client } = fakeTenantsClient({ readRow: { whatsapp_owner_aliases: null } });
+    await expect(performGetMyWhatsAppOwnerAliases(client, "user-A")).resolves.toEqual([]);
+  });
+
+  it("propagates a database error as a clear thrown Error", async () => {
+    const { client } = fakeTenantsClient({ error: { message: "connection reset" } });
+    await expect(performGetMyWhatsAppOwnerAliases(client, "user-A")).rejects.toThrow(
+      /Could not load WhatsApp owner aliases: connection reset/,
+    );
   });
 });

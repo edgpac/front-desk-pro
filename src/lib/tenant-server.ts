@@ -195,4 +195,82 @@ export async function performUpdateMyGreetingSettings(
 export const updateMyGreetingSettings = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .validator((input: GreetingSettingsInput) => input)
-  .handler(async ({ context, data }) => performUpdateMyGreetingSettings(context.supabase, context.userId, data));
+  .handler(async ({ context, data }) =>
+    performUpdateMyGreetingSettings(context.supabase, context.userId, data),
+  );
+
+// How the owner's own WhatsApp messages are told apart from a
+// customer's when importing a historical export (see
+// whatsapp-owner-identity.ts) — the aliases are how the owner's name or
+// number actually appears as a sender label in their own exports, never
+// a customer's. Bounded and deduped before saving: a handful of aliases
+// (the owner's name, a nickname, their number) is the realistic case,
+// and an unbounded or duplicate-filled list is either abuse or a
+// mistake, not a legitimate configuration — rejecting it here, rather
+// than silently truncating, keeps the owner aware of exactly what's
+// saved (same reasoning as the greeting-length limit above).
+export const MAX_WHATSAPP_OWNER_ALIASES = 20;
+export const MAX_WHATSAPP_OWNER_ALIAS_LENGTH = 200;
+
+export function validateWhatsAppOwnerAliases(aliases: unknown): string[] {
+  if (!Array.isArray(aliases) || !aliases.every((a) => typeof a === "string")) {
+    throw new Error("WhatsApp owner aliases must be a list of text values.");
+  }
+  const trimmed = aliases.map((a) => a.trim()).filter((a) => a.length > 0);
+  if (trimmed.some((a) => a.length > MAX_WHATSAPP_OWNER_ALIAS_LENGTH)) {
+    throw new Error(`Each alias must be ${MAX_WHATSAPP_OWNER_ALIAS_LENGTH} characters or fewer.`);
+  }
+  const deduped: string[] = [];
+  const seen = new Set<string>();
+  for (const alias of trimmed) {
+    const key = alias.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(alias);
+  }
+  if (deduped.length > MAX_WHATSAPP_OWNER_ALIASES) {
+    throw new Error(`No more than ${MAX_WHATSAPP_OWNER_ALIASES} aliases are allowed.`);
+  }
+  return deduped;
+}
+
+export async function performUpdateMyWhatsAppOwnerAliases(
+  supabase: Pick<SupabaseClient, "from">,
+  userId: string,
+  aliases: unknown,
+): Promise<{ ok: true; aliases: string[] }> {
+  const validated = validateWhatsAppOwnerAliases(aliases);
+  const { error } = await supabase
+    .from("tenants")
+    .update({ whatsapp_owner_aliases: validated })
+    .eq("user_id", userId);
+  if (error) throw new Error(`Could not save WhatsApp owner aliases: ${error.message}`);
+  return { ok: true as const, aliases: validated };
+}
+
+export async function performGetMyWhatsAppOwnerAliases(
+  supabase: Pick<SupabaseClient, "from">,
+  userId: string,
+): Promise<string[]> {
+  const { data, error } = await supabase
+    .from("tenants")
+    .select("whatsapp_owner_aliases")
+    .eq("user_id", userId)
+    .single();
+  if (error) throw new Error(`Could not load WhatsApp owner aliases: ${error.message}`);
+  return ((data as { whatsapp_owner_aliases: string[] | null })?.whatsapp_owner_aliases ??
+    []) as string[];
+}
+
+export const updateMyWhatsAppOwnerAliases = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .validator((input: { aliases: string[] }) => input)
+  .handler(async ({ context, data }) =>
+    performUpdateMyWhatsAppOwnerAliases(context.supabase, context.userId, data.aliases),
+  );
+
+export const getMyWhatsAppOwnerAliases = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) =>
+    performGetMyWhatsAppOwnerAliases(context.supabase, context.userId),
+  );
