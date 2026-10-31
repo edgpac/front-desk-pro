@@ -187,6 +187,48 @@ export class CommunicationProfileAlreadyDecidedError extends Error {
   }
 }
 
+// Thrown when the pre-insert existence check in recordCommunicationProfileDecision
+// (below) found no decision, but the INSERT itself was then rejected by
+// 0032's unique(tenant_id, version) constraint — meaning a concurrent
+// call recorded a decision for this exact version in the window between
+// this call's check and its own insert. Extends
+// CommunicationProfileAlreadyDecidedError so a caller that only wants to
+// know "was this already decided" can catch one type regardless of which
+// path caught it; unlike that error, this one never claims to know WHAT
+// the concurrent decision was — only our own insert's rejection was
+// observed, not the row that won.
+export class CommunicationProfileDecisionConflictError extends CommunicationProfileAlreadyDecidedError {
+  constructor(version: number) {
+    super(version, "decided by a concurrent request");
+    this.name = "CommunicationProfileDecisionConflictError";
+  }
+}
+
+// Thrown by createCommunicationProfileVersion when every bounded retry
+// attempt (see MAX_VERSION_CREATE_ATTEMPTS below) collided with another
+// concurrent version-creation call for the same tenant. Distinct from
+// InvalidCommunicationProfileError/CommunicationProfileNotFoundError —
+// neither means "the version number itself couldn't be assigned."
+export class CommunicationProfileVersionConflictError extends Error {
+  constructor(version: number) {
+    super(
+      `Could not create communication profile version #${version}: repeated conflicts with a concurrent request. Try again.`,
+    );
+    this.name = "CommunicationProfileVersionConflictError";
+  }
+}
+
+const POSTGRES_UNIQUE_VIOLATION = "23505";
+
+// Supabase/PostgREST surfaces a Postgres error's SQLSTATE on `.code`. Used
+// to distinguish "a concurrent write raced us" (safe to translate into a
+// typed app error, or retry) from any other database failure (connection
+// reset, permission error, etc.), which must never be retried or silently
+// reinterpreted as a conflict.
+function isUniqueViolation(error: { code?: string } | null | undefined): boolean {
+  return error?.code === POSTGRES_UNIQUE_VIOLATION;
+}
+
 // Same owner-scoped tenant lookup every other *-server.ts file in this
 // codebase already has its own copy of (tenant-server.ts, price-sheet-
 // server.ts, capabilities-server.ts, leads-server.ts) — no shared helper
@@ -366,6 +408,20 @@ export type CreateCommunicationProfileVersionInput = {
   restoredFromVersion?: number | null;
 };
 
+// Two concurrent calls for the same tenant can both read the same
+// "latest version" below and both compute the same nextVersion. The
+// existing unique(tenant_id, version) constraint on this table (0031,
+// already applied) stops a duplicate row from ever persisting, but
+// without this loop the loser would see a raw unique-violation error
+// instead of a predictable outcome. A bounded retry is the smallest safe
+// fix: re-reading "latest version" fresh on each attempt is correct
+// regardless of how many other calls raced in between, and 3 attempts
+// resolves realistic contention (a handful of concurrent calls for one
+// tenant) without risking an unbounded loop. Only a unique-violation
+// triggers a retry — any other database error (connection reset,
+// permission error, etc.) throws immediately, exactly as before.
+const MAX_VERSION_CREATE_ATTEMPTS = 3;
+
 // Validates BEFORE touching the database — an invalid profile is never
 // written, not even partially. Computes the next version number from
 // this tenant's own existing rows (never client-supplied), matching the
@@ -379,34 +435,42 @@ export const createCommunicationProfileVersion = createServerOnlyFn(
     const validation = validateCommunicationProfileShape(input.profile);
     if (!validation.ok) throw new InvalidCommunicationProfileError(validation.errors);
 
-    const { data: latest, error: latestError } = await supabase
-      .from("communication_profile_versions")
-      .select("version")
-      .eq("tenant_id", tenantId)
-      .order("version", { ascending: false })
-      .limit(1);
-    if (latestError)
-      throw new Error(`Could not determine the next profile version: ${latestError.message}`);
-    const nextVersion = ((latest as { version: number }[] | null)?.[0]?.version ?? 0) + 1;
+    let lastAttemptedVersion = 0;
+    for (let attempt = 1; attempt <= MAX_VERSION_CREATE_ATTEMPTS; attempt++) {
+      const { data: latest, error: latestError } = await supabase
+        .from("communication_profile_versions")
+        .select("version")
+        .eq("tenant_id", tenantId)
+        .order("version", { ascending: false })
+        .limit(1);
+      if (latestError)
+        throw new Error(`Could not determine the next profile version: ${latestError.message}`);
+      const nextVersion = ((latest as { version: number }[] | null)?.[0]?.version ?? 0) + 1;
+      lastAttemptedVersion = nextVersion;
 
-    const { data: inserted, error: insertError } = await supabase
-      .from("communication_profile_versions")
-      .insert({
-        tenant_id: tenantId,
-        version: nextVersion,
-        profile_json: validation.value,
-        source_lead_ids: input.sourceLeadIds ?? [],
-        restored_from_version: input.restoredFromVersion ?? null,
-      })
-      .select("version, profile_json, source_lead_ids, restored_from_version, created_at")
-      .single();
-    if (insertError || !inserted) {
-      throw new Error(
-        `Could not save communication profile version: ${insertError?.message ?? "unknown error"}`,
-      );
+      const { data: inserted, error: insertError } = await supabase
+        .from("communication_profile_versions")
+        .insert({
+          tenant_id: tenantId,
+          version: nextVersion,
+          profile_json: validation.value,
+          source_lead_ids: input.sourceLeadIds ?? [],
+          restored_from_version: input.restoredFromVersion ?? null,
+        })
+        .select("version, profile_json, source_lead_ids, restored_from_version, created_at")
+        .single();
+
+      if (!insertError && inserted) {
+        return toStored(inserted as VersionRow, new Map(), null);
+      }
+      if (insertError && !isUniqueViolation(insertError)) {
+        throw new Error(`Could not save communication profile version: ${insertError.message}`);
+      }
+      // Unique violation: another call took this version number first.
+      // Loop and recompute nextVersion from fresh data on the next attempt.
     }
 
-    return toStored(inserted as VersionRow, new Map(), null);
+    throw new CommunicationProfileVersionConflictError(lastAttemptedVersion);
   },
 );
 
@@ -463,7 +527,17 @@ export const recordCommunicationProfileDecision = createServerOnlyFn(
       decision: input.decision,
       note: input.note ?? null,
     });
-    if (insertError) throw new Error(`Could not record the decision: ${insertError.message}`);
+    if (insertError) {
+      // A concurrent call recorded a decision for this exact version
+      // between our existence check above and this insert — 0032's
+      // unique(tenant_id, version) constraint caught it. Translate into
+      // the same typed error family the pre-check above throws, so a
+      // caller never mistakes this rejection for a successful decision.
+      if (isUniqueViolation(insertError)) {
+        throw new CommunicationProfileDecisionConflictError(input.version);
+      }
+      throw new Error(`Could not record the decision: ${insertError.message}`);
+    }
 
     const [versions, decisions] = await Promise.all([
       fetchAllVersions(supabase, tenantId),

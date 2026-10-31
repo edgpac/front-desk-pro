@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   CommunicationProfileAlreadyDecidedError,
+  CommunicationProfileDecisionConflictError,
   CommunicationProfileNotFoundError,
+  CommunicationProfileVersionConflictError,
   InvalidCommunicationProfileError,
   createCommunicationProfileVersion,
   getActiveCommunicationProfile,
@@ -29,13 +31,35 @@ import type { CommunicationProfile, ProfileFieldValue } from "./communication-pr
 // and later tests need to observe the effect of an earlier insert.
 type Row = Record<string, unknown>;
 
-function fakeTable(rows: Row[], opts: { error?: { message: string } } = {}) {
+function fakeTable(
+  rows: Row[],
+  opts: {
+    error?: { message: string };
+    // Simulates a Postgres unique-violation (or any other error) landing
+    // specifically on an INSERT rather than on every operation — needed
+    // to test the concurrency-conflict paths without disturbing the
+    // SELECTs those same functions issue first. insertErrorCount bounds
+    // how many insert attempts fail before inserts start succeeding
+    // (omitted = every insert attempt on this table fails), modeling a
+    // concurrent call that eventually stops colliding.
+    insertError?: { message: string; code?: string };
+    insertErrorCount?: number;
+    // What a real unique-violation actually means: a row occupying that
+    // key already exists. Pushed into `rows` as a side effect of a
+    // failed insert, standing in for "the concurrent call that actually
+    // won" — so a subsequent SELECT (the retry's re-read) sees it, the
+    // same way a real re-read would see the real winning row.
+    insertErrorConflictingRow?: Row;
+  } = {},
+) {
   const calls: Array<{ op: "select" | "insert"; filters: Record<string, unknown> }> = [];
+  let insertAttempts = 0;
 
   function builder() {
     const filters: Record<string, unknown> = {};
     let op: "select" | "insert" = "select";
     let insertedRow: Row | null = null;
+    let insertFailed = false;
     let orderCol: string | null = null;
     let orderAsc = true;
     let limitN: number | null = null;
@@ -78,13 +102,25 @@ function fakeTable(rows: Row[], opts: { error?: { message: string } } = {}) {
       insert(row: Row) {
         op = "insert";
         insertedRow = row;
+        insertAttempts += 1;
+        const shouldFail =
+          opts.insertError !== undefined &&
+          (opts.insertErrorCount === undefined || insertAttempts <= opts.insertErrorCount);
+        if (shouldFail) {
+          insertFailed = true;
+          if (opts.insertErrorConflictingRow) rows.push(opts.insertErrorConflictingRow);
+        } else {
+          rows.push(row);
+        }
         calls.push({ op: "insert", filters: { ...row } });
-        rows.push(row);
         return api;
       },
       single() {
         if (opts.error) return Promise.resolve({ data: null, error: opts.error });
-        if (op === "insert") return Promise.resolve({ data: insertedRow, error: null });
+        if (op === "insert") {
+          if (insertFailed) return Promise.resolve({ data: null, error: opts.insertError });
+          return Promise.resolve({ data: insertedRow, error: null });
+        }
         calls.push({ op: "select", filters: { ...filters } });
         const result = applyRead();
         if (result.length !== 1)
@@ -99,7 +135,10 @@ function fakeTable(rows: Row[], opts: { error?: { message: string } } = {}) {
       },
       then(resolve: (v: { data: unknown; error: unknown }) => void) {
         if (opts.error) return resolve({ data: null, error: opts.error });
-        if (op === "insert") return resolve({ data: selected ? insertedRow : null, error: null });
+        if (op === "insert") {
+          if (insertFailed) return resolve({ data: null, error: opts.insertError });
+          return resolve({ data: selected ? insertedRow : null, error: null });
+        }
         calls.push({ op: "select", filters: { ...filters } });
         resolve({ data: applyRead(), error: null });
       },
@@ -292,6 +331,61 @@ describe("createCommunicationProfileVersion", () => {
       profile: VALID_PROFILE,
     });
     expect(created.version).toBe(1);
+  });
+
+  it("retries once and succeeds when a single concurrent insert collides on the version number", async () => {
+    // Models true concurrency as closely as a sequential fake can: both
+    // calls' SELECTs would have seen an empty table and both computed
+    // nextVersion = 1, but the OTHER call's insert actually lands first.
+    // Our own first insert attempt fails with a unique violation, and
+    // that concurrent winner's row (version 1) becomes visible in the
+    // backing table as a side effect — exactly what a real re-read would
+    // see. The retry re-reads "latest version", now sees version 1, and
+    // succeeds with version 2. This proves the retry loop's logic
+    // against a simulated error code — it does not exercise real
+    // Postgres concurrency (see the final report).
+    const versions = fakeTable([], {
+      insertError: { message: "duplicate key value violates unique constraint", code: "23505" },
+      insertErrorCount: 1,
+      insertErrorConflictingRow: {
+        tenant_id: "tenant-A",
+        version: 1,
+        profile_json: VALID_PROFILE,
+        source_lead_ids: [],
+        restored_from_version: null,
+        created_at: "concurrent-winner",
+      },
+    });
+    const client = fakeClient({ communication_profile_versions: versions });
+    const created = await createCommunicationProfileVersion(client, "tenant-A", {
+      profile: VALID_PROFILE,
+    });
+    expect(created.version).toBe(2);
+    expect(versions.rows).toHaveLength(2);
+  });
+
+  it("throws CommunicationProfileVersionConflictError after exhausting all retry attempts", async () => {
+    const versions = fakeTable([], {
+      insertError: { message: "duplicate key value violates unique constraint", code: "23505" },
+      // insertErrorCount omitted: every attempt fails.
+    });
+    const client = fakeClient({ communication_profile_versions: versions });
+    await expect(
+      createCommunicationProfileVersion(client, "tenant-A", { profile: VALID_PROFILE }),
+    ).rejects.toThrow(CommunicationProfileVersionConflictError);
+    expect(versions.rows).toHaveLength(0);
+  });
+
+  it("does not retry a non-conflict database error on insert — it throws immediately", async () => {
+    const versions = fakeTable([], {
+      insertError: { message: "connection reset", code: "08006" },
+    });
+    const client = fakeClient({ communication_profile_versions: versions });
+    await expect(
+      createCommunicationProfileVersion(client, "tenant-A", { profile: VALID_PROFILE }),
+    ).rejects.toThrow(/connection reset/);
+    // Exactly one insert attempt — a non-conflict error must not be retried.
+    expect(versions.calls.filter((c) => c.op === "insert")).toHaveLength(1);
   });
 });
 
@@ -585,6 +679,66 @@ describe("recordCommunicationProfileDecision", () => {
       recordCommunicationProfileDecision(client, "tenant-A", { version: 1, decision: "approved" }),
     ).rejects.toThrow(CommunicationProfileNotFoundError);
     expect(decisions.rows).toHaveLength(0);
+  });
+
+  it("throws CommunicationProfileDecisionConflictError when a concurrent decision wins the race at INSERT time", async () => {
+    // Models: the pre-insert existence check (above) found nothing — no
+    // decision existed yet — but a concurrent call recorded one in the
+    // gap before this call's own insert landed, and 0032's
+    // unique(tenant_id, version) constraint rejected it. This proves the
+    // error-translation logic against a simulated error code; it does
+    // not exercise real Postgres concurrency (see the final report).
+    const versions = fakeTable([
+      {
+        tenant_id: "tenant-A",
+        version: 1,
+        profile_json: VALID_PROFILE,
+        source_lead_ids: [],
+        restored_from_version: null,
+        created_at: "t1",
+      },
+    ]);
+    const decisions = fakeTable([], {
+      insertError: { message: "duplicate key value violates unique constraint", code: "23505" },
+    });
+    const client = fakeClient({
+      communication_profile_versions: versions,
+      communication_profile_decisions: decisions,
+    });
+
+    await expect(
+      recordCommunicationProfileDecision(client, "tenant-A", { version: 1, decision: "approved" }),
+    ).rejects.toThrow(CommunicationProfileDecisionConflictError);
+    // A caller catching the broader CommunicationProfileAlreadyDecidedError
+    // family must also catch this — it's a subclass, not a sibling.
+    await expect(
+      recordCommunicationProfileDecision(client, "tenant-A", { version: 1, decision: "approved" }),
+    ).rejects.toThrow(CommunicationProfileAlreadyDecidedError);
+    // The conflicting insert must never actually land as a persisted row.
+    expect(decisions.rows).toHaveLength(0);
+  });
+
+  it("does not mistranslate a non-conflict database error into a decision-conflict error", async () => {
+    const versions = fakeTable([
+      {
+        tenant_id: "tenant-A",
+        version: 1,
+        profile_json: VALID_PROFILE,
+        source_lead_ids: [],
+        restored_from_version: null,
+        created_at: "t1",
+      },
+    ]);
+    const decisions = fakeTable([], {
+      insertError: { message: "connection reset", code: "08006" },
+    });
+    const client = fakeClient({
+      communication_profile_versions: versions,
+      communication_profile_decisions: decisions,
+    });
+    await expect(
+      recordCommunicationProfileDecision(client, "tenant-A", { version: 1, decision: "approved" }),
+    ).rejects.toThrow(/connection reset/);
   });
 });
 
