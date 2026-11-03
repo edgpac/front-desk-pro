@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { toast } from "sonner";
-import { Loader2, Plus, Trash2, Upload, X } from "lucide-react";
+import { Loader2, Plus, RefreshCw, Trash2, Upload, X } from "lucide-react";
 
 import { PageHeader, Panel } from "@/components/app/DashboardShell";
 import { Button } from "@/components/ui/button";
@@ -81,6 +81,7 @@ function errorMessage(err: unknown, fallback: string): string {
 function JirChatPage() {
   const { user, loading: authLoading } = useAuth();
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [state, setState] = useState<LoadedState | null>(null);
 
   async function loadAll() {
@@ -92,6 +93,22 @@ function JirChatPage() {
       getMyPendingCommunicationProfileDraft(),
     ]);
     setState({ aliases, imports, versions, activeProfile, pendingDraft });
+  }
+
+  // A manual escape hatch for anything this page doesn't already refresh
+  // on its own (every section below re-fetches its own slice after an
+  // action it took itself, e.g. onImported/onSaved/onDecided — this is
+  // for everything else: a value changed in another tab, or recovering
+  // after an error toast without a full page reload).
+  async function handleRefresh() {
+    setRefreshing(true);
+    try {
+      await loadAll();
+    } catch (err) {
+      toast.error(errorMessage(err, "Could not refresh this page."));
+    } finally {
+      setRefreshing(false);
+    }
   }
 
   useEffect(() => {
@@ -147,6 +164,18 @@ function JirChatPage() {
         eyebrow="JIR Chat"
         title="Communication Profile Training"
         description="Import historical WhatsApp conversations to teach JIR Chat how your business communicates. Nothing here ever changes your services, prices, exclusions, or policies — those stay exactly as configured in your Price Sheet and Business Settings."
+        actions={
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={handleRefresh}
+            disabled={refreshing}
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} />
+            Refresh
+          </Button>
+        }
       />
 
       <IdentitySection
@@ -352,10 +381,29 @@ function ImportSection({ onImported }: { onImported: () => void }) {
 
   return (
     <Panel title="Import a Conversation">
+      <details className="mb-3 rounded-sm border border-border text-xs text-muted-foreground">
+        <summary className="cursor-pointer px-3 py-2 font-medium text-foreground">
+          How to export a WhatsApp conversation
+        </summary>
+        <ol className="list-decimal space-y-1 px-3 pb-3 pl-7">
+          <li>Open WhatsApp.</li>
+          <li>Open a conversation with a customer.</li>
+          <li>Tap the contact&apos;s name at the top.</li>
+          <li>
+            Scroll down and select{" "}
+            <strong className="font-medium text-foreground">Export Chat</strong>.
+          </li>
+          <li>
+            Choose <strong className="font-medium text-foreground">Without Media</strong>.
+          </li>
+          <li>Save or send the .txt file to your computer.</li>
+          <li>Return to JIR Chat and click Choose File below.</li>
+          <li>Select the exported .txt file.</li>
+        </ol>
+      </details>
       <p className="mb-3 text-xs text-muted-foreground">
-        Supports a plain-text WhatsApp &quot;Export Chat&quot; file (.txt) — in WhatsApp, open the
-        conversation, then Export Chat &quot;Without Media&quot;. Media files and the ZIP wrapper
-        aren&apos;t needed; only the text matters for learning how you write.
+        Supports a plain-text WhatsApp &quot;Export Chat&quot; file (.txt). Media files and the ZIP
+        wrapper aren&apos;t needed; only the text matters for learning how you write.
       </p>
 
       {!preview && (
