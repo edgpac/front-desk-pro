@@ -416,7 +416,17 @@ export const generateMyCommunicationProfile = createServerFn({ method: "POST" })
     // narrowly to this single RPC call. Nothing here exposes the admin
     // client itself, or any other privileged operation, to the client.
     const tenantId = await getTenantId(context.supabase, context.userId);
-    return runProfileGeneration(context.supabase, tenantId, callProfileGenerationAi, () =>
-      enforceProfileGenerationAiLimit(getAdminClient(), tenantId),
-    );
+    try {
+      return await runProfileGeneration(context.supabase, tenantId, callProfileGenerationAi, () =>
+        enforceProfileGenerationAiLimit(getAdminClient(), tenantId),
+      );
+    } catch (err) {
+      // Logged server-side only — the client never sees this (see
+      // dashboard.jir-chat.tsx's handleGenerate, which deliberately
+      // shows a generic message regardless of cause). Without this,
+      // an unexpected failure here (a provider error, a bad model id,
+      // a cost-guard RPC issue) left zero trace anywhere.
+      console.error("generateMyCommunicationProfile failed:", err);
+      throw err;
+    }
   });
