@@ -380,12 +380,23 @@ export const runProfileGeneration = createServerOnlyFn(
 // certainly because that specific dated model snapshot is no longer
 // being served. This matches a model string already proven live and
 // working in this exact deployment, not a guess at a newer one.
+// A real production attempt with ~130 imported messages timed out
+// against callClaude's default 30s ceiling (confirmed via server-side
+// logging: `TimeoutError: The operation was aborted due to timeout`,
+// not an API error) — unlike a customer waiting on a quote reply, no
+// one is waiting on a live reply here, so a longer ceiling is the
+// right tradeoff, not a sign the request itself is wrong.
+const PROFILE_GENERATION_TIMEOUT_MS = 90_000;
+
 async function callProfileGenerationAi(prompt: string): Promise<string> {
-  const response = await callClaude({
-    model: "claude-haiku-4-5-20251001",
-    max_tokens: 4096,
-    messages: [{ role: "user", content: prompt }],
-  });
+  const response = await callClaude(
+    {
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 4096,
+      messages: [{ role: "user", content: prompt }],
+    },
+    { timeoutMs: PROFILE_GENERATION_TIMEOUT_MS },
+  );
   const text = response?.content?.[0]?.text;
   if (typeof text !== "string") {
     throw new Error("Unexpected response shape from the AI provider.");

@@ -590,7 +590,14 @@ async function enforceTenantAiLimit(tenantSlug: string): Promise<void> {
   }
 }
 
-export async function callClaude(body: unknown): Promise<any> {
+// timeoutMs defaults to 30s — right for every existing caller here
+// (a customer is actively waiting on a quote/follow-up reply, so a
+// long hang is itself a bad outcome). A caller analyzing a much larger
+// prompt with no one waiting on a live reply (e.g. profile generation
+// over an entire imported conversation) can opt into a longer ceiling
+// explicitly, rather than this shared default being silently raised
+// for every caller to accommodate one slower, less time-sensitive one.
+export async function callClaude(body: unknown, options?: { timeoutMs?: number }): Promise<any> {
   const apiKey = process.env["ANTHROPIC_API_KEY"];
   if (!apiKey) {
     throw new Error(
@@ -605,7 +612,7 @@ export async function callClaude(body: unknown): Promise<any> {
       "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(30_000),
+    signal: AbortSignal.timeout(options?.timeoutMs ?? 30_000),
   });
   if (!response.ok) {
     const text = await response.text().catch(() => "");
