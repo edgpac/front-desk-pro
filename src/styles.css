@@ -196,12 +196,17 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Proposal/invoice/receipt documents (BusinessDocument.tsx) render a fixed
-   8.5x11in page on screen and in the PNG export (html2canvas captures that
-   same DOM node); @page here makes the actual print/PDF output match it
-   exactly rather than drifting to the browser's own default paper size.
-   This is the only place in the app that calls window.print(), so this
-   rule is safe to scope globally — nothing else is ever printed through it. */
+/* Proposal/invoice/receipt documents (BusinessDocument.tsx) and the public
+   service menu (menu.$slug.tsx) both render one or more fixed 8.5x11in
+   page boxes on screen and in their PNG export (html2canvas captures those
+   same DOM nodes); @page here makes the actual print/PDF output match
+   that size exactly rather than drifting to the browser's own default
+   paper size. These are the only two places in the app that call
+   window.print(), so this rule is safe to scope globally — nothing else
+   is ever printed through it. A multi-page document additionally marks
+   every page except its last with print:break-after-page so each page box
+   lands on its own printed sheet instead of being split across sheets or
+   crammed onto one. */
 @media print {
   @page {
     size: 8.5in 11in;
