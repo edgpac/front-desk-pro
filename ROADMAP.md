@@ -2,12 +2,84 @@
 
 Legend: ✅ real and working · 🟡 built, but mocked/disconnected from a real backend · ⬜ not built yet
 
+Last updated: November 2, 2026 — **Production-readiness audit: accounted
+for every outstanding change in the working tree, shipped the one verified
+piece with no outstanding dependency, held back the rest with documented
+reasons.**
+
+Found two substantial pieces of uncommitted work sitting in the tree,
+neither logged anywhere: a multi-page pagination/PNG/print rework of the
+public service menu (`src/routes/menu.$slug.tsx`, `src/styles.css`, last
+touched Oct 27–30) and the already-known JIR Chat dashboard UI (held back
+since its own session, pending review + migrations `0031`–`0033`).
+
+**Service-menu pagination — audited, two real bugs found and fixed, then
+shipped.** `paginate()`'s flat `ROWS_PER_PAGE` budget didn't weight
+long (>70-char) task names, which can wrap to a second line on screen but
+have no such slack against print's fixed `@page` boundary — a long-name
+page could have silently overflowed onto an extra printed sheet. Fixed
+with a `rowUnits()` cost function (double weight for long names) and a
+lookahead-aware orphan guard. Separately, a category that continues onto
+a second page with no header entry was rendering a **blank** category
+label — fixed by seeding the continuation label from the first row's own
+category. Verified via 9 fixture scenarios (short/long/pathological
+oversized-category menus) plus live browser testing: PNG downloads
+(single- and multi-page), an actually-generated print PDF (correct
+8.5x11in pages, clean breaks), and a 390px mobile viewport. `tsc`/full
+715-test suite/build/targeted ESLint all clean. Shipped.
+
+**JIR Chat UI — independently security-audited this session, fully
+passed, still deliberately held back.** Tenant isolation, no
+client-trusted tenant id, service-role kept server-side, PII redaction
+verified by call path (not comment), prompt-injection protections
+(structural delimiting + evidence-citation validation against freshly-
+fetched real message ids), AI cost guard fails closed, profile activation
+requires an explicit approval row (no auto-activation path exists),
+deletion discloses affected profile versions before confirmation,
+malformed historical profiles fail closed, no auto-customer-messaging, no
+learning from the AI's own past replies — all PASS, 158/158 tests, `tsc`
+clean. Not shipped: migrations `0031`–`0033` (`communication_profiles`,
+its decision-uniqueness constraint, `whatsapp_imports`) are still not
+applied to production, and this was never meant to ship without the
+user's own browser review first. Confirmed (by directly inspecting the
+*committed* `routeTree.gen.ts` on `main`) that no currently-deployed route
+references the missing tables — the dormant library code
+(`communication-profile-server.ts`, `profile-generation-server.ts`,
+`communication-profile.ts`, already on `main` since Phase 1/2) has zero
+live entry point until this UI ships.
+
+**Also found**: a stale local branch `backup-before-reorder` (last commit
+Oct 18) whose two commits (loop-guard fix, price-sheet backup/restore) are
+fully superseded by later, more-refined work already on `main` under
+different commit hashes (confirmed via identical/evolved diffs, not
+assumed) — safe to delete, left alone pending the user's own say-so.
+`graphify-out/` (local Graphify tool output, never imported by app code)
+added to `.gitignore`; it and two genuinely unrelated items
+(`Home folder/`'s personal video files, `jir-carousel-photos/`'s
+not-yet-wired-up images) left untouched and uncommitted.
+
+See the correction note added to the October 15, 2026 entry below — its
+own body text was stale (the fix it describes has been live since
+October 21) and had never been corrected until now.
+
 Last updated: October 15, 2026 — **Security audit, Part 1 of 2, complete.
 One HIGH-severity finding (subscription-entitlement privilege escalation)
 found, fixed, and extensively hardened across several review passes —
 implemented and tested locally, committed, but deliberately NOT pushed,
 deployed, or applied to production yet. Rollout paused pending a separate
 decision about Stripe live-mode readiness.**
+>
+> **Correction, added during a November 2, 2026 production-readiness audit**:
+> everything below in this entry describes the state *as of October 15*.
+> That state is stale and was already superseded by October 21 (per
+> `e8e6e66`'s own commit message, which was never propagated into this
+> file's prose): commits `2cce874`..`7333064` are on `origin/main`,
+> migrations `0021`–`0023` are confirmed applied in production, and
+> `subscription_state`/`stripe_webhook_claims`/`stripe_processed_events`/
+> `audit_log` all exist live. The "current state — nothing live yet" and
+> "paused before executing it" paragraphs further down no longer reflect
+> reality. Left in place for history rather than rewritten; treat this
+> correction as authoritative over the original text below it.
 
 **Scope note, stated explicitly because it governs what comes next**: this
 was requested and scoped as Part 1 of a two-part audit — six areas (system
