@@ -26,6 +26,7 @@ import { Route as SimulationRouteImport } from './routes/simulation'
 import { Route as TermsRouteImport } from './routes/terms'
 import { Route as DashboardIndexRouteImport } from './routes/dashboard.index'
 import { Route as DashboardAnalyticsRouteImport } from './routes/dashboard.analytics'
+import { Route as DashboardJirChatRouteImport } from './routes/dashboard.jir-chat'
 import { Route as DashboardLeadsRouteImport } from './routes/dashboard.leads'
 import { Route as DashboardPriceSheetRouteImport } from './routes/dashboard.price-sheet'
 import { Route as DashboardWhatsappGuideRouteImport } from './routes/dashboard.whatsapp-guide'
@@ -131,6 +132,11 @@ const DashboardIndexRoute = DashboardIndexRouteImport.update({
 const DashboardAnalyticsRoute = DashboardAnalyticsRouteImport.update({
   id: '/analytics',
   path: '/analytics',
+  getParentRoute: () => DashboardRoute,
+} as any)
+const DashboardJirChatRoute = DashboardJirChatRouteImport.update({
+  id: '/jir-chat',
+  path: '/jir-chat',
   getParentRoute: () => DashboardRoute,
 } as any)
 const DashboardLeadsRoute = DashboardLeadsRouteImport.update({
@@ -261,6 +267,7 @@ export interface FileRoutesByFullPath {
   '/simulation': typeof SimulationRoute
   '/terms': typeof TermsRoute
   '/dashboard/analytics': typeof DashboardAnalyticsRoute
+  '/dashboard/jir-chat': typeof DashboardJirChatRoute
   '/dashboard/leads': typeof DashboardLeadsRouteWithChildren
   '/dashboard/price-sheet': typeof DashboardPriceSheetRoute
   '/dashboard/whatsapp-guide': typeof DashboardWhatsappGuideRoute
@@ -299,6 +306,7 @@ export interface FileRoutesByTo {
   '/simulation': typeof SimulationRoute
   '/terms': typeof TermsRoute
   '/dashboard/analytics': typeof DashboardAnalyticsRoute
+  '/dashboard/jir-chat': typeof DashboardJirChatRoute
   '/dashboard/price-sheet': typeof DashboardPriceSheetRoute
   '/dashboard/whatsapp-guide': typeof DashboardWhatsappGuideRoute
   '/dashboard/widget': typeof DashboardWidgetRoute
@@ -338,6 +346,7 @@ export interface FileRoutesById {
   '/simulation': typeof SimulationRoute
   '/terms': typeof TermsRoute
   '/dashboard/analytics': typeof DashboardAnalyticsRoute
+  '/dashboard/jir-chat': typeof DashboardJirChatRoute
   '/dashboard/leads': typeof DashboardLeadsRouteWithChildren
   '/dashboard/price-sheet': typeof DashboardPriceSheetRoute
   '/dashboard/whatsapp-guide': typeof DashboardWhatsappGuideRoute
@@ -380,6 +389,7 @@ export interface FileRouteTypes {
     | '/simulation'
     | '/terms'
     | '/dashboard/analytics'
+    | '/dashboard/jir-chat'
     | '/dashboard/leads'
     | '/dashboard/price-sheet'
     | '/dashboard/whatsapp-guide'
@@ -418,6 +428,7 @@ export interface FileRouteTypes {
     | '/simulation'
     | '/terms'
     | '/dashboard/analytics'
+    | '/dashboard/jir-chat'
     | '/dashboard/price-sheet'
     | '/dashboard/whatsapp-guide'
     | '/dashboard/widget'
@@ -456,6 +467,7 @@ export interface FileRouteTypes {
     | '/simulation'
     | '/terms'
     | '/dashboard/analytics'
+    | '/dashboard/jir-chat'
     | '/dashboard/leads'
     | '/dashboard/price-sheet'
     | '/dashboard/whatsapp-guide'
@@ -623,6 +635,13 @@ declare module '@tanstack/react-router' {
       path: '/analytics'
       fullPath: '/dashboard/analytics'
       preLoaderRoute: typeof DashboardAnalyticsRouteImport
+      parentRoute: typeof DashboardRoute
+    }
+    '/dashboard/jir-chat': {
+      id: '/dashboard/jir-chat'
+      path: '/jir-chat'
+      fullPath: '/dashboard/jir-chat'
+      preLoaderRoute: typeof DashboardJirChatRouteImport
       parentRoute: typeof DashboardRoute
     }
     '/dashboard/leads': {
@@ -808,6 +827,7 @@ const DashboardLeadsRouteWithChildren = DashboardLeadsRoute._addFileChildren(
 
 interface DashboardRouteChildren {
   DashboardAnalyticsRoute: typeof DashboardAnalyticsRoute
+  DashboardJirChatRoute: typeof DashboardJirChatRoute
   DashboardLeadsRoute: typeof DashboardLeadsRouteWithChildren
   DashboardPriceSheetRoute: typeof DashboardPriceSheetRoute
   DashboardWhatsappGuideRoute: typeof DashboardWhatsappGuideRoute
@@ -821,6 +841,7 @@ interface DashboardRouteChildren {
 
 const DashboardRouteChildren: DashboardRouteChildren = {
   DashboardAnalyticsRoute: DashboardAnalyticsRoute,
+  DashboardJirChatRoute: DashboardJirChatRoute,
   DashboardLeadsRoute: DashboardLeadsRouteWithChildren,
   DashboardPriceSheetRoute: DashboardPriceSheetRoute,
   DashboardWhatsappGuideRoute: DashboardWhatsappGuideRoute,

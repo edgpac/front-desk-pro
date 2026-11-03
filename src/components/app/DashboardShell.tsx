@@ -9,6 +9,7 @@ import {
   Menu,
   MessageCircle,
   Settings,
+  Sparkles,
   Tags,
   Code2,
   X,
@@ -29,13 +30,20 @@ const links = [
   { to: "/dashboard/price-sheet", label: "Price sheet", icon: Tags, exact: false },
   { to: "/dashboard/widget", label: "Widget & link", icon: Code2, exact: false },
   { to: "/dashboard/analytics", label: "Analytics", icon: BarChart3, exact: false },
+  { to: "/dashboard/jir-chat", label: "JIR Chat", icon: Sparkles, exact: false },
   { to: "/dashboard/settings/business", label: "Settings", icon: Settings, exact: false },
   { to: "/dashboard/settings/billing", label: "Billing", icon: CreditCard, exact: true },
   // Deliberately last and styled apart from the rest (red, not the muted
   // sidebar tone) — placed at the bottom of a settings-shaped list on
   // purpose, but colored so it doesn't just blend into that position. The
   // goal is "noticed," not "buried."
-  { to: "/dashboard/whatsapp-guide", label: "WhatsApp setup", icon: MessageCircle, exact: true, emphasize: true },
+  {
+    to: "/dashboard/whatsapp-guide",
+    label: "WhatsApp setup",
+    icon: MessageCircle,
+    exact: true,
+    emphasize: true,
+  },
 ] as const;
 
 function NavList({ onNavigate }: { onNavigate?: () => void }) {
@@ -60,7 +68,9 @@ function NavList({ onNavigate }: { onNavigate?: () => void }) {
                   : "text-ink-muted hover:bg-sidebar-accent/60 hover:text-sidebar-foreground",
             )}
           >
-            <Icon className={cn("h-4 w-4", emphasize ? "text-destructive" : active && "text-primary")} />
+            <Icon
+              className={cn("h-4 w-4", emphasize ? "text-destructive" : active && "text-primary")}
+            />
             {label}
           </Link>
         );
@@ -202,8 +212,8 @@ export function DashboardShell() {
         {!user && (
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-primary/30 bg-primary/10 px-4 py-2.5 text-sm">
             <span className="text-foreground">
-              <strong className="font-semibold">You're looking at sample data</strong> — this isn't a real
-              account.
+              <strong className="font-semibold">You're looking at sample data</strong> — this isn't
+              a real account.
             </span>
             <Link to="/signup" className="font-semibold text-primary hover:underline">
               Sign up to connect your own →
@@ -233,7 +243,9 @@ export function PageHeader({
       <div>
         {eyebrow && <p className="label-caps text-primary">{eyebrow}</p>}
         <h1 className="mt-1.5 text-2xl text-foreground sm:text-3xl">{title}</h1>
-        {description && <p className="mt-1.5 max-w-2xl text-sm text-muted-foreground">{description}</p>}
+        {description && (
+          <p className="mt-1.5 max-w-2xl text-sm text-muted-foreground">{description}</p>
+        )}
       </div>
       {actions && <div className="flex flex-wrap gap-2">{actions}</div>}
     </div>

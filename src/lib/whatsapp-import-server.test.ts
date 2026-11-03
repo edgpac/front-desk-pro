@@ -9,6 +9,7 @@ import {
   deleteWhatsAppImport,
   listWhatsAppImports,
   previewWhatsAppImport,
+  previewWhatsAppImportDeletion,
 } from "./whatsapp-import-server";
 
 // Same generic in-memory fake-table builder as communication-profile-
@@ -144,12 +145,12 @@ const TWO_PARTY_EXPORT = [
 ].join("\n");
 
 describe("computeImportContentHash", () => {
-  it("is deterministic for the same content", () => {
-    expect(computeImportContentHash("abc")).toBe(computeImportContentHash("abc"));
+  it("is deterministic for the same content", async () => {
+    expect(await computeImportContentHash("abc")).toBe(await computeImportContentHash("abc"));
   });
 
-  it("differs for different content", () => {
-    expect(computeImportContentHash("abc")).not.toBe(computeImportContentHash("xyz"));
+  it("differs for different content", async () => {
+    expect(await computeImportContentHash("abc")).not.toBe(await computeImportContentHash("xyz"));
   });
 });
 
@@ -189,7 +190,7 @@ describe("previewWhatsAppImport — read-only", () => {
   });
 
   it("detects an export that was already imported for this tenant", async () => {
-    const hash = computeImportContentHash(TWO_PARTY_EXPORT);
+    const hash = await computeImportContentHash(TWO_PARTY_EXPORT);
     const imports = fakeTable([{ id: "import-1", tenant_id: "tenant-A", content_hash: hash }]);
     const tenants = tenantsTableWithAliases(["Jane Owner"]);
     const client = fakeClient({ whatsapp_imports: imports, tenants });
@@ -199,7 +200,7 @@ describe("previewWhatsAppImport — read-only", () => {
   });
 
   it("does not consider another tenant's identical import a duplicate for this tenant", async () => {
-    const hash = computeImportContentHash(TWO_PARTY_EXPORT);
+    const hash = await computeImportContentHash(TWO_PARTY_EXPORT);
     const imports = fakeTable([{ id: "import-1", tenant_id: "tenant-B", content_hash: hash }]);
     const tenants = tenantsTableWithAliases(["Jane Owner"]);
     const client = fakeClient({ whatsapp_imports: imports, tenants });
@@ -267,7 +268,7 @@ describe("confirmWhatsAppImport — persistence", () => {
   });
 
   it("rejects a duplicate import for the same tenant before writing anything", async () => {
-    const hash = computeImportContentHash(TWO_PARTY_EXPORT);
+    const hash = await computeImportContentHash(TWO_PARTY_EXPORT);
     const imports = fakeTable([{ id: "import-1", tenant_id: "tenant-A", content_hash: hash }]);
     const messages = fakeTable([]);
     const tenants = tenantsTableWithAliases(["Jane Owner"]);
@@ -641,5 +642,63 @@ describe("deleteWhatsAppImport — deletion-disclosure policy", () => {
     await deleteWhatsAppImport(client, "tenant-A", "import-1");
     expect(imports.rows).toHaveLength(0);
     expect(messages.calls.some((c) => c.op === "delete")).toBe(false);
+  });
+});
+
+describe("previewWhatsAppImportDeletion — read-only, matches deleteWhatsAppImport's own disclosure exactly", () => {
+  it("reports the same affected versions deleteWhatsAppImport would, without deleting anything", async () => {
+    const imports = fakeTable([{ id: "import-1", tenant_id: "tenant-A" }]);
+    const messages = fakeTable([{ id: "own-1", import_id: "import-1" }]);
+    const versions = fakeTable([
+      {
+        tenant_id: "tenant-A",
+        version: 1,
+        profile_json: { toneAndStyle: strField("warm", "own-1") },
+      },
+    ]);
+    const client = fakeClient({
+      whatsapp_imports: imports,
+      whatsapp_import_messages: messages,
+      communication_profile_versions: versions,
+    });
+
+    const result = await previewWhatsAppImportDeletion(client, "tenant-A", "import-1");
+    expect(result.affectedProfileVersions).toEqual([1]);
+
+    // Nothing was actually touched — the import, its message, and the
+    // profile version are all still exactly there.
+    expect(imports.rows).toHaveLength(1);
+    expect(messages.rows).toHaveLength(1);
+    expect(versions.rows).toHaveLength(1);
+  });
+
+  it("refuses to preview another tenant's import", async () => {
+    const imports = fakeTable([{ id: "b1", tenant_id: "tenant-B" }]);
+    const messages = fakeTable([]);
+    const versions = fakeTable([]);
+    const client = fakeClient({
+      whatsapp_imports: imports,
+      whatsapp_import_messages: messages,
+      communication_profile_versions: versions,
+    });
+    await expect(previewWhatsAppImportDeletion(client, "tenant-A", "b1")).rejects.toThrow(
+      WhatsAppImportNotFoundError,
+    );
+  });
+
+  it("also fails closed on a malformed historical profile version, same as the real delete", async () => {
+    const imports = fakeTable([{ id: "import-1", tenant_id: "tenant-A" }]);
+    const messages = fakeTable([{ id: "own-1", import_id: "import-1" }]);
+    const versions = fakeTable([
+      { tenant_id: "tenant-A", version: 1, profile_json: { toneAndStyle: "malformed" } },
+    ]);
+    const client = fakeClient({
+      whatsapp_imports: imports,
+      whatsapp_import_messages: messages,
+      communication_profile_versions: versions,
+    });
+    await expect(previewWhatsAppImportDeletion(client, "tenant-A", "import-1")).rejects.toThrow(
+      UnverifiableProfileVersionError,
+    );
   });
 });

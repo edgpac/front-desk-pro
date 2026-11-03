@@ -1,6 +1,5 @@
 import { createServerFn, createServerOnlyFn } from "@tanstack/react-start";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { createHash } from "node:crypto";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import {
   parseWhatsAppExport,
@@ -62,7 +61,17 @@ async function getOwnerAliases(
     []) as string[];
 }
 
-export function computeImportContentHash(content: string): string {
+// Dynamic import, not a static top-level one — see
+// 0ede85e "fix: keep nodemailer out of dev client bundle" for the same
+// category of bug this avoids: a static `import ... from "node:crypto"`
+// here would be correctly stripped from the client bundle by the
+// production build's compiler, but `vite dev` serves modules more
+// literally and doesn't do that same split, so merely importing this
+// module (used only inside the createServerOnlyFn handlers below) would
+// crash any dev client page that so much as imports this file. Changes
+// nothing about when or how the hash is actually computed server-side.
+export async function computeImportContentHash(content: string): Promise<string> {
+  const { createHash } = await import("node:crypto");
   return createHash("sha256").update(content, "utf8").digest("hex");
 }
 
@@ -92,7 +101,7 @@ export const previewWhatsAppImport = createServerOnlyFn(
     content: string,
     options: ParseWhatsAppExportOptions = {},
   ): Promise<WhatsAppImportPreview> => {
-    const contentHash = computeImportContentHash(content);
+    const contentHash = await computeImportContentHash(content);
     const [{ data: existing, error: existingError }, ownerAliases] = await Promise.all([
       supabase
         .from("whatsapp_imports")
@@ -156,7 +165,7 @@ export const confirmWhatsAppImport = createServerOnlyFn(
     originalFilename: string | null,
     options: ParseWhatsAppExportOptions = {},
   ): Promise<ConfirmWhatsAppImportResult> => {
-    const contentHash = computeImportContentHash(content);
+    const contentHash = await computeImportContentHash(content);
 
     const { data: existing, error: existingError } = await supabase
       .from("whatsapp_imports")
@@ -320,6 +329,82 @@ export type DeleteWhatsAppImportResult = {
   affectedProfileVersions: number[];
 };
 
+// Shared by both the read-only preview below and the real delete, so
+// they can never disagree: computes which of this tenant's existing
+// profile versions cite one of THIS import's messages as evidence.
+// Confirms the import is tenant-owned first (in application code, not
+// relying on RLS alone), then validates every version's profile_json
+// against the same shape check its own write path already enforces
+// before trusting it for the citation check — a row that fails this
+// (malformed/unexpected data, from wherever) throws rather than being
+// silently counted as "not affected".
+async function computeAffectedProfileVersions(
+  supabase: Pick<SupabaseClient, "from">,
+  tenantId: string,
+  importId: string,
+): Promise<number[]> {
+  const { data: importRow, error: importError } = await supabase
+    .from("whatsapp_imports")
+    .select("id")
+    .eq("tenant_id", tenantId)
+    .eq("id", importId)
+    .maybeSingle();
+  if (importError) throw new Error(`Could not load the import: ${importError.message}`);
+  if (!importRow) throw new WhatsAppImportNotFoundError();
+
+  const { data: messageRows, error: messagesError } = await supabase
+    .from("whatsapp_import_messages")
+    .select("id")
+    .eq("import_id", importId);
+  if (messagesError)
+    throw new Error(`Could not inspect the import's messages: ${messagesError.message}`);
+  const messageIds = new Set(((messageRows ?? []) as Array<{ id: string }>).map((r) => r.id));
+
+  if (messageIds.size === 0) return [];
+
+  const { data: versionRows, error: versionsError } = await supabase
+    .from("communication_profile_versions")
+    .select("version, profile_json")
+    .eq("tenant_id", tenantId);
+  if (versionsError)
+    throw new Error(`Could not check existing profile versions: ${versionsError.message}`);
+
+  const affectedProfileVersions: number[] = [];
+  for (const row of (versionRows ?? []) as Array<{ version: number; profile_json: unknown }>) {
+    const shapeResult = validateCommunicationProfileShape(row.profile_json);
+    if (!shapeResult.ok) {
+      throw new UnverifiableProfileVersionError(row.version, shapeResult.errors);
+    }
+    if (evidenceCitesAnyMessage(shapeResult.value, messageIds)) {
+      affectedProfileVersions.push(row.version);
+    }
+  }
+  return affectedProfileVersions;
+}
+
+export type PreviewWhatsAppImportDeletionResult = {
+  affectedProfileVersions: number[];
+};
+
+// Read-only: lets the owner see which profile versions would be
+// disclosed as affected BEFORE they confirm a deletion, without
+// deleting anything. Exists specifically so the dashboard can show this
+// in a confirmation dialog rather than only after the fact.
+export const previewWhatsAppImportDeletion = createServerOnlyFn(
+  async (
+    supabase: Pick<SupabaseClient, "from">,
+    tenantId: string,
+    importId: string,
+  ): Promise<PreviewWhatsAppImportDeletionResult> => {
+    const affectedProfileVersions = await computeAffectedProfileVersions(
+      supabase,
+      tenantId,
+      importId,
+    );
+    return { affectedProfileVersions };
+  },
+);
+
 // Deletes an import and (via the migration's on delete cascade) every
 // message it owns. Tenant-scoped: the delete's own filter requires
 // tenant_id = tenantId, so a request for an id that exists but belongs
@@ -341,8 +426,9 @@ export type DeleteWhatsAppImportResult = {
 //     which of this tenant's EXISTING profile versions cite one of the
 //     about-to-be-deleted messages as evidence, and returns those
 //     version numbers — an explicit, structured disclosure rather than
-//     a silent gap. The versions themselves are left completely
-//     unmodified (point 1).
+//     a silent gap (the SAME computation previewWhatsAppImportDeletion
+//     exposes read-only, above). The versions themselves are left
+//     completely unmodified (point 1).
 //  4. Does NOT claim to purge platform-level database backups or any
 //     logging/observability pipeline that may have captured this
 //     content elsewhere — that is outside this function's (and this
@@ -360,52 +446,11 @@ export const deleteWhatsAppImport = createServerOnlyFn(
     tenantId: string,
     importId: string,
   ): Promise<DeleteWhatsAppImportResult> => {
-    // Confirmed tenant-owned FIRST, in application code — never relying
-    // on RLS alone to keep the message lookup below scoped to this
-    // tenant's own import (same "app code must also scope explicitly"
-    // posture as every other function in this integration).
-    const { data: importRow, error: importError } = await supabase
-      .from("whatsapp_imports")
-      .select("id")
-      .eq("tenant_id", tenantId)
-      .eq("id", importId)
-      .maybeSingle();
-    if (importError) throw new Error(`Could not load the import: ${importError.message}`);
-    if (!importRow) throw new WhatsAppImportNotFoundError();
-
-    const { data: messageRows, error: messagesError } = await supabase
-      .from("whatsapp_import_messages")
-      .select("id")
-      .eq("import_id", importId);
-    if (messagesError)
-      throw new Error(`Could not inspect the import's messages: ${messagesError.message}`);
-    const messageIds = new Set(((messageRows ?? []) as Array<{ id: string }>).map((r) => r.id));
-
-    const affectedProfileVersions: number[] = [];
-    if (messageIds.size > 0) {
-      const { data: versionRows, error: versionsError } = await supabase
-        .from("communication_profile_versions")
-        .select("version, profile_json")
-        .eq("tenant_id", tenantId);
-      if (versionsError)
-        throw new Error(`Could not check existing profile versions: ${versionsError.message}`);
-
-      // Every row is validated against the same shape check its own
-      // write path already enforces, BEFORE being trusted for the
-      // citation check below — a row that fails this (malformed/
-      // unexpected data, from wherever) stops the whole deletion rather
-      // than being silently counted as "not affected", which would be
-      // an incomplete disclosure masquerading as a complete one.
-      for (const row of (versionRows ?? []) as Array<{ version: number; profile_json: unknown }>) {
-        const shapeResult = validateCommunicationProfileShape(row.profile_json);
-        if (!shapeResult.ok) {
-          throw new UnverifiableProfileVersionError(row.version, shapeResult.errors);
-        }
-        if (evidenceCitesAnyMessage(shapeResult.value, messageIds)) {
-          affectedProfileVersions.push(row.version);
-        }
-      }
-    }
+    const affectedProfileVersions = await computeAffectedProfileVersions(
+      supabase,
+      tenantId,
+      importId,
+    );
 
     const { data, error } = await supabase
       .from("whatsapp_imports")
@@ -461,6 +506,14 @@ export const listMyWhatsAppImports = createServerFn({ method: "GET" })
   .handler(async ({ context }) => {
     const tenantId = await getTenantId(context.supabase, context.userId);
     return listWhatsAppImports(context.supabase, tenantId);
+  });
+
+export const previewMyWhatsAppImportDeletion = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .validator((input: { importId: string }) => input)
+  .handler(async ({ context, data }) => {
+    const tenantId = await getTenantId(context.supabase, context.userId);
+    return previewWhatsAppImportDeletion(context.supabase, tenantId, data.importId);
   });
 
 export const deleteMyWhatsAppImport = createServerFn({ method: "POST" })

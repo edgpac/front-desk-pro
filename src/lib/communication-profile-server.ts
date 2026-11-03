@@ -503,13 +503,12 @@ export type RecordCommunicationProfileDecisionInput = {
 // The core duplicate/conflicting-decision guard: reads for an existing
 // decision on this exact (tenantId, version) BEFORE inserting a new one,
 // and throws rather than silently allowing a second, possibly
-// contradictory decision for the same version. This is an APPLICATION-
-// LEVEL guard, not a database constraint — see the Phase 1 independent
-// review's own finding that communication_profile_decisions has no
-// unique(tenant_id, version) constraint. A race between two concurrent
-// calls could still both pass this check before either inserts; closing
-// that fully would need the schema change the Phase 1 review proposed,
-// which is NOT applied here (see this phase's final report).
+// contradictory decision for the same version. This pre-check alone is
+// only an application-level guard — a race between two concurrent calls
+// could still both pass it before either inserts — but the race is fully
+// closed by 0032's unique(tenant_id, version) constraint on
+// communication_profile_decisions, which the insert below relies on via
+// isUniqueViolation.
 export const recordCommunicationProfileDecision = createServerOnlyFn(
   async (
     supabase: Pick<SupabaseClient, "from">,
