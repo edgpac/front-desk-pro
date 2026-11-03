@@ -1,7 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
-import type { Tenant } from "@/lib/mock-data";
+import { SUPPORTED_CURRENCIES, type CurrencyCode, type Tenant } from "@/lib/mock-data";
 
 type TenantRow = {
   name: string;
@@ -12,7 +12,7 @@ type TenantRow = {
   address: string;
   area: string;
   hours: string;
-  currency: "USD" | "MXN" | "CAD";
+  currency: CurrencyCode;
   tax_rate: number;
   calendar_link: string;
   payment_terms: string;
@@ -78,7 +78,7 @@ export const updateMyTenant = createServerFn({ method: "POST" })
       address: string;
       area: string;
       hours: string;
-      currency: "USD" | "MXN" | "CAD";
+      currency: CurrencyCode;
       taxRate: number;
       calendarLink: string;
       paymentTerms: string;
@@ -94,6 +94,9 @@ export const updateMyTenant = createServerFn({ method: "POST" })
     }
     if (!Number.isFinite(data.serviceCallFee) || data.serviceCallFee < 0) {
       throw new Error("Service call fee must be a number of 0 or more.");
+    }
+    if (!SUPPORTED_CURRENCIES.some((c) => c.code === data.currency)) {
+      throw new Error(`Unsupported currency: ${data.currency}`);
     }
 
     const { error } = await context.supabase

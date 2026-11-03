@@ -106,10 +106,12 @@ export function getLeadPricingStatus(lead: {
   flagType?: Lead["flagType"];
   lineItems: Array<{ qty: number; rate: number }>;
 }): LeadPricingStatus {
-  if (lead.flagType === "pending_negotiated_price") return { priced: false, label: "Price pending" };
+  if (lead.flagType === "pending_negotiated_price")
+    return { priced: false, label: "Price pending" };
   if (lead.lineItems.length === 0) return { priced: false, label: "Not yet priced" };
   const amount = lineItemsTotal(lead.lineItems);
-  if (lead.flagType === "partially_priced") return { priced: true, amount, hasDeferredPortion: true };
+  if (lead.flagType === "partially_priced")
+    return { priced: true, amount, hasDeferredPortion: true };
   return { priced: true, amount };
 }
 
@@ -157,7 +159,13 @@ export const LEADS: Lead[] = [
       "Corroded drain valve on a 40-gal gas heater, roughly 11 years old by the label. Tank itself is not weeping — the leak is at the threaded fitting. Replace the valve and flush the tank; recommend quoting a full replacement as an option given the age.",
     confidence: "High",
     lineItems: [
-      { id: "a", description: "Drain valve replacement (brass, 3/4in)", qty: 1, unit: "job", rate: 165 },
+      {
+        id: "a",
+        description: "Drain valve replacement (brass, 3/4in)",
+        qty: 1,
+        unit: "job",
+        rate: 165,
+      },
       { id: "b", description: "Tank flush & sediment clear", qty: 1, unit: "job", rate: 95 },
       { id: "c", description: "Labor", qty: 1.5, unit: "hr", rate: 125 },
     ],
@@ -183,7 +191,13 @@ export const LEADS: Lead[] = [
       "Federal Pacific-era panel with a double-tapped 30A breaker feeding the dryer circuit. Tripping is a load/termination issue, not the appliance. Recommend dedicated 30A circuit; note the panel brand for a replacement conversation.",
     confidence: "Medium",
     lineItems: [
-      { id: "a", description: "Dedicated 30A dryer circuit, up to 25ft run", qty: 1, unit: "job", rate: 620 },
+      {
+        id: "a",
+        description: "Dedicated 30A dryer circuit, up to 25ft run",
+        qty: 1,
+        unit: "job",
+        rate: 620,
+      },
       { id: "b", description: "Breaker + materials", qty: 1, unit: "job", rate: 140 },
     ],
     followUps: [],
@@ -218,7 +232,9 @@ export const LEADS: Lead[] = [
     problem: "Need three outlets added in a garage workshop.",
     diagnosis: "Three 20A receptacles off an existing subpanel, surface conduit run.",
     confidence: "High",
-    lineItems: [{ id: "a", description: "20A receptacle, surface conduit", qty: 3, unit: "ea", rate: 210 }],
+    lineItems: [
+      { id: "a", description: "20A receptacle, surface conduit", qty: 3, unit: "ea", rate: 210 },
+    ],
     followUps: [],
   },
   {
@@ -272,7 +288,10 @@ export type PriceSheetRow = {
   aiNotes: string | null;
 };
 
-export function formatPrice(row: Pick<PriceSheetRow, "pricingType" | "priceMin" | "priceMax">, currency = "USD") {
+export function formatPrice(
+  row: Pick<PriceSheetRow, "pricingType" | "priceMin" | "priceMax">,
+  currency = "USD",
+) {
   if (row.pricingType === "hourly") return `${money(row.priceMin, currency)}/hr`;
   // Trust pricingType alone — a "flat" row always displays as a single price,
   // even if priceMax still holds a stale value from when it was last "range"
@@ -286,16 +305,146 @@ export function formatPrice(row: Pick<PriceSheetRow, "pricingType" | "priceMin" 
 }
 
 export const PRICE_SHEET: PriceSheetRow[] = [
-  { id: "p1", task: "Service call / diagnostic", category: "General", keywords: ["diagnostic", "service call"], pricingType: "flat", priceMin: 89, priceMax: 89, hours: 0.5, bundleable: true, materialsPolicy: "included", diagnosisFee: null, aiNotes: null },
-  { id: "p2", task: "Standard labor rate", category: "General", keywords: ["labor"], pricingType: "hourly", priceMin: 125, priceMax: 125, hours: 1, bundleable: false, materialsPolicy: "included", diagnosisFee: null, aiNotes: null },
-  { id: "p3", task: "After-hours labor rate", category: "General", keywords: ["after hours", "emergency", "labor"], pricingType: "hourly", priceMin: 185, priceMax: 185, hours: 1, bundleable: false, materialsPolicy: "included", diagnosisFee: null, aiNotes: null },
-  { id: "p4", task: "Drain clearing — kitchen line", category: "Drains", keywords: ["kitchen drain", "clog", "backed up"], pricingType: "flat", priceMin: 210, priceMax: 210, hours: 1, bundleable: false, materialsPolicy: "included", diagnosisFee: null, aiNotes: null },
-  { id: "p5", task: "Drain clearing — main line", category: "Drains", keywords: ["main line", "sewer", "backup"], pricingType: "range", priceMin: 325, priceMax: 650, hours: 2, bundleable: false, materialsPolicy: "included", diagnosisFee: null, aiNotes: null },
-  { id: "p6", task: "P-trap rebuild", category: "Drains", keywords: ["p-trap", "drips", "under sink"], pricingType: "flat", priceMin: 145, priceMax: 145, hours: 1, bundleable: false, materialsPolicy: "customer_pays_receipt", diagnosisFee: null, aiNotes: null },
-  { id: "p7", task: "Water heater — drain valve", category: "Water heaters", keywords: ["water heater", "drain valve", "dripping"], pricingType: "flat", priceMin: 165, priceMax: 165, hours: 1, bundleable: false, materialsPolicy: "included", diagnosisFee: null, aiNotes: null },
-  { id: "p8", task: "Water heater — 40gal replacement", category: "Water heaters", keywords: ["water heater", "replacement", "old heater"], pricingType: "range", priceMin: 1650, priceMax: 2200, hours: 3, bundleable: false, materialsPolicy: "confirmed_after_inspection", diagnosisFee: null, aiNotes: null },
-  { id: "p9", task: "Toilet reset with new wax ring", category: "Fixtures", keywords: ["toilet", "wax ring", "rocking"], pricingType: "flat", priceMin: 195, priceMax: 195, hours: 1, bundleable: false, materialsPolicy: "included", diagnosisFee: null, aiNotes: null },
-  { id: "p10", task: "Hose bibb repair", category: "Fixtures", keywords: ["hose bibb", "spigot", "outdoor faucet"], pricingType: "flat", priceMin: 135, priceMax: 135, hours: 1, bundleable: false, materialsPolicy: "included", diagnosisFee: null, aiNotes: null },
+  {
+    id: "p1",
+    task: "Service call / diagnostic",
+    category: "General",
+    keywords: ["diagnostic", "service call"],
+    pricingType: "flat",
+    priceMin: 89,
+    priceMax: 89,
+    hours: 0.5,
+    bundleable: true,
+    materialsPolicy: "included",
+    diagnosisFee: null,
+    aiNotes: null,
+  },
+  {
+    id: "p2",
+    task: "Standard labor rate",
+    category: "General",
+    keywords: ["labor"],
+    pricingType: "hourly",
+    priceMin: 125,
+    priceMax: 125,
+    hours: 1,
+    bundleable: false,
+    materialsPolicy: "included",
+    diagnosisFee: null,
+    aiNotes: null,
+  },
+  {
+    id: "p3",
+    task: "After-hours labor rate",
+    category: "General",
+    keywords: ["after hours", "emergency", "labor"],
+    pricingType: "hourly",
+    priceMin: 185,
+    priceMax: 185,
+    hours: 1,
+    bundleable: false,
+    materialsPolicy: "included",
+    diagnosisFee: null,
+    aiNotes: null,
+  },
+  {
+    id: "p4",
+    task: "Drain clearing — kitchen line",
+    category: "Drains",
+    keywords: ["kitchen drain", "clog", "backed up"],
+    pricingType: "flat",
+    priceMin: 210,
+    priceMax: 210,
+    hours: 1,
+    bundleable: false,
+    materialsPolicy: "included",
+    diagnosisFee: null,
+    aiNotes: null,
+  },
+  {
+    id: "p5",
+    task: "Drain clearing — main line",
+    category: "Drains",
+    keywords: ["main line", "sewer", "backup"],
+    pricingType: "range",
+    priceMin: 325,
+    priceMax: 650,
+    hours: 2,
+    bundleable: false,
+    materialsPolicy: "included",
+    diagnosisFee: null,
+    aiNotes: null,
+  },
+  {
+    id: "p6",
+    task: "P-trap rebuild",
+    category: "Drains",
+    keywords: ["p-trap", "drips", "under sink"],
+    pricingType: "flat",
+    priceMin: 145,
+    priceMax: 145,
+    hours: 1,
+    bundleable: false,
+    materialsPolicy: "customer_pays_receipt",
+    diagnosisFee: null,
+    aiNotes: null,
+  },
+  {
+    id: "p7",
+    task: "Water heater — drain valve",
+    category: "Water heaters",
+    keywords: ["water heater", "drain valve", "dripping"],
+    pricingType: "flat",
+    priceMin: 165,
+    priceMax: 165,
+    hours: 1,
+    bundleable: false,
+    materialsPolicy: "included",
+    diagnosisFee: null,
+    aiNotes: null,
+  },
+  {
+    id: "p8",
+    task: "Water heater — 40gal replacement",
+    category: "Water heaters",
+    keywords: ["water heater", "replacement", "old heater"],
+    pricingType: "range",
+    priceMin: 1650,
+    priceMax: 2200,
+    hours: 3,
+    bundleable: false,
+    materialsPolicy: "confirmed_after_inspection",
+    diagnosisFee: null,
+    aiNotes: null,
+  },
+  {
+    id: "p9",
+    task: "Toilet reset with new wax ring",
+    category: "Fixtures",
+    keywords: ["toilet", "wax ring", "rocking"],
+    pricingType: "flat",
+    priceMin: 195,
+    priceMax: 195,
+    hours: 1,
+    bundleable: false,
+    materialsPolicy: "included",
+    diagnosisFee: null,
+    aiNotes: null,
+  },
+  {
+    id: "p10",
+    task: "Hose bibb repair",
+    category: "Fixtures",
+    keywords: ["hose bibb", "spigot", "outdoor faucet"],
+    pricingType: "flat",
+    priceMin: 135,
+    priceMax: 135,
+    hours: 1,
+    bundleable: false,
+    materialsPolicy: "included",
+    diagnosisFee: null,
+    aiNotes: null,
+  },
 ];
 
 export const FUNNEL = [
@@ -322,6 +471,27 @@ export const INVOICES = [
   { id: "INV-0971", date: "May 1, 2026", amount: "$8.00", plan: "Solo — monthly" },
 ];
 
+// Single source of truth for which currencies a tenant can bill in —
+// imported wherever the choice needs validating (tenant-server.ts) or
+// rendering (the business-settings dropdown), so the two can't drift
+// apart. money()/formatPrice() below are already currency-agnostic
+// (Intl.NumberFormat with a currency code, not a hardcoded "$"), so
+// adding a currency here is genuinely just adding a row — nothing else
+// in the codebase branches on a specific currency code (verified by
+// grep before adding this).
+export const SUPPORTED_CURRENCIES = [
+  { code: "USD", label: "US Dollar" },
+  { code: "MXN", label: "Mexican Peso" },
+  { code: "CAD", label: "Canadian Dollar" },
+  { code: "EUR", label: "Euro" },
+  { code: "GBP", label: "British Pound" },
+  { code: "AUD", label: "Australian Dollar" },
+  { code: "BRL", label: "Brazilian Real" },
+  { code: "COP", label: "Colombian Peso" },
+] as const;
+
+export type CurrencyCode = (typeof SUPPORTED_CURRENCIES)[number]["code"];
+
 export type Tenant = {
   name: string;
   slug: string;
@@ -332,7 +502,7 @@ export type Tenant = {
   hours: string;
   trade: string;
   brandColor: string;
-  currency: "USD" | "MXN" | "CAD";
+  currency: CurrencyCode;
   calendarLink: string;
   paymentTerms: string;
   warrantyTerms: string;

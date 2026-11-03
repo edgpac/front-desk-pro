@@ -9,13 +9,25 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/lib/use-auth";
 import { getMyTenant, updateMyTenant } from "@/lib/tenant-server";
-import { TENANT, type Tenant } from "@/lib/mock-data";
+import { listMyPriceSheet, saveMyPriceSheet } from "@/lib/price-sheet-server";
+import {
+  SUPPORTED_CURRENCIES,
+  TENANT,
+  type CurrencyCode,
+  type PriceSheetRow,
+  type Tenant,
+} from "@/lib/mock-data";
+import {
+  applyConversionToPriceSheet,
+  buildPriceSheetConversionPreview,
+  convertLaborRateAndFee,
+  isValidConversionRate,
+  type PriceConversionPreviewItem,
+} from "@/lib/price-sheet-currency-conversion";
 
 export const Route = createFileRoute("/dashboard/settings/business")({
   component: BusinessSettings,
 });
-
-const CURRENCIES: Tenant["currency"][] = ["USD", "MXN", "CAD"];
 
 // "trade" and "warrantyTerms" are deliberately NOT required — neither has
 // a natural equivalent for every service business (a consultant or a
@@ -38,6 +50,12 @@ const REQUIRED_FIELDS: (keyof Tenant)[] = [
 function BusinessSettings() {
   const { user, loading: authLoading } = useAuth();
   const [form, setForm] = useState<Tenant>({ ...TENANT });
+  // The currency actually persisted as of the last load/save — distinct
+  // from form.currency (the in-progress dropdown selection) specifically
+  // so the conversion panel below only appears once the owner has
+  // picked a DIFFERENT currency than what's saved, and so converting
+  // never has to guess which value was "before".
+  const [savedCurrency, setSavedCurrency] = useState<CurrencyCode>(TENANT.currency);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
@@ -45,13 +63,17 @@ function BusinessSettings() {
     if (authLoading) return;
     if (!user) {
       setForm({ ...TENANT });
+      setSavedCurrency(TENANT.currency);
       setLoading(false);
       return;
     }
     let active = true;
     getMyTenant()
       .then((tenant) => {
-        if (active) setForm(tenant);
+        if (active) {
+          setForm(tenant);
+          setSavedCurrency(tenant.currency);
+        }
       })
       .catch((err) => {
         toast.error(err instanceof Error ? err.message : "Could not load business settings.");
@@ -69,9 +91,13 @@ function BusinessSettings() {
   }
 
   const missing = REQUIRED_FIELDS.filter((key) => !String(form[key] ?? "").trim());
-  const taxIsValid = form.taxRate !== null && form.taxRate !== undefined && !Number.isNaN(form.taxRate);
+  const taxIsValid =
+    form.taxRate !== null && form.taxRate !== undefined && !Number.isNaN(form.taxRate);
   const ratesAreValid =
-    Number.isFinite(form.laborRate) && form.laborRate >= 0 && Number.isFinite(form.serviceCallFee) && form.serviceCallFee >= 0;
+    Number.isFinite(form.laborRate) &&
+    form.laborRate >= 0 &&
+    Number.isFinite(form.serviceCallFee) &&
+    form.serviceCallFee >= 0;
   const canSave = missing.length === 0 && taxIsValid && ratesAreValid && !saving;
 
   async function handleSave(e: React.FormEvent) {
@@ -102,6 +128,7 @@ function BusinessSettings() {
           serviceCallFeeMode: form.serviceCallFeeMode,
         },
       });
+      setSavedCurrency(form.currency);
       toast.success("Saved");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Could not save business settings.");
@@ -178,13 +205,33 @@ function BusinessSettings() {
               className="mt-1.5 h-10 w-full rounded-sm border border-border-strong bg-background px-3 text-sm"
               required
             >
-              {CURRENCIES.map((c) => (
-                <option key={c} value={c}>
-                  {c}
+              {SUPPORTED_CURRENCIES.map((c) => (
+                <option key={c.code} value={c.code}>
+                  {c.code} — {c.label}
                 </option>
               ))}
             </select>
+            <p className="mt-1.5 text-xs text-muted-foreground">
+              Changing this only relabels your existing prices — it does not convert them. Use
+              &quot;Convert my price sheet&quot; below if your prices were set in a different
+              currency.
+            </p>
           </Field>
+
+          {user && form.currency !== savedCurrency && (
+            <div className="sm:col-span-2">
+              <CurrencyConversionPanel
+                fromCurrency={savedCurrency}
+                toCurrency={form.currency}
+                onApplied={({ laborRate, serviceCallFee }) => {
+                  setSavedCurrency(form.currency);
+                  setForm((f) => ({ ...f, laborRate, serviceCallFee }));
+                }}
+                onCancel={() => set("currency", savedCurrency)}
+              />
+            </div>
+          )}
+
           <Field label="Sales tax rate (%)" required>
             <Input
               type="number"
@@ -205,7 +252,8 @@ function BusinessSettings() {
               required
             />
             <span className="mt-1.5 block text-xs text-muted-foreground">
-              Your existing Cal.com or Calendly link — bookings open here pre-filled with the job details.
+              Your existing Cal.com or Calendly link — bookings open here pre-filled with the job
+              details.
             </span>
           </Field>
 
@@ -242,7 +290,9 @@ function BusinessSettings() {
           <Field label="Service call / diagnostic fee">
             <select
               value={form.serviceCallFeeMode}
-              onChange={(e) => set("serviceCallFeeMode", e.target.value as Tenant["serviceCallFeeMode"])}
+              onChange={(e) =>
+                set("serviceCallFeeMode", e.target.value as Tenant["serviceCallFeeMode"])
+              }
               className="h-10 w-full rounded-sm border border-border-strong bg-background px-2 text-sm"
             >
               <option value="fixed">Fixed price</option>
@@ -264,8 +314,8 @@ function BusinessSettings() {
               </>
             ) : (
               <span className="mt-1.5 block text-xs text-muted-foreground">
-                The service-call/diagnostic fee is confirmed with the customer when scheduling. No fixed amount
-                will be shown in estimates.
+                The service-call/diagnostic fee is confirmed with the customer when scheduling. No
+                fixed amount will be shown in estimates.
               </span>
             )}
           </Field>
@@ -296,6 +346,210 @@ function BusinessSettings() {
           </div>
         </form>
       </Panel>
+    </div>
+  );
+}
+
+// Only shown once the owner has picked a different currency than what's
+// saved (see the parent's form.currency !== savedCurrency check) —
+// never appears on its own, and never runs automatically. Loads the
+// current price sheet + rates fresh on mount so the preview always
+// reflects what's actually saved right now, not stale form state.
+function CurrencyConversionPanel({
+  fromCurrency,
+  toCurrency,
+  onApplied,
+  onCancel,
+}: {
+  fromCurrency: CurrencyCode;
+  toCurrency: CurrencyCode;
+  onApplied: (result: { laborRate: number; serviceCallFee: number }) => void;
+  onCancel: () => void;
+}) {
+  const [rateInput, setRateInput] = useState("");
+  const [items, setItems] = useState<PriceSheetRow[] | null>(null);
+  const [laborRate, setLaborRate] = useState<number | null>(null);
+  const [serviceCallFee, setServiceCallFee] = useState<number | null>(null);
+  const [loadingItems, setLoadingItems] = useState(true);
+  const [applying, setApplying] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    Promise.all([listMyPriceSheet(), getMyTenant()])
+      .then(([priceSheet, tenant]) => {
+        if (!active) return;
+        setItems(priceSheet);
+        setLaborRate(tenant.laborRate);
+        setServiceCallFee(tenant.serviceCallFee);
+      })
+      .catch((err) => {
+        toast.error(
+          err instanceof Error ? err.message : "Could not load your price sheet to convert.",
+        );
+      })
+      .finally(() => {
+        if (active) setLoadingItems(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const numericRate = Number(rateInput);
+  const rateValid = isValidConversionRate(numericRate);
+  const preview: PriceConversionPreviewItem[] | null =
+    items && rateValid ? buildPriceSheetConversionPreview(items, numericRate) : null;
+
+  async function handleApply() {
+    if (!items || !rateValid || laborRate === null || serviceCallFee === null) return;
+    setApplying(true);
+    try {
+      const convertedItems = applyConversionToPriceSheet(items, numericRate);
+      await saveMyPriceSheet({ data: { items: convertedItems } });
+
+      const converted = convertLaborRateAndFee(laborRate, serviceCallFee, numericRate);
+      // Re-fetch the currently-saved tenant right before writing, so this
+      // only ever touches currency + rates — any other field the owner
+      // might be mid-editing in the draft form is never overwritten.
+      const current = await getMyTenant();
+      await updateMyTenant({
+        data: {
+          name: current.name,
+          trade: current.trade,
+          phone: current.phone,
+          email: current.email,
+          address: current.address,
+          area: current.area,
+          hours: current.hours,
+          currency: toCurrency,
+          taxRate: current.taxRate,
+          calendarLink: current.calendarLink,
+          paymentTerms: current.paymentTerms,
+          warrantyTerms: current.warrantyTerms,
+          laborRate: converted.laborRate,
+          serviceCallFee: converted.serviceCallFee,
+          serviceCallFeeMode: current.serviceCallFeeMode,
+        },
+      });
+
+      toast.success(
+        `Converted ${convertedItems.length} price sheet item${convertedItems.length === 1 ? "" : "s"} and your rates to ${toCurrency}.`,
+      );
+      onApplied(converted);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not convert your price sheet.");
+    } finally {
+      setApplying(false);
+    }
+  }
+
+  return (
+    <div className="border border-primary/35 bg-primary/5 p-4">
+      <p className="label-caps text-primary">
+        Convert price sheet: {fromCurrency} → {toCurrency}
+      </p>
+      <p className="mt-1.5 text-xs text-muted-foreground">
+        This updates every price sheet item, your labor rate, and your service call fee — nothing
+        changes until you review the preview below and click Apply. Nothing runs automatically or on
+        a schedule; you decide when (and whether) to do this again.
+      </p>
+
+      {loadingItems ? (
+        <p className="mt-3 text-sm text-muted-foreground">Loading your price sheet…</p>
+      ) : (
+        <>
+          <label className="mt-3 block max-w-xs text-sm">
+            <span className="label-caps text-muted-foreground">
+              Exchange rate (1 {fromCurrency} = ? {toCurrency})
+            </span>
+            <Input
+              type="number"
+              min={0}
+              step="0.0001"
+              value={rateInput}
+              onChange={(e) => setRateInput(e.target.value)}
+              placeholder="e.g. 18.69"
+              className="mt-1.5"
+            />
+          </label>
+
+          {rateInput && !rateValid && (
+            <p className="mt-1.5 text-xs text-destructive">Enter a rate greater than 0.</p>
+          )}
+
+          {preview && (
+            <div className="mt-3 max-h-64 overflow-y-auto border border-border">
+              <table className="w-full text-sm">
+                <thead className="sticky top-0 bg-muted text-xs text-muted-foreground">
+                  <tr>
+                    <th className="px-2 py-1.5 text-left">Item</th>
+                    <th className="px-2 py-1.5 text-right">Current</th>
+                    <th className="px-2 py-1.5 text-right">New</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {preview.map((p) => (
+                    <tr key={p.id}>
+                      <td className="px-2 py-1.5">{p.task}</td>
+                      <td className="px-2 py-1.5 text-right text-muted-foreground">
+                        {p.currentPriceMin === p.currentPriceMax
+                          ? p.currentPriceMin
+                          : `${p.currentPriceMin}–${p.currentPriceMax}`}
+                      </td>
+                      <td className="px-2 py-1.5 text-right font-semibold text-foreground">
+                        {p.newPriceMin === p.newPriceMax
+                          ? p.newPriceMin
+                          : `${p.newPriceMin}–${p.newPriceMax}`}
+                      </td>
+                    </tr>
+                  ))}
+                  {laborRate !== null && serviceCallFee !== null && (
+                    <>
+                      <tr>
+                        <td className="px-2 py-1.5">Labor rate</td>
+                        <td className="px-2 py-1.5 text-right text-muted-foreground">
+                          {laborRate}
+                        </td>
+                        <td className="px-2 py-1.5 text-right font-semibold text-foreground">
+                          {convertLaborRateAndFee(laborRate, serviceCallFee, numericRate).laborRate}
+                        </td>
+                      </tr>
+                      <tr>
+                        <td className="px-2 py-1.5">Service call fee</td>
+                        <td className="px-2 py-1.5 text-right text-muted-foreground">
+                          {serviceCallFee}
+                        </td>
+                        <td className="px-2 py-1.5 text-right font-semibold text-foreground">
+                          {
+                            convertLaborRateAndFee(laborRate, serviceCallFee, numericRate)
+                              .serviceCallFee
+                          }
+                        </td>
+                      </tr>
+                    </>
+                  )}
+                  {preview.length === 0 && (
+                    <tr>
+                      <td colSpan={3} className="px-2 py-3 text-center text-muted-foreground">
+                        No price sheet items to convert yet.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <div className="mt-3 flex gap-2">
+            <Button type="button" onClick={handleApply} disabled={!rateValid || applying}>
+              {applying ? "Converting…" : "Apply conversion"}
+            </Button>
+            <Button type="button" variant="outline" onClick={onCancel} disabled={applying}>
+              Cancel
+            </Button>
+          </div>
+        </>
+      )}
     </div>
   );
 }
