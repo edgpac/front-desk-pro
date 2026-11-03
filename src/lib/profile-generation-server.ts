@@ -370,13 +370,19 @@ export const runProfileGeneration = createServerOnlyFn(
 
 // The only production AI-calling path — reuses estimate-server.ts's
 // existing callClaude (same ANTHROPIC_API_KEY, same endpoint, same
-// error handling) rather than duplicating a second HTTP client. Never
-// called by any test in this phase, and nothing in this phase's scope
-// (no dashboard UI) invokes it in practice either — included so the
-// createServerFn wrapper below is complete, not so it runs anywhere yet.
+// error handling) rather than duplicating a second HTTP client.
+//
+// Uses the same model every other AI call in this codebase uses
+// (estimate-server.ts x5, price-sheet-server.ts x2) rather than a
+// different, Opus-tier model this one call used previously — that
+// earlier choice was never exercised against a real API call before
+// shipping, and a real production attempt failed outright, almost
+// certainly because that specific dated model snapshot is no longer
+// being served. This matches a model string already proven live and
+// working in this exact deployment, not a guess at a newer one.
 async function callProfileGenerationAi(prompt: string): Promise<string> {
   const response = await callClaude({
-    model: "claude-opus-4-1-20250805",
+    model: "claude-haiku-4-5-20251001",
     max_tokens: 4096,
     messages: [{ role: "user", content: prompt }],
   });
