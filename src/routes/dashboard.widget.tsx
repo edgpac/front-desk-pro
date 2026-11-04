@@ -109,7 +109,18 @@ function WidgetPage() {
     <div className="space-y-6 p-6 lg:p-10">
       <PageHeader eyebrow="Widget & link" title="Two ways in, same flow both ways" />
 
-      <Panel title="Your URL">
+      <Panel
+        title="Your URL"
+        aside={
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => copyText(menuLink(tenant.slug), "Link copied")}
+          >
+            <Copy className="mr-2 h-3.5 w-3.5" /> Copy
+          </Button>
+        }
+      >
         <p className="text-sm text-muted-foreground">
           This is the part of every link below that&apos;s actually yours — your embedded widget,
           shareable link, QR code, and any link JIR Chat sends a customer all use it. Make it your
