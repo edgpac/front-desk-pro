@@ -24,6 +24,7 @@ import { Route as ResetPasswordRouteImport } from './routes/reset-password'
 import { Route as SignupRouteImport } from './routes/signup'
 import { Route as SimulationRouteImport } from './routes/simulation'
 import { Route as TermsRouteImport } from './routes/terms'
+import { Route as ApiPublicMenuRouteImport } from './routes/api.public-menu'
 import { Route as DashboardIndexRouteImport } from './routes/dashboard.index'
 import { Route as DashboardAnalyticsRouteImport } from './routes/dashboard.analytics'
 import { Route as DashboardJirChatRouteImport } from './routes/dashboard.jir-chat'
@@ -122,6 +123,11 @@ const SimulationRoute = SimulationRouteImport.update({
 const TermsRoute = TermsRouteImport.update({
   id: '/terms',
   path: '/terms',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiPublicMenuRoute = ApiPublicMenuRouteImport.update({
+  id: '/api/public-menu',
+  path: '/api/public-menu',
   getParentRoute: () => rootRouteImport,
 } as any)
 const DashboardIndexRoute = DashboardIndexRouteImport.update({
@@ -266,6 +272,7 @@ export interface FileRoutesByFullPath {
   '/signup': typeof SignupRoute
   '/simulation': typeof SimulationRoute
   '/terms': typeof TermsRoute
+  '/api/public-menu': typeof ApiPublicMenuRoute
   '/dashboard/analytics': typeof DashboardAnalyticsRoute
   '/dashboard/jir-chat': typeof DashboardJirChatRoute
   '/dashboard/leads': typeof DashboardLeadsRouteWithChildren
@@ -305,6 +312,7 @@ export interface FileRoutesByTo {
   '/signup': typeof SignupRoute
   '/simulation': typeof SimulationRoute
   '/terms': typeof TermsRoute
+  '/api/public-menu': typeof ApiPublicMenuRoute
   '/dashboard/analytics': typeof DashboardAnalyticsRoute
   '/dashboard/jir-chat': typeof DashboardJirChatRoute
   '/dashboard/price-sheet': typeof DashboardPriceSheetRoute
@@ -345,6 +353,7 @@ export interface FileRoutesById {
   '/signup': typeof SignupRoute
   '/simulation': typeof SimulationRoute
   '/terms': typeof TermsRoute
+  '/api/public-menu': typeof ApiPublicMenuRoute
   '/dashboard/analytics': typeof DashboardAnalyticsRoute
   '/dashboard/jir-chat': typeof DashboardJirChatRoute
   '/dashboard/leads': typeof DashboardLeadsRouteWithChildren
@@ -388,6 +397,7 @@ export interface FileRouteTypes {
     | '/signup'
     | '/simulation'
     | '/terms'
+    | '/api/public-menu'
     | '/dashboard/analytics'
     | '/dashboard/jir-chat'
     | '/dashboard/leads'
@@ -427,6 +437,7 @@ export interface FileRouteTypes {
     | '/signup'
     | '/simulation'
     | '/terms'
+    | '/api/public-menu'
     | '/dashboard/analytics'
     | '/dashboard/jir-chat'
     | '/dashboard/price-sheet'
@@ -466,6 +477,7 @@ export interface FileRouteTypes {
     | '/signup'
     | '/simulation'
     | '/terms'
+    | '/api/public-menu'
     | '/dashboard/analytics'
     | '/dashboard/jir-chat'
     | '/dashboard/leads'
@@ -508,6 +520,7 @@ export interface RootRouteChildren {
   SignupRoute: typeof SignupRoute
   SimulationRoute: typeof SimulationRoute
   TermsRoute: typeof TermsRoute
+  ApiPublicMenuRoute: typeof ApiPublicMenuRoute
   MenuSlugRoute: typeof MenuSlugRoute
   QuoteSlugRoute: typeof QuoteSlugRoute
   WidgetSlugRoute: typeof WidgetSlugRoute
@@ -621,6 +634,13 @@ declare module '@tanstack/react-router' {
       path: '/terms'
       fullPath: '/terms'
       preLoaderRoute: typeof TermsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/public-menu': {
+      id: '/api/public-menu'
+      path: '/api/public-menu'
+      fullPath: '/api/public-menu'
+      preLoaderRoute: typeof ApiPublicMenuRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/dashboard/': {
@@ -886,6 +906,7 @@ const rootRouteChildren: RootRouteChildren = {
   SignupRoute: SignupRoute,
   SimulationRoute: SimulationRoute,
   TermsRoute: TermsRoute,
+  ApiPublicMenuRoute: ApiPublicMenuRoute,
   MenuSlugRoute: MenuSlugRoute,
   QuoteSlugRoute: QuoteSlugRoute,
   WidgetSlugRoute: WidgetSlugRoute,
