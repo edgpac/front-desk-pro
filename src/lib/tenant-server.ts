@@ -277,3 +277,68 @@ export const getMyWhatsAppOwnerAliases = createServerFn({ method: "GET" })
   .handler(async ({ context }) =>
     performGetMyWhatsAppOwnerAliases(context.supabase, context.userId),
   );
+
+// tenants.slug is the identifier every customer-facing link
+// (menuLink/quoteLink in mock-data.ts) and the embeddable widget
+// snippet (embedSnippet) are built from — the ONLY part of those links
+// a tenant ever actually sees or shares, since the rest of each URL is
+// fixed. Previously set once (at signup) and never user-editable
+// anywhere, which is the real problem this closes: a slug generated
+// from something incidental (a social handle used at signup, say)
+// stays stuck in every quote/menu link and every AI-sent WhatsApp
+// message forever, for every tenant, not just one.
+export const MIN_TENANT_SLUG_LENGTH = 3;
+export const MAX_TENANT_SLUG_LENGTH = 60;
+const TENANT_SLUG_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+
+export function validateTenantSlug(slug: unknown): string {
+  if (typeof slug !== "string") throw new Error("Slug must be text.");
+  const trimmed = slug.trim().toLowerCase();
+  if (trimmed.length < MIN_TENANT_SLUG_LENGTH || trimmed.length > MAX_TENANT_SLUG_LENGTH) {
+    throw new Error(
+      `Slug must be between ${MIN_TENANT_SLUG_LENGTH} and ${MAX_TENANT_SLUG_LENGTH} characters.`,
+    );
+  }
+  if (!TENANT_SLUG_PATTERN.test(trimmed)) {
+    throw new Error(
+      "Slug can only contain lowercase letters, numbers, and single hyphens between words (e.g. cabos-handyman) — no spaces, no leading/trailing/double hyphens.",
+    );
+  }
+  return trimmed;
+}
+
+const TENANT_SLUG_UNIQUE_VIOLATION = "23505";
+function isSlugUniqueViolation(error: { code?: string } | null | undefined): boolean {
+  return error?.code === TENANT_SLUG_UNIQUE_VIOLATION;
+}
+
+export class TenantSlugTakenError extends Error {
+  constructor() {
+    super("That URL is already in use by another business. Please choose a different one.");
+    this.name = "TenantSlugTakenError";
+  }
+}
+
+export async function performUpdateMyTenantSlug(
+  supabase: Pick<SupabaseClient, "from">,
+  userId: string,
+  slug: unknown,
+): Promise<{ slug: string }> {
+  const validated = validateTenantSlug(slug);
+  const { error } = await supabase
+    .from("tenants")
+    .update({ slug: validated })
+    .eq("user_id", userId);
+  if (error) {
+    if (isSlugUniqueViolation(error)) throw new TenantSlugTakenError();
+    throw new Error(`Could not update your URL: ${error.message}`);
+  }
+  return { slug: validated };
+}
+
+export const updateMyTenantSlug = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .validator((input: { slug: string }) => input)
+  .handler(async ({ context, data }) =>
+    performUpdateMyTenantSlug(context.supabase, context.userId, data.slug),
+  );

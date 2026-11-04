@@ -4,9 +4,14 @@ import {
   performUpdateMyGreetingSettings,
   performUpdateMyWhatsAppOwnerAliases,
   performGetMyWhatsAppOwnerAliases,
+  performUpdateMyTenantSlug,
+  validateTenantSlug,
+  TenantSlugTakenError,
   MAX_CUSTOM_GREETING_LENGTH,
   MAX_WHATSAPP_OWNER_ALIASES,
   MAX_WHATSAPP_OWNER_ALIAS_LENGTH,
+  MIN_TENANT_SLUG_LENGTH,
+  MAX_TENANT_SLUG_LENGTH,
   type GreetingSettingsInput,
 } from "./tenant-server";
 
@@ -25,7 +30,7 @@ type UpdateCall = { table: string; patch: Record<string, unknown>; column: strin
 // scoping guarantee (always userId, never anything from `data`) is a
 // provable assertion, not an inspection.
 function fakeTenantsClient(
-  opts: { error?: { message: string }; readRow?: Record<string, unknown> } = {},
+  opts: { error?: { message: string; code?: string }; readRow?: Record<string, unknown> } = {},
 ) {
   const calls: UpdateCall[] = [];
   const client = {
@@ -321,6 +326,79 @@ describe("performGetMyWhatsAppOwnerAliases", () => {
     const { client } = fakeTenantsClient({ error: { message: "connection reset" } });
     await expect(performGetMyWhatsAppOwnerAliases(client, "user-A")).rejects.toThrow(
       /Could not load WhatsApp owner aliases: connection reset/,
+    );
+  });
+});
+
+describe("validateTenantSlug", () => {
+  it("accepts a clean, lowercase, hyphenated slug", () => {
+    expect(validateTenantSlug("cabos-handyman")).toBe("cabos-handyman");
+  });
+
+  it("trims and lowercases", () => {
+    expect(validateTenantSlug("  Cabos-Handyman  ")).toBe("cabos-handyman");
+  });
+
+  it("rejects spaces, underscores, and other punctuation", () => {
+    expect(() => validateTenantSlug("cabos handyman")).toThrow(/lowercase letters, numbers/);
+    expect(() => validateTenantSlug("cabos_handyman")).toThrow(/lowercase letters, numbers/);
+    expect(() => validateTenantSlug("cabos.handyman")).toThrow(/lowercase letters, numbers/);
+  });
+
+  it("rejects a leading, trailing, or doubled hyphen", () => {
+    expect(() => validateTenantSlug("-cabos")).toThrow(/lowercase letters, numbers/);
+    expect(() => validateTenantSlug("cabos-")).toThrow(/lowercase letters, numbers/);
+    expect(() => validateTenantSlug("cabos--handyman")).toThrow(/lowercase letters, numbers/);
+  });
+
+  it("enforces the length bounds", () => {
+    expect(() => validateTenantSlug("a".repeat(MIN_TENANT_SLUG_LENGTH - 1))).toThrow(/between/);
+    expect(validateTenantSlug("a".repeat(MIN_TENANT_SLUG_LENGTH))).toHaveLength(
+      MIN_TENANT_SLUG_LENGTH,
+    );
+    expect(validateTenantSlug("a".repeat(MAX_TENANT_SLUG_LENGTH))).toHaveLength(
+      MAX_TENANT_SLUG_LENGTH,
+    );
+    expect(() => validateTenantSlug("a".repeat(MAX_TENANT_SLUG_LENGTH + 1))).toThrow(/between/);
+  });
+
+  it("rejects a non-string value", () => {
+    expect(() => validateTenantSlug(42 as unknown as string)).toThrow(/must be text/);
+  });
+});
+
+describe("performUpdateMyTenantSlug", () => {
+  it("validates, normalizes, and saves the new slug, scoped to the caller's own userId", async () => {
+    const { client, calls } = fakeTenantsClient();
+    const result = await performUpdateMyTenantSlug(client, "user-A", "  Cabos-Handyman  ");
+    expect(result).toEqual({ slug: "cabos-handyman" });
+    expect(calls[0]).toEqual({
+      table: "tenants",
+      patch: { slug: "cabos-handyman" },
+      column: "user_id",
+      value: "user-A",
+    });
+  });
+
+  it("rejects an invalid slug before ever touching the database", async () => {
+    const { client, calls } = fakeTenantsClient();
+    await expect(performUpdateMyTenantSlug(client, "user-A", "not valid")).rejects.toThrow(
+      /lowercase letters, numbers/,
+    );
+    expect(calls).toHaveLength(0);
+  });
+
+  it("translates a unique-constraint violation into TenantSlugTakenError, not a raw database error", async () => {
+    const { client } = fakeTenantsClient({ error: { message: "duplicate key", code: "23505" } });
+    await expect(performUpdateMyTenantSlug(client, "user-A", "taken-slug")).rejects.toThrow(
+      TenantSlugTakenError,
+    );
+  });
+
+  it("propagates any other database error as a plain, non-TenantSlugTakenError Error", async () => {
+    const { client } = fakeTenantsClient({ error: { message: "connection reset" } });
+    await expect(performUpdateMyTenantSlug(client, "user-A", "cabos-handyman")).rejects.toThrow(
+      /Could not update your URL: connection reset/,
     );
   });
 });
