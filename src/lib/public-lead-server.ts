@@ -100,7 +100,7 @@ export const getTenantForQuote = createServerFn({ method: "GET" })
     const { data: items, error: itemsError } = await admin
       .from("price_sheet_items")
       .select(
-        "id, task, category, keywords, pricing_type, price_min, price_max, hours, bundleable, materials_policy, diagnosis_pricing_type, diagnosis_fee, ai_notes",
+        "id, task, category, keywords, pricing_type, price_min, price_max, hours, bundleable, materials_policy, diagnosis_pricing_type, diagnosis_fee, ai_notes, always_requires_inspection",
       )
       .eq("tenant_id", tenant.id)
       .order("sort_order", { ascending: true });
@@ -146,6 +146,7 @@ export const getTenantForQuote = createServerFn({ method: "GET" })
             }
           : null,
         aiNotes: item["ai_notes"] as string | null,
+        alwaysRequiresInspection: item["always_requires_inspection"] as boolean,
       })),
     };
   });
@@ -229,7 +230,7 @@ async function validateLineItemsAgainstPriceSheet(
   const { data: rows, error } = await admin
     .from("price_sheet_items")
     .select(
-      "id, task, category, keywords, pricing_type, price_min, price_max, hours, bundleable, materials_policy, diagnosis_pricing_type, diagnosis_fee, ai_notes",
+      "id, task, category, keywords, pricing_type, price_min, price_max, hours, bundleable, materials_policy, diagnosis_pricing_type, diagnosis_fee, ai_notes, always_requires_inspection",
     )
     .eq("tenant_id", tenantId);
   if (error) {
@@ -250,6 +251,7 @@ async function validateLineItemsAgainstPriceSheet(
       ? { pricingType: row.diagnosis_pricing_type, amount: row.diagnosis_fee }
       : null,
     aiNotes: row.ai_notes,
+    alwaysRequiresInspection: row.always_requires_inspection,
   }));
 
   for (const li of lineItems) {

@@ -91,6 +91,7 @@ function newRow(): PriceSheetRow {
     materialsPolicy: "included",
     diagnosisFee: null,
     aiNotes: null,
+    alwaysRequiresInspection: false,
   };
 }
 
@@ -219,6 +220,7 @@ function PriceSheetPage() {
             materialsPolicy: row.materialsPolicy,
             diagnosisFee: row.diagnosisFee,
             aiNotes: row.aiNotes,
+            alwaysRequiresInspection: row.alwaysRequiresInspection,
           })),
         },
       });
@@ -683,6 +685,27 @@ function PriceSheetPage() {
                 </label>
               </div>
               <div className="flex flex-wrap items-center gap-3">
+                <label className="flex items-center gap-2 text-xs text-foreground">
+                  <input
+                    type="checkbox"
+                    checked={row.alwaysRequiresInspection}
+                    onChange={(e) =>
+                      updateRow(row.id, { alwaysRequiresInspection: e.target.checked })
+                    }
+                    className="h-3.5 w-3.5"
+                    aria-label={`Always requires an in-person inspection for ${row.task}`}
+                  />
+                  Always requires an in-person look — never quote a price from a photo alone
+                </label>
+              </div>
+              {row.alwaysRequiresInspection && (
+                <p className="text-xs text-muted-foreground">
+                  The AI will never state a price for this service from a photo or description — it
+                  uses the diagnosis fee below if you&apos;ve set one, otherwise it tells the
+                  customer this needs an in-person look before pricing.
+                </p>
+              )}
+              <div className="flex flex-wrap items-center gap-3">
                 <label className="flex items-center gap-2 text-xs text-muted-foreground">
                   <input
                     type="checkbox"
@@ -736,7 +759,7 @@ function PriceSheetPage() {
                   <Input
                     value={row.aiNotes ?? ""}
                     onChange={(e) => updateRow(row.id, { aiNotes: e.target.value || null })}
-                    placeholder="e.g. Always needs an in-person look before quoting — don't estimate from a photo alone"
+                    placeholder="e.g. Customers usually mean a full unit replacement when they describe it this way"
                     className="text-xs"
                     aria-label={`Note for the AI about ${row.task}`}
                   />

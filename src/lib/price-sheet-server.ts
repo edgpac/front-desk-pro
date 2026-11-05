@@ -47,6 +47,7 @@ type PriceSheetItemRow = {
   diagnosis_pricing_type: "flat" | "hourly" | null;
   diagnosis_fee: number | null;
   ai_notes: string | null;
+  always_requires_inspection: boolean;
 };
 
 function toRow(item: PriceSheetItemRow): PriceSheetRow {
@@ -65,6 +66,7 @@ function toRow(item: PriceSheetItemRow): PriceSheetRow {
       ? { pricingType: item.diagnosis_pricing_type, amount: item.diagnosis_fee ?? 0 }
       : null,
     aiNotes: item.ai_notes,
+    alwaysRequiresInspection: item.always_requires_inspection,
   };
 }
 
@@ -81,7 +83,7 @@ export const listMyPriceSheet = createServerFn({ method: "GET" })
     const { data, error } = await context.supabase
       .from("price_sheet_items")
       .select(
-        "id, task, category, keywords, pricing_type, price_min, price_max, hours, bundleable, materials_policy, diagnosis_pricing_type, diagnosis_fee, ai_notes",
+        "id, task, category, keywords, pricing_type, price_min, price_max, hours, bundleable, materials_policy, diagnosis_pricing_type, diagnosis_fee, ai_notes, always_requires_inspection",
       )
       .eq("tenant_id", tenant.id)
       .order("sort_order", { ascending: true });
@@ -129,6 +131,7 @@ export const saveMyPriceSheet = createServerFn({ method: "POST" })
         materialsPolicy: MaterialsPolicy;
         diagnosisFee: { pricingType: "flat" | "hourly"; amount: number } | null;
         aiNotes: string | null;
+        alwaysRequiresInspection: boolean;
       }>;
     }) => input,
   )
@@ -168,6 +171,7 @@ export const saveMyPriceSheet = createServerFn({ method: "POST" })
         diagnosis_pricing_type: item.diagnosisFee?.pricingType ?? null,
         diagnosis_fee: item.diagnosisFee?.amount ?? null,
         ai_notes: item.aiNotes,
+        always_requires_inspection: item.alwaysRequiresInspection,
         sort_order: index,
       })),
     );
@@ -196,6 +200,10 @@ export type ExtractedPriceSheetItem = {
   // Same reasoning again — a printed price list is never an AI-usage note;
   // always null on extraction, the owner writes it by hand afterward.
   aiNotes: string | null;
+  // Same reasoning again — a printed price list never states this; always
+  // defaults to false on extraction, the owner opts individual items in by
+  // hand afterward.
+  alwaysRequiresInspection: boolean;
 };
 
 const VALID_PRICING_TYPES: PricingType[] = ["flat", "hourly", "range"];
@@ -280,6 +288,7 @@ function parseExtractedItems(raw: string): ExtractedPriceSheetItem[] {
       materialsPolicy: "included",
       diagnosisFee: null,
       aiNotes: null,
+      alwaysRequiresInspection: false,
     };
   });
 }

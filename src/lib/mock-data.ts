@@ -286,6 +286,12 @@ export type PriceSheetRow = {
   // one service — see estimate-server.ts's buildPrompt OWNER NOTES rules.
   // null means no note; never AI-inferred or AI-written.
   aiNotes: string | null;
+  // Business-configured, per row, never AI-inferred — this service must
+  // never receive an instant price from a photo/description alone, no
+  // matter how confident the AI is. Unlike aiNotes (advisory free text),
+  // this is enforced in code — see estimate-server.ts's buildPrompt ALWAYS
+  // INSPECT rules and validateQuoteAgainstPriceSheet.
+  alwaysRequiresInspection: boolean;
 };
 
 export function formatPrice(
@@ -318,6 +324,7 @@ export const PRICE_SHEET: PriceSheetRow[] = [
     materialsPolicy: "included",
     diagnosisFee: null,
     aiNotes: null,
+    alwaysRequiresInspection: false,
   },
   {
     id: "p2",
@@ -332,6 +339,7 @@ export const PRICE_SHEET: PriceSheetRow[] = [
     materialsPolicy: "included",
     diagnosisFee: null,
     aiNotes: null,
+    alwaysRequiresInspection: false,
   },
   {
     id: "p3",
@@ -346,6 +354,7 @@ export const PRICE_SHEET: PriceSheetRow[] = [
     materialsPolicy: "included",
     diagnosisFee: null,
     aiNotes: null,
+    alwaysRequiresInspection: false,
   },
   {
     id: "p4",
@@ -360,6 +369,7 @@ export const PRICE_SHEET: PriceSheetRow[] = [
     materialsPolicy: "included",
     diagnosisFee: null,
     aiNotes: null,
+    alwaysRequiresInspection: false,
   },
   {
     id: "p5",
@@ -374,6 +384,7 @@ export const PRICE_SHEET: PriceSheetRow[] = [
     materialsPolicy: "included",
     diagnosisFee: null,
     aiNotes: null,
+    alwaysRequiresInspection: false,
   },
   {
     id: "p6",
@@ -388,6 +399,7 @@ export const PRICE_SHEET: PriceSheetRow[] = [
     materialsPolicy: "customer_pays_receipt",
     diagnosisFee: null,
     aiNotes: null,
+    alwaysRequiresInspection: false,
   },
   {
     id: "p7",
@@ -402,6 +414,7 @@ export const PRICE_SHEET: PriceSheetRow[] = [
     materialsPolicy: "included",
     diagnosisFee: null,
     aiNotes: null,
+    alwaysRequiresInspection: false,
   },
   {
     id: "p8",
@@ -416,6 +429,7 @@ export const PRICE_SHEET: PriceSheetRow[] = [
     materialsPolicy: "confirmed_after_inspection",
     diagnosisFee: null,
     aiNotes: null,
+    alwaysRequiresInspection: false,
   },
   {
     id: "p9",
@@ -430,6 +444,7 @@ export const PRICE_SHEET: PriceSheetRow[] = [
     materialsPolicy: "included",
     diagnosisFee: null,
     aiNotes: null,
+    alwaysRequiresInspection: false,
   },
   {
     id: "p10",
@@ -444,6 +459,7 @@ export const PRICE_SHEET: PriceSheetRow[] = [
     materialsPolicy: "included",
     diagnosisFee: null,
     aiNotes: null,
+    alwaysRequiresInspection: false,
   },
 ];
 

@@ -22,6 +22,7 @@ function item(overrides: Partial<PriceSheetRow> = {}): PriceSheetRow {
     materialsPolicy: "included",
     diagnosisFee: null,
     aiNotes: null,
+    alwaysRequiresInspection: false,
     ...overrides,
   };
 }

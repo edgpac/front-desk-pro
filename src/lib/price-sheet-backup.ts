@@ -94,6 +94,9 @@ function validateBackupItem(raw: unknown, index: number): ItemValidationResult {
   if (typeof item["bundleable"] !== "boolean") {
     return fail("missing or invalid \"bundleable\" (expected true or false).");
   }
+  if (typeof item["alwaysRequiresInspection"] !== "boolean") {
+    return fail('missing or invalid "alwaysRequiresInspection" (expected true or false).');
+  }
   if (!VALID_MATERIALS_POLICIES.includes(item["materialsPolicy"] as MaterialsPolicy)) {
     return fail(`"materialsPolicy" must be one of: ${VALID_MATERIALS_POLICIES.join(", ")}.`);
   }
@@ -143,6 +146,7 @@ function validateBackupItem(raw: unknown, index: number): ItemValidationResult {
       materialsPolicy: item["materialsPolicy"] as MaterialsPolicy,
       diagnosisFee,
       aiNotes,
+      alwaysRequiresInspection: item["alwaysRequiresInspection"] as boolean,
     },
   };
 }

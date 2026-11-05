@@ -45,6 +45,7 @@ const priceSheet: PriceSheetItem[] = [
     materialsPolicy: "included",
     diagnosisFee: null,
     aiNotes: null,
+    alwaysRequiresInspection: false,
   },
   {
     id: "ps-2",
@@ -59,6 +60,7 @@ const priceSheet: PriceSheetItem[] = [
     materialsPolicy: "included",
     diagnosisFee: null,
     aiNotes: null,
+    alwaysRequiresInspection: false,
   },
   {
     id: "ps-3",
@@ -73,6 +75,7 @@ const priceSheet: PriceSheetItem[] = [
     materialsPolicy: "included",
     diagnosisFee: null,
     aiNotes: null,
+    alwaysRequiresInspection: false,
   },
 ];
 
@@ -404,6 +407,274 @@ describe("validateQuoteAgainstPriceSheet", () => {
     );
     expect(failures.some((f) => f.includes("materials_policy"))).toBe(true);
   });
+
+  // Phase 4A follow-up: a real production incident where the AI quoted a
+  // full price for a photo-only estimate on a service the owner had marked
+  // "always needs an in-person look, don't estimate from a photo alone" via
+  // the old free-text aiNotes field — which carries no code-level
+  // enforcement (see PriceSheetItem.alwaysRequiresInspection's own
+  // comment). These tests cover the structured, enforced replacement.
+  describe("ALWAYS INSPECT (alwaysRequiresInspection)", () => {
+    it("accepts a correctly deferred match — no diagnosis fee configured, priceSheetItemId: null, no lineItem", () => {
+      const inspectOnlyPriceSheet: PriceSheetItem[] = [
+        { ...priceSheet[0]!, id: "ps-paint", alwaysRequiresInspection: true, diagnosisFee: null },
+      ];
+      const failures = validateQuoteAgainstPriceSheet(
+        base({
+          matchedServices: [{ customerIssue: "paint touch-up", priceSheetItemId: null }],
+          lineItems: [],
+          diagnosis: "Paint touch-up — pricing confirmed after an in-person look.",
+        }),
+        inspectOnlyPriceSheet,
+        89,
+        "fixed",
+      );
+      expect(failures).toEqual([]);
+    });
+
+    it("flags a full-price lineItem for an ALWAYS INSPECT item with no diagnosis fee configured", () => {
+      const inspectOnlyPriceSheet: PriceSheetItem[] = [
+        { ...priceSheet[0]!, id: "ps-paint", alwaysRequiresInspection: true, diagnosisFee: null },
+      ];
+      const failures = validateQuoteAgainstPriceSheet(
+        base({
+          matchedServices: [{ customerIssue: "paint touch-up", priceSheetItemId: "ps-paint" }],
+          lineItems: [
+            { description: "Paint touch-up", detail: "", amount: 93, priceSheetItemId: "ps-paint" },
+          ],
+        }),
+        inspectOnlyPriceSheet,
+        89,
+        "fixed",
+      );
+      expect(
+        failures.some((f) => f.includes("ALWAYS INSPECT") && f.includes("priceSheetItemId: null")),
+      ).toBe(true);
+    });
+
+    it("accepts the item's own diagnosis-fee id when ALWAYS INSPECT is paired with a configured diagnosis fee", () => {
+      const inspectWithFeePriceSheet: PriceSheetItem[] = [
+        {
+          ...priceSheet[0]!,
+          id: "ps-paint",
+          alwaysRequiresInspection: true,
+          diagnosisFee: { pricingType: "flat", amount: 40 },
+        },
+      ];
+      const failures = validateQuoteAgainstPriceSheet(
+        base({
+          matchedServices: [
+            { customerIssue: "paint touch-up", priceSheetItemId: "ps-paint:diagnosis" },
+          ],
+          lineItems: [
+            {
+              description: "Paint touch-up — diagnosis visit",
+              detail: "",
+              amount: 40,
+              priceSheetItemId: "ps-paint:diagnosis",
+            },
+          ],
+        }),
+        inspectWithFeePriceSheet,
+        89,
+        "fixed",
+      );
+      expect(failures).toEqual([]);
+    });
+
+    it("flags the bare (full-price) id even when a diagnosis fee is configured — the :diagnosis id is required instead", () => {
+      const inspectWithFeePriceSheet: PriceSheetItem[] = [
+        {
+          ...priceSheet[0]!,
+          id: "ps-paint",
+          alwaysRequiresInspection: true,
+          diagnosisFee: { pricingType: "flat", amount: 40 },
+        },
+      ];
+      const failures = validateQuoteAgainstPriceSheet(
+        base({
+          matchedServices: [{ customerIssue: "paint touch-up", priceSheetItemId: "ps-paint" }],
+          lineItems: [
+            { description: "Paint touch-up", detail: "", amount: 93, priceSheetItemId: "ps-paint" },
+          ],
+        }),
+        inspectWithFeePriceSheet,
+        89,
+        "fixed",
+      );
+      expect(
+        failures.some((f) => f.includes("ALWAYS INSPECT") && f.includes("ps-paint:diagnosis")),
+      ).toBe(true);
+    });
+
+    it("an ALWAYS INSPECT violation on one item doesn't block a normal item priced correctly in the same response", () => {
+      const mixedPriceSheet: PriceSheetItem[] = [
+        priceSheet[0]!, // normal, alwaysRequiresInspection: false
+        {
+          ...priceSheet[1]!,
+          id: "ps-paint",
+          alwaysRequiresInspection: true,
+          diagnosisFee: null,
+          priceMin: 93,
+          priceMax: 93,
+        },
+      ];
+      const failures = validateQuoteAgainstPriceSheet(
+        base({
+          matchedServices: [
+            { customerIssue: "doorknob", priceSheetItemId: "ps-1" },
+            { customerIssue: "paint touch-up", priceSheetItemId: "ps-paint" },
+          ],
+          lineItems: [
+            { description: "Doorknob", detail: "", amount: 60, priceSheetItemId: "ps-1" },
+            { description: "Paint touch-up", detail: "", amount: 93, priceSheetItemId: "ps-paint" },
+          ],
+        }),
+        mixedPriceSheet,
+        89,
+        "fixed",
+      );
+      // The normal item is fine; only the ALWAYS INSPECT violation is flagged.
+      expect(failures.length).toBe(1);
+      expect(failures[0]).toContain("ALWAYS INSPECT");
+    });
+
+    it("accepts the dedicated :inspection sentinel id for a no-fee ALWAYS INSPECT item — the preferred, fee-free-signaling form", () => {
+      const inspectOnlyPriceSheet: PriceSheetItem[] = [
+        { ...priceSheet[0]!, id: "ps-paint", alwaysRequiresInspection: true, diagnosisFee: null },
+      ];
+      const failures = validateQuoteAgainstPriceSheet(
+        base({
+          matchedServices: [
+            { customerIssue: "paint touch-up", priceSheetItemId: "ps-paint:inspection" },
+          ],
+          lineItems: [],
+          diagnosis: "Got it — paint touch-up.",
+        }),
+        inspectOnlyPriceSheet,
+        89,
+        "fixed",
+      );
+      expect(failures).toEqual([]);
+    });
+
+    it("rejects the :inspection sentinel for an item that actually has a diagnosis fee configured — :diagnosis is required instead", () => {
+      const inspectWithFeePriceSheet: PriceSheetItem[] = [
+        {
+          ...priceSheet[0]!,
+          id: "ps-paint",
+          alwaysRequiresInspection: true,
+          diagnosisFee: { pricingType: "flat", amount: 40 },
+        },
+      ];
+      const failures = validateQuoteAgainstPriceSheet(
+        base({
+          matchedServices: [
+            { customerIssue: "paint touch-up", priceSheetItemId: "ps-paint:inspection" },
+          ],
+          lineItems: [],
+        }),
+        inspectWithFeePriceSheet,
+        89,
+        "fixed",
+      );
+      expect(failures.some((f) => f.includes("unknown priceSheetItemId"))).toBe(true);
+    });
+
+    it("flags a lineItem that uses the :inspection sentinel as a priced charge — it must never be priced, only acknowledged", () => {
+      const inspectOnlyPriceSheet: PriceSheetItem[] = [
+        { ...priceSheet[0]!, id: "ps-paint", alwaysRequiresInspection: true, diagnosisFee: null },
+      ];
+      const failures = validateQuoteAgainstPriceSheet(
+        base({
+          matchedServices: [
+            { customerIssue: "paint touch-up", priceSheetItemId: "ps-paint:inspection" },
+          ],
+          lineItems: [
+            {
+              description: "Paint touch-up",
+              detail: "",
+              amount: 0,
+              priceSheetItemId: "ps-paint:inspection",
+            },
+          ],
+        }),
+        inspectOnlyPriceSheet,
+        89,
+        "fixed",
+      );
+      expect(failures.some((f) => f.includes(":inspection") && f.includes("must never"))).toBe(
+        true,
+      );
+    });
+  });
+});
+
+describe("buildQuoteResult — hasFeeFreeDeferralOnly", () => {
+  it("is true when every deferred matchedServices entry is an :inspection sentinel and nothing was priced", () => {
+    const result = buildQuoteResult(
+      {
+        diagnosis: "Got it — concrete crack repair and touch-up paint.",
+        matchedServices: [
+          { customerIssue: "concrete cracks", priceSheetItemId: "ps-concrete:inspection" },
+          { customerIssue: "touch-up paint", priceSheetItemId: "ps-paint:inspection" },
+        ],
+        lineItems: [],
+      },
+      priceSheet,
+    );
+    expect(result).toMatchObject({ hasNoPricedWork: true, hasFeeFreeDeferralOnly: true });
+  });
+
+  it("is false when even one deferred entry is a bare null — falls back to the safer fee-applies wording", () => {
+    const result = buildQuoteResult(
+      {
+        diagnosis: "Got it.",
+        matchedServices: [
+          { customerIssue: "concrete cracks", priceSheetItemId: "ps-concrete:inspection" },
+          { customerIssue: "something ambiguous", priceSheetItemId: null },
+        ],
+        lineItems: [],
+      },
+      priceSheet,
+    );
+    expect(result).toMatchObject({ hasNoPricedWork: true, hasFeeFreeDeferralOnly: false });
+  });
+
+  it("is false for the pre-existing generic negotiated-mode deferral (bare null only) — unaffected by this feature", () => {
+    const result = buildQuoteResult(
+      {
+        diagnosis: "Got it — we'll confirm the fee when we're in touch.",
+        matchedServices: [{ customerIssue: "something ambiguous", priceSheetItemId: null }],
+        lineItems: [],
+      },
+      priceSheet,
+    );
+    expect(result).toMatchObject({ hasNoPricedWork: true, hasFeeFreeDeferralOnly: false });
+  });
+
+  it("is false whenever real priced work exists, even alongside an :inspection deferral", () => {
+    const result = buildQuoteResult(
+      {
+        diagnosis: "Doorknob priced; paint touch-up needs a look first.",
+        matchedServices: [
+          { customerIssue: "doorknob", priceSheetItemId: "ps-1" },
+          { customerIssue: "paint touch-up", priceSheetItemId: "ps-paint:inspection" },
+        ],
+        lineItems: [{ description: "Doorknob", detail: "", amount: 60, priceSheetItemId: "ps-1" }],
+      },
+      priceSheet,
+    );
+    expect(result).toMatchObject({ hasNoPricedWork: false, hasFeeFreeDeferralOnly: false });
+  });
+
+  it("is false when matchedServices is empty (degenerate case) even though lineItems is also empty", () => {
+    const result = buildQuoteResult(
+      { diagnosis: "Not sure this is something we do.", matchedServices: [], lineItems: [] },
+      priceSheet,
+    );
+    expect(result).toMatchObject({ hasNoPricedWork: true, hasFeeFreeDeferralOnly: false });
+  });
 });
 
 describe("buildPrompt", () => {
@@ -511,6 +782,7 @@ describe("buildPrompt", () => {
         materialsPolicy: "included",
         diagnosisFee: null,
         aiNotes: null,
+        alwaysRequiresInspection: false,
       },
     ];
     const prompt = buildPrompt(
@@ -758,6 +1030,7 @@ describe("buildPrompt", () => {
               materialsPolicy: "included",
               diagnosisFee: null,
               aiNotes: null,
+              alwaysRequiresInspection: false,
             },
           ],
           description: "Did you receive my deposit?",
@@ -780,6 +1053,7 @@ describe("buildPrompt", () => {
               materialsPolicy: "included",
               diagnosisFee: null,
               aiNotes: null,
+              alwaysRequiresInspection: false,
             },
           ],
           description: "Did you receive my deposit?",
@@ -1150,6 +1424,7 @@ describe("applyExclusionGuard — overrides a priced result when it matches a co
       materialsPolicy: "included",
       diagnosisFee: null,
       aiNotes: null,
+      alwaysRequiresInspection: false,
     },
     {
       id: "ps-faucet",
@@ -1164,6 +1439,7 @@ describe("applyExclusionGuard — overrides a priced result when it matches a co
       materialsPolicy: "included",
       diagnosisFee: null,
       aiNotes: null,
+      alwaysRequiresInspection: false,
     },
   ];
   const excludedInput = (description: string, lineItemId: string, amount: number): QuoteInput => ({

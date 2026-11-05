@@ -15,6 +15,7 @@ const FULL_ROW: PriceSheetRow = {
   materialsPolicy: "customer_pays_receipt",
   diagnosisFee: { pricingType: "hourly", amount: 40 },
   aiNotes: "Always needs an in-person look before quoting — don't estimate from a photo alone",
+  alwaysRequiresInspection: true,
 };
 
 // A complete, valid item shape other tests build on by overriding one
@@ -32,6 +33,7 @@ const VALID_ITEM = {
   materialsPolicy: "included",
   diagnosisFee: null,
   aiNotes: null,
+  alwaysRequiresInspection: false,
 };
 
 function backupWith(items: unknown[]) {
@@ -58,6 +60,7 @@ describe("buildPriceSheetBackup / parsePriceSheetBackup round-trip", () => {
           materialsPolicy: "customer_pays_receipt",
           diagnosisFee: { pricingType: "hourly", amount: 40 },
           aiNotes: "Always needs an in-person look before quoting — don't estimate from a photo alone",
+          alwaysRequiresInspection: true,
         },
       ],
     });
@@ -94,6 +97,7 @@ describe("buildPriceSheetBackup / parsePriceSheetBackup round-trip", () => {
         materialsPolicy: "included",
         diagnosisFee: null,
         aiNotes: null,
+        alwaysRequiresInspection: false,
       },
       {
         id: "row-3",
@@ -108,6 +112,7 @@ describe("buildPriceSheetBackup / parsePriceSheetBackup round-trip", () => {
         materialsPolicy: "confirmed_after_inspection",
         diagnosisFee: { pricingType: "flat", amount: 0 },
         aiNotes: "",
+        alwaysRequiresInspection: true,
       },
     ];
     const result = parsePriceSheetBackup(JSON.stringify(buildPriceSheetBackup(rows)));
@@ -132,6 +137,14 @@ describe("parsePriceSheetBackup — legitimate optional/nullable/zero/boolean/em
     const result = parsePriceSheetBackup(backupWith([{ ...VALID_ITEM, bundleable: false }]));
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.items[0]?.bundleable).toBe(false);
+  });
+
+  it("accepts alwaysRequiresInspection: true explicitly", () => {
+    const result = parsePriceSheetBackup(
+      backupWith([{ ...VALID_ITEM, alwaysRequiresInspection: true }]),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.items[0]?.alwaysRequiresInspection).toBe(true);
   });
 
   it("accepts an empty keywords array", () => {
@@ -219,6 +232,11 @@ describe("parsePriceSheetBackup — rejects the ENTIRE backup atomically on any 
     ["missing hours", { ...VALID_ITEM, hours: undefined }],
     ["missing bundleable", { ...VALID_ITEM, bundleable: undefined }],
     ["bundleable as a truthy non-boolean", { ...VALID_ITEM, bundleable: 1 }],
+    ["missing alwaysRequiresInspection", { ...VALID_ITEM, alwaysRequiresInspection: undefined }],
+    [
+      "alwaysRequiresInspection as a truthy non-boolean",
+      { ...VALID_ITEM, alwaysRequiresInspection: 1 },
+    ],
   ])("rejects a backup whose item has: %s", (_label, malformedItem) => {
     const result = parsePriceSheetBackup(backupWith([malformedItem]));
     expect(result.ok).toBe(false);

@@ -564,6 +564,7 @@ function formatQuotePriceLine(
   currency: string,
   isDiagnosisOnly: boolean,
   hasNoPricedWork: boolean,
+  hasFeeFreeDeferralOnly: boolean,
   hasPartiallyDeferredWork: boolean,
   language: DetectedLanguage,
 ): string {
@@ -571,6 +572,16 @@ function formatQuotePriceLine(
     // Distinct from isDiagnosisOnly: that case still has a real, priced fee
     // to state a number for. This is "negotiated" mode with nothing else
     // matched at all — no lineItem, no number, "$0" would be a lie.
+    //
+    // hasFeeFreeDeferralOnly further distinguishes a recognized ALWAYS
+    // INSPECT item with no diagnosis fee configured (nothing to disclose —
+    // "a fee applies" would be a false claim for this one) from the generic
+    // ambiguous-match deferral below, where a fee genuinely does apply.
+    if (hasFeeFreeDeferralOnly) {
+      return isEs(language)
+        ? "Sí, hacemos este tipo de trabajo — necesita una visita en persona antes de poder darle un precio. Nos pondremos en contacto para agendarla."
+        : "Yes, we do this type of work — it needs an in-person look before we can give you a price. We'll be in touch to schedule a visit.";
+    }
     return isEs(language)
       ? "No podemos darle un precio sin verlo en persona — aplica una tarifa de visita de servicio/diagnóstico, y confirmaremos el monto exacto cuando nos comuniquemos con usted para agendar la visita."
       : "We can't price this without seeing it in person — a service-call/diagnostic fee applies, and we'll confirm the exact amount when we contact you to schedule the visit.";
@@ -1540,7 +1551,7 @@ export async function handleInboundWhatsAppMessage(params: {
       const { data: clarifyPriceSheetRows } = await admin
         .from("price_sheet_items")
         .select(
-          "id, task, category, keywords, pricing_type, price_min, price_max, hours, bundleable, materials_policy, diagnosis_pricing_type, diagnosis_fee, ai_notes",
+          "id, task, category, keywords, pricing_type, price_min, price_max, hours, bundleable, materials_policy, diagnosis_pricing_type, diagnosis_fee, ai_notes, always_requires_inspection",
         )
         .eq("tenant_id", tenant.id);
       const clarifyPriceSheet: PriceSheetItem[] = (clarifyPriceSheetRows ?? []).map((row) => ({
@@ -1558,6 +1569,7 @@ export async function handleInboundWhatsAppMessage(params: {
           ? { pricingType: row.diagnosis_pricing_type, amount: row.diagnosis_fee }
           : null,
         aiNotes: row.ai_notes,
+        alwaysRequiresInspection: row.always_requires_inspection,
       }));
       const clarifyCapabilities = await fetchCapabilitiesForQuote(admin, tenant.id);
 
@@ -1761,7 +1773,7 @@ export async function handleInboundWhatsAppMessage(params: {
           priceSheetItemIds: clarifyResult.lineItems.map((item) => item.priceSheetItemId),
           amounts: [...clarifyResult.lineItems.map((item) => item.amount), clarifyResult.totalLow],
         },
-        messageText: `${clarifyResult.diagnosis} ${formatQuotePriceLine(clarifyResult.totalLow, tenant.currency, clarifyResult.isDiagnosisOnly, clarifyResult.hasNoPricedWork, clarifyResult.hasPartiallyDeferredWork, language)} ${localizedEstimateBasisClosing(language, clarifyImageBase64 !== undefined)}`,
+        messageText: `${clarifyResult.diagnosis} ${formatQuotePriceLine(clarifyResult.totalLow, tenant.currency, clarifyResult.isDiagnosisOnly, clarifyResult.hasNoPricedWork, clarifyResult.hasFeeFreeDeferralOnly, clarifyResult.hasPartiallyDeferredWork, language)}${clarifyResult.hasNoPricedWork ? "" : ` ${localizedEstimateBasisClosing(language, clarifyImageBase64 !== undefined)}`}`,
       });
 
       return;
@@ -2263,7 +2275,7 @@ async function handleQuotedFollowUpPhoto(params: {
       const { data: priceSheetRows } = await admin
         .from("price_sheet_items")
         .select(
-          "id, task, category, keywords, pricing_type, price_min, price_max, hours, bundleable, materials_policy, diagnosis_pricing_type, diagnosis_fee, ai_notes",
+          "id, task, category, keywords, pricing_type, price_min, price_max, hours, bundleable, materials_policy, diagnosis_pricing_type, diagnosis_fee, ai_notes, always_requires_inspection",
         )
         .eq("tenant_id", tenant.id);
       const priceSheet: PriceSheetItem[] = (priceSheetRows ?? []).map((row) => ({
@@ -2281,6 +2293,7 @@ async function handleQuotedFollowUpPhoto(params: {
           ? { pricingType: row.diagnosis_pricing_type, amount: row.diagnosis_fee }
           : null,
         aiNotes: row.ai_notes,
+        alwaysRequiresInspection: row.always_requires_inspection,
       }));
       const reassessCapabilities = await fetchCapabilitiesForQuote(admin, tenant.id);
 
@@ -2437,7 +2450,7 @@ async function handleQuotedFollowUpPhoto(params: {
       const previousPriceNote = existingHasNoPricedWork
         ? ""
         : localizedPreviousPriceNote(language, money(existingTotal, tenant.currency));
-      const updateMessage = `${localizedPhotoUpdateIntro(language)} ${reassessed.diagnosis} ${formatQuotePriceLine(newTotal, tenant.currency, reassessed.isDiagnosisOnly, reassessed.hasNoPricedWork, reassessed.hasPartiallyDeferredWork, language)}${previousPriceNote}`;
+      const updateMessage = `${localizedPhotoUpdateIntro(language)} ${reassessed.diagnosis} ${formatQuotePriceLine(newTotal, tenant.currency, reassessed.isDiagnosisOnly, reassessed.hasNoPricedWork, reassessed.hasFeeFreeDeferralOnly, reassessed.hasPartiallyDeferredWork, language)}${previousPriceNote}`;
       await sendGuardedReply({
         admin,
         tenant,
@@ -2521,7 +2534,7 @@ async function handleFreshQuote(params: {
   const { data: priceSheetRows } = await admin
     .from("price_sheet_items")
     .select(
-      "id, task, category, keywords, pricing_type, price_min, price_max, hours, bundleable, materials_policy, diagnosis_pricing_type, diagnosis_fee, ai_notes",
+      "id, task, category, keywords, pricing_type, price_min, price_max, hours, bundleable, materials_policy, diagnosis_pricing_type, diagnosis_fee, ai_notes, always_requires_inspection",
     )
     .eq("tenant_id", tenant.id);
 
@@ -2540,6 +2553,7 @@ async function handleFreshQuote(params: {
       ? { pricingType: row.diagnosis_pricing_type, amount: row.diagnosis_fee }
       : null,
     aiNotes: row.ai_notes,
+    alwaysRequiresInspection: row.always_requires_inspection,
   }));
   const freshQuoteCapabilities = await fetchCapabilitiesForQuote(admin, tenant.id);
 
@@ -2782,6 +2796,6 @@ async function handleFreshQuote(params: {
       priceSheetItemIds: result.lineItems.map((item) => item.priceSheetItemId),
       amounts: [...result.lineItems.map((item) => item.amount), result.totalLow],
     },
-    messageText: `${firstContactGreeting}${result.diagnosis} ${formatQuotePriceLine(result.totalLow, tenant.currency, result.isDiagnosisOnly, result.hasNoPricedWork, result.hasPartiallyDeferredWork, language)} ${localizedEstimateBasisClosing(language, imageBase64 !== undefined)}`,
+    messageText: `${firstContactGreeting}${result.diagnosis} ${formatQuotePriceLine(result.totalLow, tenant.currency, result.isDiagnosisOnly, result.hasNoPricedWork, result.hasFeeFreeDeferralOnly, result.hasPartiallyDeferredWork, language)}${result.hasNoPricedWork ? "" : ` ${localizedEstimateBasisClosing(language, imageBase64 !== undefined)}`}`,
   });
 }

@@ -2625,6 +2625,97 @@ describe("quoted_follow_up text classification — four-way (same_job / differen
     expect(body).toContain("850");
   });
 
+  it("a fully fee-free ALWAYS INSPECT deferral (hasFeeFreeDeferralOnly) gets the short, no-fee reply — never the fee-applies wording or the price-may-change closing", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: QUOTED_FAUCET_LEAD,
+      leadSlotClaimSucceeds: true,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(classifyFollowUpIntent).mockResolvedValue({ classification: "different_job" } as any);
+    vi.mocked(getQuoteEstimate).mockResolvedValue({
+      needsClarification: false,
+      outOfScope: false,
+      isEmergency: false,
+      issueType: "General",
+      severity: "Low",
+      confidence: "High",
+      diagnosis: "Got it — concrete crack repair and touch-up paint.",
+      isDiagnosisOnly: false,
+      hasNoPricedWork: true,
+      hasFeeFreeDeferralOnly: true,
+      hasPartiallyDeferredWork: false,
+      lineItems: [],
+      totalLow: 0,
+      totalHigh: 0,
+    } as any);
+    vi.mocked(createLead).mockResolvedValue({ id: "new-inspection-lead" } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "We are in Tezal and need concrete cracks fixed and touch up paint - do you do that?",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(1);
+    const body = sent[0]!.body;
+    expect(body).toContain(
+      "Yes, we do this type of work — it needs an in-person look before we can give you a price.",
+    );
+    expect(body).not.toContain("a service-call/diagnostic fee applies");
+    expect(body).not.toContain("Price may change");
+    expect(body).not.toContain("want me to get this booked in");
+  });
+
+  it("a generic (fee-pending) deferral keeps the fee-applies wording but still drops the price-may-change closing", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: QUOTED_FAUCET_LEAD,
+      leadSlotClaimSucceeds: true,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(classifyFollowUpIntent).mockResolvedValue({ classification: "different_job" } as any);
+    vi.mocked(getQuoteEstimate).mockResolvedValue({
+      needsClarification: false,
+      outOfScope: false,
+      isEmergency: false,
+      issueType: "General",
+      severity: "Low",
+      confidence: "Medium",
+      diagnosis: "Got it.",
+      isDiagnosisOnly: false,
+      hasNoPricedWork: true,
+      hasFeeFreeDeferralOnly: false,
+      hasPartiallyDeferredWork: false,
+      lineItems: [],
+      totalLow: 0,
+      totalHigh: 0,
+    } as any);
+    vi.mocked(createLead).mockResolvedValue({ id: "new-negotiated-lead" } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "My ice maker is acting up, can you help?",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(1);
+    const body = sent[0]!.body;
+    expect(body).toContain("a service-call/diagnostic fee applies");
+    expect(body).not.toContain("Price may change");
+    expect(body).not.toContain("want me to get this booked in");
+  });
+
   it('classification="ambiguous": asks one short clarifying question instead of quoting the old job — no lead created, no AI pricing call made', async () => {
     const { admin } = fakeInboundAdmin({ openLead: QUOTED_FAUCET_LEAD, leadSlotClaimSucceeds: true });
     vi.mocked(getAdminClient).mockReturnValue(admin);

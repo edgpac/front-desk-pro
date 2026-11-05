@@ -43,6 +43,12 @@ export type PriceSheetItem = {
   // Never AI-inferred, never AI-written, never extracted from an uploaded
   // price sheet — a business writes this by hand on the dashboard.
   aiNotes: string | null;
+  // Business-configured, per row, never AI-inferred or AI-chosen — this
+  // service must never receive an instant price from a photo/description
+  // alone. Unlike aiNotes (advisory free text, no enforcement), this is
+  // checked by validateQuoteAgainstPriceSheet below — a violation is a
+  // real validation failure, not just a prompt hope.
+  alwaysRequiresInspection: boolean;
 };
 
 // Sentinel id for the tenant-level serviceCallFee scalar, which isn't a
@@ -62,6 +68,22 @@ function buildDiagnosisSentinelId(itemId: string): string {
 }
 function parseDiagnosisSentinelId(id: string): string | null {
   return id.endsWith(DIAGNOSIS_ID_SUFFIX) ? id.slice(0, -DIAGNOSIS_ID_SUFFIX.length) : null;
+}
+
+// An ALWAYS INSPECT row with NO diagnosis fee configured gets its own
+// distinct sentinel, same pattern as DIAGNOSIS_ID_SUFFIX above — "<id>:inspection"
+// — rather than a bare priceSheetItemId: null. Without this, a zero-fee
+// ALWAYS INSPECT deferral is indistinguishable downstream from the generic
+// "ambiguous match, a service-call fee applies" deferral (both would be a
+// bare null), and the customer-facing copy would wrongly imply a fee for a
+// visit the business configured with none. Never gets a lineItem — see the
+// LINEITEMS rule's one exception and the ALWAYS INSPECT validation below.
+const INSPECTION_ID_SUFFIX = ":inspection";
+function buildInspectionSentinelId(itemId: string): string {
+  return `${itemId}${INSPECTION_ID_SUFFIX}`;
+}
+function parseInspectionSentinelId(id: string): string | null {
+  return id.endsWith(INSPECTION_ID_SUFFIX) ? id.slice(0, -INSPECTION_ID_SUFFIX.length) : null;
 }
 
 export type Answer = { question: string; answer: string };
@@ -186,6 +208,15 @@ export type QuoteResult =
       // matched). totalLow/totalHigh are 0 here but that's not a real price
       // of $0 — the UI must not show a "$0–$0" headline for this.
       hasNoPricedWork: boolean;
+      // True when hasNoPricedWork is true AND every deferred matchedServices
+      // entry is a "<id>:inspection" sentinel (a recognized ALWAYS INSPECT
+      // item with no diagnosis fee configured) rather than a bare null — i.e.
+      // nothing in this response implies any fee at all, unlike the generic
+      // "ambiguous match, a service-call fee applies" deferral. False (not
+      // just absent) whenever even one deferred entry is a bare null, so the
+      // customer-facing copy defaults to the safer "a fee applies" wording
+      // whenever there's any ambiguity about whether one does.
+      hasFeeFreeDeferralOnly: boolean;
       // P2 mixed-pricing: true when at least one described issue matched
       // and priced (lineItems.length > 0 — mutually exclusive with
       // hasNoPricedWork by construction) AND at least one other issue was
@@ -210,6 +241,7 @@ export const SAMPLE_PRICE_SHEET: PriceSheetItem[] = [
     materialsPolicy: "included",
     diagnosisFee: null,
     aiNotes: null,
+    alwaysRequiresInspection: false,
   },
   {
     id: "sample-2",
@@ -224,6 +256,7 @@ export const SAMPLE_PRICE_SHEET: PriceSheetItem[] = [
     materialsPolicy: "included",
     diagnosisFee: null,
     aiNotes: null,
+    alwaysRequiresInspection: false,
   },
   {
     id: "sample-3",
@@ -238,6 +271,7 @@ export const SAMPLE_PRICE_SHEET: PriceSheetItem[] = [
     materialsPolicy: "included",
     diagnosisFee: null,
     aiNotes: null,
+    alwaysRequiresInspection: false,
   },
   {
     id: "sample-4",
@@ -252,6 +286,7 @@ export const SAMPLE_PRICE_SHEET: PriceSheetItem[] = [
     materialsPolicy: "included",
     diagnosisFee: null,
     aiNotes: null,
+    alwaysRequiresInspection: false,
   },
   {
     id: "sample-5",
@@ -266,6 +301,7 @@ export const SAMPLE_PRICE_SHEET: PriceSheetItem[] = [
     materialsPolicy: "included",
     diagnosisFee: null,
     aiNotes: null,
+    alwaysRequiresInspection: false,
   },
   {
     id: "sample-6",
@@ -280,6 +316,7 @@ export const SAMPLE_PRICE_SHEET: PriceSheetItem[] = [
     materialsPolicy: "included",
     diagnosisFee: null,
     aiNotes: null,
+    alwaysRequiresInspection: false,
   },
   {
     id: "sample-7",
@@ -294,6 +331,7 @@ export const SAMPLE_PRICE_SHEET: PriceSheetItem[] = [
     materialsPolicy: "included",
     diagnosisFee: null,
     aiNotes: null,
+    alwaysRequiresInspection: false,
   },
   {
     id: "sample-8",
@@ -311,6 +349,7 @@ export const SAMPLE_PRICE_SHEET: PriceSheetItem[] = [
     materialsPolicy: "confirmed_after_inspection",
     diagnosisFee: null,
     aiNotes: null,
+    alwaysRequiresInspection: false,
   },
 ];
 
@@ -636,7 +675,12 @@ export function buildPrompt(input: QuoteInput): string {
         ? ` [DIAGNOSIS FEE: ${item.diagnosisFee.pricingType === "hourly" ? `$${item.diagnosisFee.amount}/hr` : `$${item.diagnosisFee.amount}`}, id: ${buildDiagnosisSentinelId(item.id)}]`
         : "";
       const notesTag = item.aiNotes ? ` [NOTE: ${item.aiNotes}]` : "";
-      return `- [id: ${item.id}] [${item.category}] ${item.task} (matches: ${item.keywords.join(", ")}) — about ${item.hours}hr, ${price}${item.bundleable ? " [BUNDLEABLE]" : ""}${materialsTag}${diagnosisTag}${notesTag}`;
+      const inspectionTag = item.alwaysRequiresInspection
+        ? item.diagnosisFee
+          ? " [ALWAYS INSPECT]"
+          : ` [ALWAYS INSPECT, no fee — id: ${buildInspectionSentinelId(item.id)}]`
+        : "";
+      return `- [id: ${item.id}] [${item.category}] ${item.task} (matches: ${item.keywords.join(", ")}) — about ${item.hours}hr, ${price}${item.bundleable ? " [BUNDLEABLE]" : ""}${materialsTag}${diagnosisTag}${inspectionTag}${notesTag}`;
     })
     .join("\n");
 
@@ -668,7 +712,7 @@ export function buildPrompt(input: QuoteInput): string {
     input.serviceCallFeeMode === "negotiated"
       ? `This business's generic service call/diagnostic fee is NOT a fixed amount — it depends on the conversation with the customer, so it is deliberately unknown to you. The sentinel id "${SERVICE_CALL_SENTINEL_ID}" is INVALID in this mode: never use it as a priceSheetItemId in matchedServices or lineItems, never state or invent a dollar figure for it (not $89, not any other number, not a guess, not a range), and never create a priced line item for it. If a price-sheet item's own task name or keywords describe the same real-world concept as this generic fee (service call, diagnostic, trip fee, assessment, visit), that item still supersedes it and IS priced normally using that item's own id and configured price — this only concerns the generic, unmatched case. Whenever a specific row DOES end up matched and priced this way, its price is real and final for that issue — never also say the amount for that same issue will be "confirmed later" or "confirmed when we contact you"; that wording is exclusively for an issue whose matchedServices entry has priceSheetItemId: null. Saying a price is deferred right next to a real number for the same thing is a direct contradiction the customer will notice.
 
-This ambiguity-resolution guidance applies only when the customer IS genuinely describing some physical problem or service need, just not confidently enough to diagnose without seeing it in person — never to a message that isn't attempting to describe a service need at all (see rule 0 above: payments, deposits, invoices, receipts, bank transfers, and similar are never a null match to resolve here, they're outOfScope before this section is ever reached). A described problem you can't confidently diagnose without seeing it in person, but that's still plausibly something this business would handle, is NOT a null match and is NOT something to silently drop — enumerate it in matchedServices with priceSheetItemId: null, which in this mode specifically means "acknowledged, pricing deferred" (never "nothing on the price sheet covers this"). In the diagnosis text, in natural language appropriate to the customer (and their language, if not English), say plainly that a service-call/diagnostic fee applies and the exact amount will be confirmed when the business contacts them to schedule — no dollar amount, ever, anywhere in your response for this. Never say it is credited toward, applied toward, or deducted from any other line item's price, and never imply a "remaining balance" — there is nothing to do that arithmetic with, since no amount was ever stated. Any other, separately matched and fully-priced work in the same response stays exactly as priced, completely unaffected by this — not discounted, not credited, not combined with it in any way. A true null match (mentioned in the diagnosis, no line item, no fee language at all) is still reserved for something this business's price sheet gives no real indication it would ever handle at all — a categorically different kind of work.
+This ambiguity-resolution guidance applies only when the customer IS genuinely describing some physical problem or service need, just not confidently enough to diagnose without seeing it in person — never to a message that isn't attempting to describe a service need at all (see rule 0 above: payments, deposits, invoices, receipts, bank transfers, and similar are never a null match to resolve here, they're outOfScope before this section is ever reached). A described problem you can't confidently diagnose without seeing it in person, but that's still plausibly something this business would handle, is NOT a null match and is NOT something to silently drop — enumerate it in matchedServices with priceSheetItemId: null, which in this mode specifically means "acknowledged, pricing deferred" (never "nothing on the price sheet covers this"). In the diagnosis text, in natural language appropriate to the customer (and their language, if not English), say plainly that a service-call/diagnostic fee applies and the exact amount will be confirmed when the business contacts them to schedule — no dollar amount, ever, anywhere in your response for this. EXCEPTION — if this deferred issue is the ONLY thing in the response (nothing else in the request was separately matched and priced), do NOT write out the fee/confirmation explanation in the diagnosis text at all: the system already states it automatically, in full, right after your diagnosis text, so repeating it here only makes the reply longer without saying anything new. Keep the diagnosis to one brief, plain acknowledgment sentence of what you understood needs doing instead (e.g. "Got it — exterior wall crack repair and touch-up paint." not a restatement of the pricing/scheduling mechanics). When this deferred issue instead coexists with other, separately matched and fully-priced work in the same response, there is no separate fixed line covering it, so keep explaining the fee-applies/confirmed-later wording in the diagnosis text as described above. Never say it is credited toward, applied toward, or deducted from any other line item's price, and never imply a "remaining balance" — there is nothing to do that arithmetic with, since no amount was ever stated. Any other, separately matched and fully-priced work in the same response stays exactly as priced, completely unaffected by this — not discounted, not credited, not combined with it in any way. A true null match (mentioned in the diagnosis, no line item, no fee language at all) is still reserved for something this business's price sheet gives no real indication it would ever handle at all — a categorically different kind of work.
 
 IMPORTANT — do not over-ask clarifying questions for a deferred issue. The RULES section below says only ask a clarifying question if the answer would change the price — but for an issue that's going to get deferred, no-dollar-amount pricing regardless of the details (the generic case above), no answer ever changes a price, since none is ever stated. Do not keep probing for more diagnostic detail (exact location, additional symptoms, severity specifics) purely to sound more confident about something you were never going to price anyway — that just stalls the customer in an endless clarification loop. Once you have enough to tell that the issue is plausibly in scope for this business at all, stop asking and finalize with the acknowledged/deferred treatment described above. Only keep asking if the answer would change something that still matters here — whether it's in scope at all, or whether it's an emergency (isEmergency) — not to refine a price that was never going to be stated.
 
@@ -723,7 +767,7 @@ PRICE-SHEET MATCHING RULES — follow these exactly, in order, for every distinc
 
 2. KEYWORDS ARE THE PRIMARY MATCH SIGNAL, BUT THE ROW MUST STILL BE THE SAME KIND OF WORK. If the customer's task contains or clearly corresponds to a keyword listed on a price-sheet item, that item is the correct match — even if a different item's task NAME sounds more specific or more semantically related. Real keyword evidence always outweighs a name that merely sounds similar. This does NOT mean any keyword overlap is automatically a valid match, though: a shared object/appliance name (e.g. "garbage disposal," "dishwasher," "water heater") is not enough on its own if the row describes a fundamentally different kind of work than what's being asked — a row for installing a brand-new unit does not become the correct match just because the customer's existing unit shares that name and is malfunctioning. If nothing on the sheet actually covers the kind of work requested (diagnosing/repairing an existing unit vs. installing a new one, for example), treat it per the "described problem you can't confidently diagnose" guidance in the service-call section above — never a forced match to a differently-scoped row and never an invented price.
 
-3. LINEITEMS IS DERIVED STRICTLY FROM MATCHEDSERVICES. One line item per unique non-null priceSheetItemId in matchedServices, and every lineItem must carry that same priceSheetItemId. The only merge allowed: multiple matchedServices entries pointing at the SAME [BUNDLEABLE] item's id collapse into that one item's one line item, charged its full configured price — never $0, never once per issue. Every other non-null priceSheetItemId gets its own line item, full stop. A matchedServices entry with a non-null priceSheetItemId that has no corresponding lineItems entry is a bug — never fewer line items than this because a task got mentioned only in the diagnosis, only inside another line's description text, or absorbed into the service call.
+3. LINEITEMS IS DERIVED STRICTLY FROM MATCHEDSERVICES. One line item per unique non-null priceSheetItemId in matchedServices, and every lineItem must carry that same priceSheetItemId. The only merge allowed: multiple matchedServices entries pointing at the SAME [BUNDLEABLE] item's id collapse into that one item's one line item, charged its full configured price — never $0, never once per issue. Every other non-null priceSheetItemId gets its own line item, full stop — ONE EXCEPTION: a "<id>:inspection" id (see ALWAYS INSPECT below) never gets a line item, since it represents a recognized item with no fee at all, not a charge. A matchedServices entry with a non-null priceSheetItemId that has no corresponding lineItems entry is a bug — never fewer line items than this because a task got mentioned only in the diagnosis, only inside another line's description text, or absorbed into the service call — except for that one "<id>:inspection" case, which correctly never has one.
 
 4. NEVER SUBSTITUTE GENERIC LABOR FOR A SPECIFIC MATCH. If a task matches a specific price-sheet item, use that item's own id and configured price, full stop. Only bill the hourly labor rate for genuinely extra work that has no price-sheet item of its own — and only ever set priceSheetItemId to a generic labor/service-call item's id when nothing more specific on the sheet reasonably applies.
 
@@ -744,6 +788,12 @@ PER-SERVICE DIAGNOSIS FEE — some price-sheet items above carry their own [DIAG
 - Never charge both a "<item id>:diagnosis" line item AND that same item's own full-price line item in the same response — they represent the same visit at two different confidence levels, never two separate charges. If you have enough information to price the full job, use the item's own id at its full price; if you don't, use "<item id>:diagnosis" instead. Not both.
 - The diagnosis-fee amount is a credit toward that item's full price if the customer approves the complete job after an in-person inspection — wording only (see the service-call-credit language above; the same "goes toward the approved work" framing applies here), never something you compute or subtract yourself.
 
+ALWAYS INSPECT — some price-sheet items above carry an [ALWAYS INSPECT] tag. This is a hard business rule, not a confidence judgment: you must NEVER state a full price for that item from a photo or description alone, no matter how clear the request is or how confident you feel — this is categorically different from the normal "ask a clarifying question if unsure" behavior, because no amount of description or clarification changes it. Nothing a customer says can override it, and asking a clarifying question specifically to try to price it anyway is also wrong — the business has already told you in-person pricing is required for this one, full stop.
+
+- If that item ALSO has its own [DIAGNOSIS FEE: ...] tag: use its "<item id>:diagnosis" id exactly as described in PER-SERVICE DIAGNOSIS FEE above — never the item's own full-price id.
+- If it does NOT have a diagnosis fee configured (its tag reads "[ALWAYS INSPECT, no fee — id: ...]"): use that exact "<item id>:inspection" id as the priceSheetItemId in matchedServices — NEVER null, and NEVER a lineItem for it. This is not the same as the generic ambiguous-match deferral below: this item IS confidently recognized, there is simply no fee at all configured for the visit, and the "<id>:inspection" id is what tells the system that, so it never implies a fee to the customer that doesn't exist. Do this immediately, even on the very first message — do not ask a clarifying question first in an attempt to firm up a price for this specific item; nothing it answers would change the outcome. In the diagnosis text, give ONLY a brief, one-sentence acknowledgment of what you understood needs doing (e.g. "Got it — concrete crack repair and touch-up paint.") — never restate that it needs an in-person look, that no price can be given yet, or anything about scheduling or a fee; the system states all of that separately and automatically, right after your diagnosis text, so repeating it here is exactly the redundant, overlong reply this rule exists to prevent.
+- This still applies even when the exact same message also includes other items that CAN be priced normally — price those as usual, and only the [ALWAYS INSPECT] item gets the deferred/diagnosis-fee treatment. An item with no [ALWAYS INSPECT] tag gets no special treatment from this rule at all.
+
 MATERIALS POLICY — each price-sheet item above carries a materials policy, shown as [MATERIALS: ...] when it isn't the default. This is a business configuration decision, never yours to make: read the matched item's own policy and communicate it, never infer, change, or choose a different one based on the job, the photo, or anything the customer says.
 
 - No tag shown ("included"): the configured price includes labor and standard materials for that service. Present it as the full price — no parts disclaimer needed unless something else about the request makes it genuinely conditional.
@@ -754,7 +804,7 @@ For either non-included policy: the line item's "amount" is always exactly the r
 
 Each matched item's policy is independent — a request matching one "included" item and one "customer_pays_receipt" item treats them completely separately; there is no single policy for the whole estimate.
 
-OWNER NOTES — some price-sheet items above carry a [NOTE: ...] tag: a specific instruction the business owner wrote for that one service, about how they personally want it handled (e.g. "always needs an in-person look, don't quote from a photo alone" or "customers usually mean X when they describe it this way"). Treat a note as an authoritative instruction for that one matched item, not a suggestion — follow it even if it means giving a diagnosis-only answer instead of an instant price, or asking a different clarifying question than you otherwise would for that kind of job. A note on one item never applies to any other item, even a similar one, and an item with no [NOTE: ...] tag gets no special treatment — never invent guidance for it based on a note you saw on a different row.
+OWNER NOTES — some price-sheet items above carry a [NOTE: ...] tag: a specific instruction the business owner wrote for that one service, about how they personally want it handled (e.g. "customers usually mean a full unit replacement when they describe it this way" or "ask whether the unit is still under warranty before quoting labor"). Treat a note as an authoritative instruction for that one matched item, not a suggestion — follow it even if it means asking a different clarifying question than you otherwise would for that kind of job. (For "this item can never be instantly priced from a photo," use the item's own [ALWAYS INSPECT] tag above instead of a note — that's enforced automatically, a note alone is not.) A note on one item never applies to any other item, even a similar one, and an item with no [NOTE: ...] tag gets no special treatment — never invent guidance for it based on a note you saw on a different row.
 
 RULES:
 0. FIRST, before anything else: decide whether the customer is actually attempting to describe a service need at all. A message about a payment, a deposit, an invoice, a receipt, a bank transfer, or asking whether something was sent/received is never a service description, no matter how ambiguous — it is not "a different kind of job," it is not a job at all. Treat any such message exactly like rule 1's clear non-match below: respond with {"needsClarification": false, "outOfScope": true, "acknowledgment": "..."} immediately. Never match it to the service call fee, a per-service diagnosis fee, or any price-sheet item "just in case it's plausible" — the "don't leave it as a null match" guidance in the service-call section below exists only for a message that genuinely is describing some physical problem or service need, not for a message that was never attempting to describe one.
@@ -1014,11 +1064,21 @@ export function validateQuoteAgainstPriceSheet(
   // an unknown/invented id. This is the hard enforcement point: it's
   // impossible for a priced service-call line item to survive validation in
   // negotiated mode, regardless of what the prompt says.
+  // An "<item id>:inspection" reference is only valid if that item is
+  // actually marked alwaysRequiresInspection AND has no diagnosisFee
+  // configured — an item with a diagnosis fee must use the ":diagnosis"
+  // sentinel instead (a real, priced charge), never this zero-fee one.
   const isValidReferenceId = (id: string): boolean => {
     if (id === SERVICE_CALL_SENTINEL_ID) return serviceCallFeeMode === "fixed";
     if (byId.has(id)) return true;
-    const baseId = parseDiagnosisSentinelId(id);
-    return baseId != null && Boolean(byId.get(baseId)?.diagnosisFee);
+    const diagnosisBaseId = parseDiagnosisSentinelId(id);
+    if (diagnosisBaseId != null) return Boolean(byId.get(diagnosisBaseId)?.diagnosisFee);
+    const inspectionBaseId = parseInspectionSentinelId(id);
+    if (inspectionBaseId != null) {
+      const item = byId.get(inspectionBaseId);
+      return Boolean(item?.alwaysRequiresInspection) && !item?.diagnosisFee;
+    }
+    return false;
   };
 
   const matchedServices: MatchedService[] = Array.isArray(parsed.matchedServices)
@@ -1064,6 +1124,9 @@ export function validateQuoteAgainstPriceSheet(
   }
 
   for (const id of expectedIds) {
+    // The one exception to "every matched item must produce a line item" —
+    // see the LINEITEMS rule and ALWAYS INSPECT prompt sections.
+    if (parseInspectionSentinelId(id) != null) continue;
     if (!actualIds.has(id)) {
       failures.push(
         `matchedServices matched priceSheetItemId "${id}" but no lineItem uses it — every matched item must produce a line item.`,
@@ -1074,6 +1137,11 @@ export function validateQuoteAgainstPriceSheet(
     if (!expectedIds.has(id)) {
       failures.push(
         `A lineItem uses priceSheetItemId "${id}" which wasn't in matchedServices — lineItems must be derived strictly from matchedServices.`,
+      );
+    }
+    if (parseInspectionSentinelId(id) != null) {
+      failures.push(
+        `lineItem uses "${id}" as a priced charge — an "<id>:inspection" id represents a zero-fee ALWAYS INSPECT deferral and must never appear in lineItems at all, priced or not. Remove this lineItem; the id only belongs in matchedServices.`,
       );
     }
   }
@@ -1256,6 +1324,30 @@ export function validateQuoteAgainstPriceSheet(
         `The diagnosis says a service-call/diagnostic fee amount will be confirmed later, but every described issue in matchedServices already has a real, non-null priceSheetItemId — nothing was actually left unpriced, so this contradicts the real price already shown. Remove the deferred-pricing language for any issue that was confidently matched and priced; only use it for an issue whose matchedServices entry has priceSheetItemId: null.`,
       );
     }
+  }
+
+  // ALWAYS INSPECT check — the hard enforcement point for alwaysRequiresInspection.
+  // Unlike aiNotes (pure prompt text, no code-level backstop — see
+  // PriceSheetItem.alwaysRequiresInspection's own comment), a violation here
+  // is a genuine validation failure: it triggers the same one-retry-then-
+  // refuse flow as every other check in this function, so a model that
+  // ignores the ALWAYS INSPECT prompt instruction gets one corrective retry
+  // and then a safe refusal — never a full price reaching the customer for
+  // an item the business explicitly flagged as needing an in-person look.
+  for (const li of lineItems) {
+    const id = li?.priceSheetItemId;
+    if (!id) continue;
+    // Only the item's OWN bare id is checked — its "<id>:diagnosis" id is
+    // never this item's full price (see PER-SERVICE DIAGNOSIS FEE), so a
+    // diagnosis-fee lineItem for an ALWAYS INSPECT item is exactly the
+    // correct, intended outcome, not a violation.
+    const item = byId.get(id);
+    if (!item || !item.alwaysRequiresInspection) continue;
+    failures.push(
+      item.diagnosisFee
+        ? `lineItem "${li.description}" matches "${item.task}" which is marked [ALWAYS INSPECT] — it must never receive a full price from a photo/description. Use its own "${buildDiagnosisSentinelId(id)}" id (its configured diagnosis fee) instead of "${id}".`
+        : `lineItem "${li.description}" matches "${item.task}" which is marked [ALWAYS INSPECT] and has no diagnosis fee configured — it must never receive a price at all. Remove this lineItem and use its own "${buildInspectionSentinelId(id)}" id in matchedServices instead (never priceSheetItemId: null for a recognized item like this one — the ":inspection" id is what tells the customer no fee applies, instead of the generic deferred-fee wording).`,
+    );
   }
 
   // Materials-policy wording check — same soft-check shape as the
@@ -1547,6 +1639,17 @@ export function buildQuoteResult(parsed: any, priceSheet: PriceSheetItem[]): Quo
     Array.isArray(parsed.matchedServices) ? parsed.matchedServices : [];
   const hasPartiallyDeferredWork =
     !hasNoPricedWork && matchedServices.some((m) => m?.priceSheetItemId == null);
+  // False whenever even one deferred entry is a bare null (the generic,
+  // fee-implying deferral) — only true when every deferred entry is a
+  // "<id>:inspection" sentinel, i.e. nothing in this response implies any
+  // fee at all. See QuoteResult.hasFeeFreeDeferralOnly's own comment.
+  const hasFeeFreeDeferralOnly =
+    hasNoPricedWork &&
+    matchedServices.length > 0 &&
+    matchedServices.every((m) => {
+      const id = m?.priceSheetItemId;
+      return id != null && parseInspectionSentinelId(id) != null;
+    });
   const total = lineItems.reduce((sum, i) => sum + (Number(i.amount) || 0), 0);
   return {
     needsClarification: false,
@@ -1559,6 +1662,7 @@ export function buildQuoteResult(parsed: any, priceSheet: PriceSheetItem[]): Quo
     lineItems,
     isDiagnosisOnly,
     hasNoPricedWork,
+    hasFeeFreeDeferralOnly,
     hasPartiallyDeferredWork,
     totalLow: total,
     totalHigh: total,
