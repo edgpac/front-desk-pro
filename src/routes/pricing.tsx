@@ -31,7 +31,7 @@ const tiers = [
     price: "$19.99",
     per: "/mo",
     for: "One person, one truck.",
-    points: ["Unlimited quote requests", "Photo estimates off your price sheet", "Lead inbox", "Branded proposals", "Widget + shareable link"],
+    points: ["Up to 300 quote requests a day", "Photo estimates off your price sheet", "Lead inbox", "Branded proposals", "Widget + shareable link"],
     cta: "Get started",
     featured: false,
   },
@@ -53,7 +53,7 @@ const tiers = [
 ];
 
 const matrix = [
-  { row: "Quote requests", solo: "Unlimited", crew: "Unlimited" },
+  { row: "Quote requests", solo: "300/day", crew: "300/day" },
   { row: "Price sheet photo extraction", solo: true, crew: true },
   { row: "Manual price editing", solo: true, crew: true },
   { row: "Hourly labor math", solo: false, crew: true },

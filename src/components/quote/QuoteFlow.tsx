@@ -679,7 +679,16 @@ export function QuoteFlow({
               </button>
             </div>
             <p className="mt-2 text-center text-xs text-neutral-400">
-              No account needed. Your photo only goes to {businessName}.
+              No account needed. Your photo only goes to {businessName}. See our{" "}
+              <a
+                href="/privacy"
+                target="_blank"
+                rel="noreferrer"
+                className="underline underline-offset-2 hover:text-neutral-600"
+              >
+                Privacy Policy
+              </a>
+              .
             </p>
           </div>
         </div>
@@ -927,15 +936,18 @@ export function QuoteFlow({
               className="rounded-full bg-neutral-900 text-white hover:bg-neutral-800"
               style={accentStyle}
               asChild={Boolean(bookingLink)}
+              onClick={
+                bookingLink
+                  ? undefined
+                  : () => toast.success("In your account this opens your booking link")
+              }
             >
               {bookingLink ? (
                 <a href={bookingLink} target="_blank" rel="noreferrer">
                   Book this now
                 </a>
               ) : (
-                <span onClick={() => toast.success("In your account this opens your booking link")}>
-                  Book this now
-                </span>
+                "Book this now"
               )}
             </Button>
           </div>
@@ -973,7 +985,16 @@ export function QuoteFlow({
               </Button>
               {!leadSent && (
                 <span className="text-xs text-neutral-400">
-                  The business gets notified right away and will follow up with you directly.
+                  The business gets notified right away and will follow up with you directly. See our{" "}
+                  <a
+                    href="/privacy"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="underline underline-offset-2 hover:text-neutral-600"
+                  >
+                    Privacy Policy
+                  </a>
+                  .
                 </span>
               )}
             </div>

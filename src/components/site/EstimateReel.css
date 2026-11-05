@@ -9,7 +9,12 @@
   --er-card: #ffffff;
   --er-ink: #1c1a17;
   --er-muted: #716b62;
-  --er-accent: #b4531f;
+  /* Darkened from #b4531f — that shade measured 3.88-4.15:1 against this
+     component's own cycling light-mode backgrounds (SLIDES[].bgLight in
+     EstimateReel.tsx), short of WCAG AA's 4.5:1 for the "Ready" text that
+     uses this as its color. Same hue/saturation, just darker — worst case
+     across every slide background is now 4.94:1. */
+  --er-accent: #9a471b;
   --er-line: #e9e4db;
   --er-card-shadow: 0 14px 30px -14px rgba(28, 26, 23, 0.35);
   --er-dynamic-bg: var(--er-screen-bg);
