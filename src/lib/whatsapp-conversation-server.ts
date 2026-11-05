@@ -22,7 +22,7 @@ import {
 } from "@/lib/public-lead-server";
 import { sendFollowUpNotificationEmail } from "@/lib/notify-server";
 import { getActiveCapabilitiesForTenant } from "@/lib/capabilities-server";
-import { lineItemAmount, money, menuLink } from "@/lib/mock-data";
+import { lineItemAmount, money, menuLink, PRIVACY_POLICY_URL } from "@/lib/mock-data";
 import {
   evaluateInboundInteraction,
   evaluateOutboundInteraction,
@@ -641,6 +641,43 @@ const RECOMMENDED_GREETING_SHORT_TEMPLATE: Record<"en" | "es", string> = {
   es: "¡Hola! 👋 Gracias por contactar a {business_name}.",
 };
 
+// Appended to EVERY first-contact greeting below — the recommended
+// template (full or short) and a tenant's own custom greeting alike (see
+// resolveFirstContactGreeting) — so every customer's actual first message
+// from a tenant carries this disclosure, with no variant able to skip it.
+// Deliberately a separate, always-added sentence rather than baked into
+// each template string or into a tenant's custom text: it's Job It
+// Ready's own standard notice about what THIS platform does with a
+// message, not a claim about the tenant's own business — a tenant's
+// custom greeting is their own words, and this never alters or implies
+// anything about their separate privacy obligations to their own
+// customers (see terms.tsx's "Your responsibilities to your own
+// customers" section, which stays the authoritative statement of that).
+// "STOP" and "CANCELAR" are both real, recognized opt-out keywords
+// (whatsapp-opt-out-server.ts's OPT_OUT_KEYWORDS, case-insensitive) —
+// mentioned together regardless of the greeting's own language since
+// both work either way.
+//
+// Deliberately "may be processed", not "are processed": this greeting is
+// sent on EVERY first-contact message, including ones that never actually
+// reach the AI — a bare "hi"-style thin first message gets only this
+// templated greeting back (see the thin-description branches in
+// handleInboundWhatsAppMessage/handleFreshQuote, signature
+// "canned:thin-description-greeting"), with no AI call made for that
+// message at all. "Are processed" would overclaim for exactly that path;
+// "may be" is accurate for both that case and the common case where a
+// real diagnosis/price response follows and the message genuinely was
+// sent to the AI.
+const FIRST_CONTACT_DISCLOSURE: Record<"en" | "es", string> = {
+  en:
+    `Messages and photos sent here may be processed by AI to help us respond — see our Privacy ` +
+    `Policy: ${PRIVACY_POLICY_URL}. Reply STOP or CANCELAR anytime to opt out.`,
+  es:
+    `Los mensajes y fotos que envíe aquí pueden ser procesados por IA para poder responder — ` +
+    `consulte nuestro Aviso de Privacidad: ${PRIVACY_POLICY_URL}. Responda STOP o CANCELAR en ` +
+    `cualquier momento para darse de baja.`,
+};
+
 // Substitutes {business_name} with the tenant's real name — falling back to
 // a generic phrase (never a customer-supplied value) if the tenant's name
 // is somehow blank, so the sentence still reads naturally instead of
@@ -680,7 +717,12 @@ function applyBusinessName(template: string, businessName: string, language: Det
 // deliberately; there's no reliable way to strip an "open canvas" tail
 // from arbitrary text) — "short" only ever affects the recommended
 // template.
-function resolveFirstContactGreeting(
+// Exported for direct testing of the first-contact privacy/AI-processing
+// disclosure (FIRST_CONTACT_DISCLOSURE above) across every variant —
+// recommended (full/short) and custom, in both languages — without having
+// to drive the whole inbound-message handler just to reach this one piece
+// of text.
+export function resolveFirstContactGreeting(
   tenant: InboundWhatsAppTenant,
   language: DetectedLanguage,
   variant: "full" | "short" = "full",
@@ -694,10 +736,11 @@ function resolveFirstContactGreeting(
         ? RECOMMENDED_GREETING_TEMPLATE.es
         : RECOMMENDED_GREETING_TEMPLATE.en;
   const recommended = applyBusinessName(template, tenant.name, language);
-  if (tenant.greetingMode !== "custom") return recommended;
+  const disclosure = isEs(language) ? FIRST_CONTACT_DISCLOSURE.es : FIRST_CONTACT_DISCLOSURE.en;
+  if (tenant.greetingMode !== "custom") return `${recommended} ${disclosure}`;
   const custom = (isEs(language) ? tenant.customGreetingEs : tenant.customGreetingEn)?.trim();
-  if (!custom) return recommended; // empty or deleted custom greeting -> safe fallback
-  return applyBusinessName(custom, tenant.name, language);
+  if (!custom) return `${recommended} ${disclosure}`; // empty or deleted custom greeting -> safe fallback
+  return `${applyBusinessName(custom, tenant.name, language)} ${disclosure}`;
 }
 
 function localizedLostPhotoMessage(language: DetectedLanguage): string {

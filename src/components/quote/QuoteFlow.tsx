@@ -764,6 +764,20 @@ export function QuoteFlow({
               Never mind
             </Button>
           </div>
+          {!leadSent && (
+            <p className="mt-2 text-xs text-neutral-400">
+              The business gets notified right away and will follow up with you directly. See our{" "}
+              <a
+                href="/privacy"
+                target="_blank"
+                rel="noreferrer"
+                className="underline underline-offset-2 hover:text-neutral-600"
+              >
+                Privacy Policy
+              </a>
+              .
+            </p>
+          )}
         </div>
       )}
 
@@ -813,6 +827,20 @@ export function QuoteFlow({
               Never mind
             </Button>
           </div>
+          {!leadSent && (
+            <p className="mt-2 text-xs text-neutral-400">
+              The business gets notified right away and will follow up with you directly. See our{" "}
+              <a
+                href="/privacy"
+                target="_blank"
+                rel="noreferrer"
+                className="underline underline-offset-2 hover:text-neutral-600"
+              >
+                Privacy Policy
+              </a>
+              .
+            </p>
+          )}
         </div>
       )}
 

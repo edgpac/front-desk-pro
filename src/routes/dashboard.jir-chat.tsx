@@ -405,6 +405,20 @@ function ImportSection({ onImported }: { onImported: () => void }) {
         Supports a plain-text WhatsApp &quot;Export Chat&quot; file (.txt). Media files and the ZIP
         wrapper aren&apos;t needed; only the text matters for learning how you write.
       </p>
+      <p className="mb-3 text-xs text-muted-foreground">
+        This file contains a real conversation with one of your customers — you&apos;re responsible
+        for having the right to upload and process it. Uploading it here doesn&apos;t transfer that
+        responsibility to Job It Ready. See our{" "}
+        <a
+          href="/privacy"
+          target="_blank"
+          rel="noreferrer"
+          className="underline underline-offset-2 hover:text-foreground"
+        >
+          Privacy Policy
+        </a>
+        .
+      </p>
 
       {!preview && (
         <div>

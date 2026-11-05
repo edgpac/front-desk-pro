@@ -38,12 +38,15 @@ function PrivacyPolicy() {
           <p><strong>From a business account:</strong> name, email, phone, business details (trade, service
             area, hours, pricing), and account credentials, collected when you sign up and use the
             dashboard.</p>
-          <p><strong>From an end customer:</strong> name, phone number, photos of the problem, and a
-            description of the issue — submitted through a business's embedded widget, shareable quote
-            link, or WhatsApp. These forms don't ask for an address directly; one may still end up
-            attached to a lead if a business owner adds it manually, or if a customer mentions it in a
-            WhatsApp conversation. We collect this on behalf of the business the customer is contacting,
-            not on our own behalf.</p>
+          <p>
+            <strong>From an end customer:</strong> name, phone number, photos of the problem, and a
+            description of the issue — submitted through a business's embedded widget, shareable
+            quote link, or WhatsApp. These forms don't have a dedicated address field; one may still
+            end up attached to a lead if a business owner adds it manually, if a customer mentions
+            it in a WhatsApp conversation, or if a customer chooses to include it in their own
+            free-text description of the issue. We collect this on behalf of the business the
+            customer is contacting, not on our own behalf.
+          </p>
 
           <h2 className="text-xl font-semibold">How we use it</h2>
           <ul className="list-disc space-y-2 pl-6">

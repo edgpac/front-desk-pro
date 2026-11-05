@@ -559,3 +559,9 @@ export const embedSnippet = (slug: string) =>
 export const quoteLink = (slug: string) => `https://www.jobitready.com/quote/${slug}`;
 
 export const menuLink = (slug: string) => `https://www.jobitready.com/menu/${slug}`;
+
+// No slug parameter needed (unlike quoteLink/menuLink) — the Privacy
+// Policy is the same page for every tenant. Used in outbound WhatsApp
+// messages, which need a real absolute URL (there's no app router context
+// to resolve a relative "/privacy" against on the recipient's phone).
+export const PRIVACY_POLICY_URL = "https://www.jobitready.com/privacy";

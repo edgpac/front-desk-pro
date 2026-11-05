@@ -57,6 +57,7 @@ import {
   handleInboundWhatsAppMessage,
   withLeadProcessingClaim,
   toInboundWhatsAppTenant,
+  resolveFirstContactGreeting,
   attemptConversationResume,
   RESUMABLE_STATUSES,
   LOOP_PAUSE_MESSAGE,
@@ -4502,8 +4503,13 @@ describe("WhatsApp conversation language localization", () => {
     expect(body).toContain("El precio podría cambiar si el problema real es diferente a lo descrito");
     expect(body).toContain("¿le gustaría que agendemos la visita?");
     // The evidence-language bug this regression guards against: never say
-    // "based on photos" (in either language) when none was ever sent.
-    expect(body).not.toContain("fotos");
+    // "based on photos" (in either language) when none was ever sent. Checks
+    // the specific closing phrase (localizedEstimateBasisClosing's "las
+    // fotos" basis), not the bare word "fotos" — the first-contact privacy
+    // disclosure (resolveFirstContactGreeting) now legitimately mentions
+    // "fotos" generically in every greeting, unrelated to this message's own
+    // evidence-language correctness.
+    expect(body).not.toContain("diferente a las fotos");
     expect(body).not.toContain("Price may change");
   });
 
@@ -5643,5 +5649,124 @@ describe("WhatsApp opt-out — handleInboundWhatsAppMessage's state machine", ()
 
     expect(sent).toHaveLength(1);
     expect(calls.claimConfirmationCalls).toBe(1);
+  });
+});
+
+// Phase 4A Form-Consents audit, Stage A.1: every first-contact greeting
+// variant (recommended full/short, custom, both languages) must carry the
+// privacy/AI-processing disclosure, the Privacy Policy link, and the
+// opt-out instruction — and must never claim anything about the
+// subscriber's own privacy obligations.
+describe("resolveFirstContactGreeting — privacy disclosure present on every variant", () => {
+  const PRIVACY_URL = "https://www.jobitready.com/privacy";
+
+  it("recommended, full, English", () => {
+    const text = resolveFirstContactGreeting(TEST_TENANT, "en", "full");
+    expect(text).toContain(
+      "Hi! 👋 Thanks for reaching out to Acme Handyman. How can I help you today?",
+    );
+    expect(text).toContain("processed by AI");
+    expect(text).toContain(PRIVACY_URL);
+    expect(text).toContain("STOP");
+    expect(text).toContain("CANCELAR");
+  });
+
+  it("recommended, short, English", () => {
+    const text = resolveFirstContactGreeting(TEST_TENANT, "en", "short");
+    expect(text).toContain("Hi! 👋 Thanks for reaching out to Acme Handyman.");
+    expect(text).not.toContain("How can I help you today?");
+    expect(text).toContain("processed by AI");
+    expect(text).toContain(PRIVACY_URL);
+    expect(text).toContain("STOP");
+  });
+
+  it("recommended, full, Spanish", () => {
+    const text = resolveFirstContactGreeting(TEST_TENANT, "es", "full");
+    expect(text).toContain(
+      "¡Hola! 👋 Gracias por contactar a Acme Handyman. ¿En qué podemos ayudarte?",
+    );
+    expect(text).toContain("procesados por IA");
+    expect(text).toContain(PRIVACY_URL);
+    expect(text).toContain("STOP");
+    expect(text).toContain("CANCELAR");
+  });
+
+  it("recommended, short, Spanish", () => {
+    const text = resolveFirstContactGreeting(TEST_TENANT, "es", "short");
+    expect(text).toContain("¡Hola! 👋 Gracias por contactar a Acme Handyman.");
+    expect(text).not.toContain("¿En qué podemos ayudarte?");
+    expect(text).toContain("procesados por IA");
+    expect(text).toContain(PRIVACY_URL);
+  });
+
+  it("custom greeting, English — disclosure still appended, custom text untouched", () => {
+    const custom: InboundWhatsAppTenant = {
+      ...TEST_TENANT,
+      greetingMode: "custom",
+      customGreetingEn: "Yo! Thanks for texting {business_name}, what's up?",
+      customGreetingEs: null,
+    };
+    const text = resolveFirstContactGreeting(custom, "en", "full");
+    expect(text).toContain("Yo! Thanks for texting Acme Handyman, what's up?");
+    expect(text).toContain("processed by AI");
+    expect(text).toContain(PRIVACY_URL);
+    expect(text).toContain("STOP");
+    // The disclosure is Job It Ready's own notice, appended after the
+    // owner's own words — never rewriting or blending into them.
+    expect(text.indexOf("Yo!")).toBeLessThan(text.indexOf("processed by AI"));
+  });
+
+  it("custom greeting, Spanish — disclosure still appended", () => {
+    const custom: InboundWhatsAppTenant = {
+      ...TEST_TENANT,
+      greetingMode: "custom",
+      customGreetingEn: null,
+      customGreetingEs: "¡Qué tal! Gracias por escribir a {business_name}.",
+    };
+    const text = resolveFirstContactGreeting(custom, "es", "full");
+    expect(text).toContain("¡Qué tal! Gracias por escribir a Acme Handyman.");
+    expect(text).toContain("procesados por IA");
+    expect(text).toContain(PRIVACY_URL);
+  });
+
+  it("custom greeting mode but empty/deleted custom text — safely falls back to recommended, still with disclosure", () => {
+    const custom: InboundWhatsAppTenant = {
+      ...TEST_TENANT,
+      greetingMode: "custom",
+      customGreetingEn: "   ",
+      customGreetingEs: null,
+    };
+    const text = resolveFirstContactGreeting(custom, "en", "full");
+    expect(text).toContain(
+      "Hi! 👋 Thanks for reaching out to Acme Handyman. How can I help you today?",
+    );
+    expect(text).toContain("processed by AI");
+    expect(text).toContain(PRIVACY_URL);
+  });
+
+  it("never implies Job It Ready replaces the subscriber's own privacy obligations", () => {
+    // The disclosure describes what THIS platform does with a message —
+    // it must never claim to speak for, or on behalf of, the business's
+    // own privacy practices.
+    const text = resolveFirstContactGreeting(TEST_TENANT, "en", "full");
+    expect(text.toLowerCase()).not.toContain("on behalf of");
+    expect(text.toLowerCase()).not.toContain("covers all");
+    expect(text.toLowerCase()).not.toContain("your privacy rights");
+  });
+
+  it("says 'may be processed', never 'are processed' — the greeting is sent even on a thin first message that never actually reaches the AI", () => {
+    // Regression test: this exact greeting is sent verbatim as the WHOLE
+    // reply for a bare "hi"-style first message (the
+    // "canned:thin-description-greeting" path in
+    // handleInboundWhatsAppMessage/handleFreshQuote) — that message is
+    // never itself sent to the AI, so an unconditional "are processed"
+    // claim would be false for that real, reachable path.
+    const en = resolveFirstContactGreeting(TEST_TENANT, "en", "full");
+    expect(en).toContain("may be processed by AI");
+    expect(en).not.toMatch(/\bare processed by AI\b/);
+
+    const es = resolveFirstContactGreeting(TEST_TENANT, "es", "full");
+    expect(es).toContain("pueden ser procesados por IA");
+    expect(es).not.toMatch(/\bson procesados por IA\b/);
   });
 });
