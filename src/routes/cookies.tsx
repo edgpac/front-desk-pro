@@ -42,8 +42,19 @@ function CookiesPolicy() {
           <h2 className="text-xl font-semibold">What we don't use cookies for</h2>
           <p>
             We don't use cookies for advertising, cross-site tracking, or behavioral analytics. We don't run
-            Google Analytics, Facebook Pixel, or any similar tracking script. Nothing on this site follows you
-            around the web.
+            Google Analytics, Facebook Pixel, or any similar tracking script on this site. Nothing here follows
+            you around the web.
+          </p>
+
+          <h2 className="text-xl font-semibold">One exception: connecting WhatsApp</h2>
+          <p>
+            When an already signed-in business owner starts connecting their WhatsApp account from the
+            dashboard, we load Meta's own sign-in software — the same kind of software any site uses to let
+            you log in with a Facebook or Instagram account. That software runs as part of Meta's own
+            authentication flow, on Meta's own domain, and Meta may set its own cookies there as part of
+            verifying the connection — governed by Meta's policies, not this one. This only happens during
+            that specific, owner-initiated setup step. It doesn't run on any public page, and it isn't Meta
+            advertising or tracking software.
           </p>
 
           <h2 className="text-xl font-semibold">Signing in</h2>
@@ -62,8 +73,8 @@ function CookiesPolicy() {
           <h2 className="text-xl font-semibold">Contact</h2>
           <p>
             Questions about this policy:{" "}
-            <a className="text-primary underline-offset-4 hover:underline" href="mailto:legal@frontdesk.tools">
-              legal@frontdesk.tools
+            <a className="text-primary underline-offset-4 hover:underline" href="mailto:jobitready@gmail.com">
+              jobitready@gmail.com
             </a>
           </p>
         </div>

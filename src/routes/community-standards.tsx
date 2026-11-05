@@ -45,7 +45,8 @@ function CommunityStandards() {
           <ul className="list-disc space-y-2 pl-6">
             <li>Harassment, threats, hate speech, or abusive language directed at anyone in a conversation.</li>
             <li>Illegal content or activity of any kind, including content exploiting or endangering minors —
-              this is reported to the relevant authorities and results in immediate account termination.</li>
+              we report this to the relevant authorities and terminate the account as soon as we become
+              aware of it.</li>
             <li>Sending unsolicited bulk messages, spam, or using Job It Ready's WhatsApp integration for
               marketing blasts rather than genuine customer service and quoting.</li>
             <li>Impersonating another person or business, or misrepresenting who you are in a conversation.</li>
@@ -75,8 +76,8 @@ function CommunityStandards() {
           <p>
             If you've received something through Job It Ready that violates these standards — from a business
             or from a customer — contact us and we'll review it:{" "}
-            <a className="text-primary underline-offset-4 hover:underline" href="mailto:legal@frontdesk.tools">
-              legal@frontdesk.tools
+            <a className="text-primary underline-offset-4 hover:underline" href="mailto:jobitready@gmail.com">
+              jobitready@gmail.com
             </a>
           </p>
         </div>

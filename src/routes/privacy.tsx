@@ -38,10 +38,12 @@ function PrivacyPolicy() {
           <p><strong>From a business account:</strong> name, email, phone, business details (trade, service
             area, hours, pricing), and account credentials, collected when you sign up and use the
             dashboard.</p>
-          <p><strong>From an end customer:</strong> name, phone number, address (if given), photos of the
-            problem, and a description of the issue — submitted through a business's embedded widget,
-            shareable quote link, or WhatsApp. We collect this on behalf of the business the customer is
-            contacting, not on our own behalf.</p>
+          <p><strong>From an end customer:</strong> name, phone number, photos of the problem, and a
+            description of the issue — submitted through a business's embedded widget, shareable quote
+            link, or WhatsApp. These forms don't ask for an address directly; one may still end up
+            attached to a lead if a business owner adds it manually, or if a customer mentions it in a
+            WhatsApp conversation. We collect this on behalf of the business the customer is contacting,
+            not on our own behalf.</p>
 
           <h2 className="text-xl font-semibold">How we use it</h2>
           <ul className="list-disc space-y-2 pl-6">
@@ -66,6 +68,9 @@ function PrivacyPolicy() {
               receives or stores full card numbers.</li>
             <li><strong>Supabase</strong> — our database and authentication provider, where account and lead
               data is stored.</li>
+            <li><strong>Google</strong> — we use Gmail to send lead-notification emails to business
+              owners when a new lead or message comes in. These emails may include the customer's name,
+              a description of their problem, and a link to a submitted photo.</li>
           </ul>
           <p>Each of these providers processes data under their own privacy terms as our service providers,
             not as independent owners of it.</p>
@@ -88,7 +93,7 @@ function PrivacyPolicy() {
           <p>If this policy changes in a material way, we'll update the date at the top of this page.</p>
 
           <h2 className="text-xl font-semibold">Contact</h2>
-          <p>Questions about this policy or a data request: <a className="text-primary underline-offset-4 hover:underline" href="mailto:privacy@frontdesk.tools">privacy@frontdesk.tools</a></p>
+          <p>Questions about this policy or a data request: <a className="text-primary underline-offset-4 hover:underline" href="mailto:jobitready@gmail.com">jobitready@gmail.com</a></p>
         </div>
       </section>
 

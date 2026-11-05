@@ -50,7 +50,11 @@ function TermsOfService() {
             <li>You need an account to use the dashboard, and you're responsible for keeping your login
               credentials secure.</li>
             <li>Paid plans are billed monthly through Stripe and can be canceled at any time from the
-              billing page — no minimum term, no cancellation fee.</li>
+              billing page — no minimum term, no cancellation fee. See our{" "}
+              <a className="text-primary underline-offset-4 hover:underline" href="/refund-policy">
+                Refund & Cancellation Policy
+              </a>{" "}
+              for how billing and refunds work in detail.</li>
             <li>We may suspend or terminate an account for abuse, non-payment, or violation of these terms.</li>
           </ul>
 
@@ -58,6 +62,13 @@ function TermsOfService() {
           <p>Don't use Job It Ready to send unsolicited messages, collect data unlawfully, misrepresent a
             business, or interfere with the Service's operation. WhatsApp messaging in particular is subject
             to WhatsApp's own policies in addition to these terms.</p>
+
+          <h2 className="text-xl font-semibold">Your responsibilities to your own customers</h2>
+          <p>If you use Job It Ready to generate AI-assisted diagnoses, estimates, or messages for your own
+            customers, you're responsible for giving your customers any disclosure, notice, or consent
+            they're owed under the laws that apply to your business and location. Job It Ready doesn't know
+            what those requirements are for your specific business, and using Job It Ready doesn't
+            automatically mean you've met them.</p>
 
           <h2 className="text-xl font-semibold">Your content</h2>
           <p>You (and your customers, through you) retain ownership of photos, descriptions, and other
@@ -80,7 +91,7 @@ function TermsOfService() {
             rules.</p>
 
           <h2 className="text-xl font-semibold">Contact</h2>
-          <p>Questions about these terms: <a className="text-primary underline-offset-4 hover:underline" href="mailto:legal@frontdesk.tools">legal@frontdesk.tools</a></p>
+          <p>Questions about these terms: <a className="text-primary underline-offset-4 hover:underline" href="mailto:jobitready@gmail.com">jobitready@gmail.com</a></p>
         </div>
       </section>
 
