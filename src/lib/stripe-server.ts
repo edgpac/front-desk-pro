@@ -52,7 +52,11 @@ export function resolvePlanFromSubscription(
   return metaPlan === "solo" || metaPlan === "crew" ? metaPlan : null;
 }
 
-function getStripe(): Stripe {
+// Exported for account-deletion-server.ts, which needs its own Stripe
+// client for the same reason every createServerFn wrapper in this file
+// does — the server function's own handler, not the plain testable
+// function, is the only place real env vars/real clients get constructed.
+export function getStripe(): Stripe {
   const key = process.env["STRIPE_SECRET_KEY"];
   if (!key) {
     throw new Error("STRIPE_SECRET_KEY is not set on the server. Add it to .env.");
@@ -289,3 +293,53 @@ export const createBillingPortalSession = createServerFn({ method: "POST" })
     const siteUrl = process.env["SITE_URL"] || "http://localhost:8080";
     return performCreateBillingPortalSession(context.supabase, getStripe(), siteUrl);
   });
+
+export type CancelSubscriptionForDeletionResult = {
+  stripeCustomerId: string | null;
+  stripeSubscriptionId: string | null;
+};
+
+// Used ONLY by account-deletion-server.ts's full account-deletion sequence
+// — never by the self-service "Change plan"/"Cancel" flow above, which goes
+// through Stripe's own hosted Billing Portal and follows whatever
+// immediate-vs-end-of-period policy is configured there. Deletion is
+// different: the tenant and all of its data are being destroyed right now,
+// so an end-of-period cancellation would leave the subscription (and the
+// billing) running for an account that no longer exists to use it.
+// Cancels immediately, via stripe.subscriptions.cancel, not
+// cancel_at_period_end.
+//
+// Cancels EVERY non-canceled subscription found for the customer, not just
+// one — mirrors performCreateCheckoutSession's own "list, don't assume a
+// single id" approach, since nothing in this schema stores a single
+// authoritative subscription id to look up directly (subscription_state
+// only ever stored stripe_customer_id). Returns null for both ids when the
+// user never had a Stripe customer at all (never checked out) — not an
+// error, nothing to cancel.
+export async function performCancelStripeSubscriptionForDeletion(
+  supabase: Pick<SupabaseClient, "from">,
+  stripe: Stripe,
+): Promise<CancelSubscriptionForDeletionResult> {
+  const { data: stateRow } = await supabase
+    .from("subscription_state")
+    .select("stripe_customer_id")
+    .maybeSingle();
+  const stripeCustomerId = (stateRow?.stripe_customer_id as string | null | undefined) ?? null;
+  if (!stripeCustomerId) {
+    return { stripeCustomerId: null, stripeSubscriptionId: null };
+  }
+
+  const subscriptions = await stripe.subscriptions.list({
+    customer: stripeCustomerId,
+    status: "all",
+    limit: 10,
+  });
+  const live = subscriptions.data.filter(
+    (sub) => sub.status !== "canceled" && sub.status !== "incomplete_expired",
+  );
+  for (const sub of live) {
+    await stripe.subscriptions.cancel(sub.id);
+  }
+
+  return { stripeCustomerId, stripeSubscriptionId: live[0]?.id ?? null };
+}

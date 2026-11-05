@@ -789,7 +789,99 @@ export const getMyWhatsAppConnection = createServerFn({ method: "GET" })
     };
   });
 
-type DisconnectResult = { status: "disconnected" } | { status: "error"; message: string };
+export type DisconnectResult =
+  // metaApiSucceeded is null when there was no active connection to
+  // disconnect in the first place (nothing was attempted) — distinct from
+  // true/false, which both mean an attempt was actually made. Added for
+  // account-deletion-server.ts, which — unlike the owner-triggered button
+  // below — must be able to tell a real Meta API failure apart from a
+  // no-op and report it honestly rather than only logging it: see that
+  // file's header comment on why a failure here still doesn't block
+  // account deletion, but must never be silently reported as a success.
+  | { status: "disconnected"; metaApiSucceeded: boolean | null }
+  | { status: "error"; message: string };
+
+// Core disconnect logic, extracted so account-deletion-server.ts can run
+// the exact same Meta-side unsubscribe + local-record cleanup as the
+// owner-triggered button below, instead of duplicating it. Takes an
+// already-resolved tenantId (never a client-supplied one) and the admin
+// client the caller already holds.
+export async function performDisconnectMetaConnection(
+  admin: ReturnType<typeof getAdminClient>,
+  tenantId: string,
+  actorUserId: string,
+): Promise<DisconnectResult> {
+  const { data: connection, error: findError } = await admin
+    .from("whatsapp_connections")
+    .select("id, waba_id, meta_system_user_token")
+    .eq("tenant_id", tenantId)
+    .neq("status", "disconnected")
+    .neq("status", "failed")
+    .maybeSingle();
+  if (findError) {
+    return { status: "error", message: "Could not look up your WhatsApp connection." };
+  }
+  if (!connection) {
+    // Nothing active to disconnect — not an error, the end state is the
+    // same either way.
+    return { status: "disconnected", metaApiSucceeded: null };
+  }
+
+  const wabaId = connection["waba_id"] as string | null;
+  const accessToken = connection["meta_system_user_token"] as string | null;
+  let metaApiSucceeded: boolean | null = null;
+  if (wabaId && accessToken) {
+    try {
+      const { apiVersion } = getMetaCredentials();
+      const response = await fetch(graphUrl(apiVersion, `/${wabaId}/subscribed_apps`), {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      metaApiSucceeded = response.ok;
+      if (!response.ok) {
+        // Meta-side unsubscribe failing doesn't block disconnecting
+        // locally — an owner asking to disconnect should never get stuck
+        // because Meta's API had a bad moment. Logged, not fatal, but now
+        // also carried in the return value (metaApiSucceeded) so a caller
+        // that DOES need to know the truth (account-deletion-server.ts)
+        // can report it honestly instead of only seeing "disconnected".
+        console.error(
+          `[Meta WhatsApp] unsubscribe failed for connection ${connection["id"]}: ${await describeMetaError(response)}`,
+        );
+      }
+    } catch (err) {
+      metaApiSucceeded = false;
+      console.error(
+        `[Meta WhatsApp] unsubscribe request failed for connection ${connection["id"]}:`,
+        err,
+      );
+    }
+  }
+
+  const { error: updateError } = await admin
+    .from("whatsapp_connections")
+    .update({
+      status: "disconnected",
+      disconnected_at: new Date().toISOString(),
+      meta_system_user_token: null,
+    })
+    .eq("id", connection["id"] as string);
+  if (updateError) {
+    return { status: "error", message: "Could not disconnect WhatsApp. Please try again." };
+  }
+
+  await recordAuditLog(admin, {
+    tenantId,
+    actorType: "owner",
+    actorUserId,
+    action: "whatsapp.disconnected",
+    targetType: "whatsapp_connection",
+    targetId: connection["id"] as string,
+    metadata: { wabaId: wabaId ?? null },
+  });
+
+  return { status: "disconnected", metaApiSucceeded };
+}
 
 // Auth-gated, derives tenant_id server-side from the session — never
 // accepts a client-supplied connectionId, so there is nothing for a client
@@ -809,69 +901,9 @@ export const disconnectMetaWhatsApp = createServerFn({ method: "POST" })
       return { status: "error", message: "Could not find your business." };
     }
 
-    const admin = getAdminClient();
-    const { data: connection, error: findError } = await admin
-      .from("whatsapp_connections")
-      .select("id, waba_id, meta_system_user_token")
-      .eq("tenant_id", tenantRow.id as string)
-      .neq("status", "disconnected")
-      .neq("status", "failed")
-      .maybeSingle();
-    if (findError) {
-      return { status: "error", message: "Could not look up your WhatsApp connection." };
-    }
-    if (!connection) {
-      // Nothing active to disconnect — not an error, the end state is the
-      // same either way.
-      return { status: "disconnected" };
-    }
-
-    const wabaId = connection["waba_id"] as string | null;
-    const accessToken = connection["meta_system_user_token"] as string | null;
-    if (wabaId && accessToken) {
-      try {
-        const { apiVersion } = getMetaCredentials();
-        const response = await fetch(graphUrl(apiVersion, `/${wabaId}/subscribed_apps`), {
-          method: "DELETE",
-          headers: { Authorization: `Bearer ${accessToken}` },
-        });
-        if (!response.ok) {
-          // Meta-side unsubscribe failing doesn't block disconnecting
-          // locally — an owner asking to disconnect should never get stuck
-          // because Meta's API had a bad moment. Logged, not fatal.
-          console.error(
-            `[Meta WhatsApp] unsubscribe failed for connection ${connection["id"]}: ${await describeMetaError(response)}`,
-          );
-        }
-      } catch (err) {
-        console.error(
-          `[Meta WhatsApp] unsubscribe request failed for connection ${connection["id"]}:`,
-          err,
-        );
-      }
-    }
-
-    const { error: updateError } = await admin
-      .from("whatsapp_connections")
-      .update({
-        status: "disconnected",
-        disconnected_at: new Date().toISOString(),
-        meta_system_user_token: null,
-      })
-      .eq("id", connection["id"] as string);
-    if (updateError) {
-      return { status: "error", message: "Could not disconnect WhatsApp. Please try again." };
-    }
-
-    await recordAuditLog(admin, {
-      tenantId: tenantRow.id as string,
-      actorType: "owner",
-      actorUserId: context.userId,
-      action: "whatsapp.disconnected",
-      targetType: "whatsapp_connection",
-      targetId: connection["id"] as string,
-      metadata: { wabaId: wabaId ?? null },
-    });
-
-    return { status: "disconnected" };
+    return performDisconnectMetaConnection(
+      getAdminClient(),
+      tenantRow.id as string,
+      context.userId,
+    );
   });

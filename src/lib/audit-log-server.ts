@@ -1,12 +1,20 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-// Shared writer for the three action categories SECURITY_REMEDIATION_TRACKER.md
-// §3.4 approved: subscription/billing state changes, WhatsApp (Meta) connect/
-// disconnect, and lead deletion. See 0027_audit_log.sql for the table itself
-// and why it's shaped the way it is.
+// Shared writer for the action categories SECURITY_REMEDIATION_TRACKER.md
+// §3.4 and Phase 4A approved: subscription/billing state changes, WhatsApp
+// (Meta) connect/disconnect, lead deletion, and (0035_account_deletion.sql)
+// customer-data deletion and the account-deletion sequence. See
+// 0027_audit_log.sql and 0035_account_deletion.sql for the table itself and
+// why it's shaped the way it is.
 export type AuditAction =
-  "subscription.state_changed" | "whatsapp.connected" | "whatsapp.disconnected" | "lead.deleted";
-export type AuditTargetType = "subscription" | "whatsapp_connection" | "lead";
+  | "subscription.state_changed"
+  | "whatsapp.connected"
+  | "whatsapp.disconnected"
+  | "lead.deleted"
+  | "customer_data.deleted"
+  | "account.deletion_requested"
+  | "account.deletion_failed";
+export type AuditTargetType = "subscription" | "whatsapp_connection" | "lead" | "tenant";
 
 type RecordAuditLogParams = {
   tenantId: string;

@@ -338,7 +338,11 @@ export type DeleteWhatsAppImportResult = {
 // before trusting it for the citation check — a row that fails this
 // (malformed/unexpected data, from wherever) throws rather than being
 // silently counted as "not affected".
-async function computeAffectedProfileVersions(
+// Exported for account-deletion-server.ts's "delete all customer data"
+// action, which runs this same per-import check across every one of a
+// tenant's imports before bulk-deleting them — same disclosure policy as
+// the single-import deleteWhatsAppImport below, just applied in bulk.
+export async function computeAffectedProfileVersions(
   supabase: Pick<SupabaseClient, "from">,
   tenantId: string,
   importId: string,

@@ -71,6 +71,46 @@ specific to this business's actual model (AI-generated estimates,
 cross-border B2B SaaS subscription, WhatsApp-based customer communication)
 that haven't been identified in this session's research?
 
+### 6. Account deletion — should a minimal completion record survive the deletion itself?
+Different in kind from items 1-5 (a feature-design question, not a policy-
+wording one), flagged here anyway since no other tracker covers "don't
+implement until legal/privacy review" items. Context: `0035_account_deletion.sql`
+(proposed, not applied) and `src/lib/account-deletion-server.ts` implement
+full account deletion correctly, but **by design, no durable record
+survives a successful deletion anywhere** — `account_deletion_requests`
+and every `audit_log` row for that tenant cascade away in the same
+operation that deletes the Supabase Auth user (see that file's own
+comments). There is currently no way to answer "did user X's deletion
+request complete, and when" after the fact — relevant to a billing
+dispute, a support inquiry, or a regulator/compliance ask to demonstrate a
+specific deletion request was honored.
+
+**Not implemented.** Proposal only, for review before any code or schema
+change:
+- A standalone table with **no foreign key to `tenants` or `auth.users`**
+  (so it cannot cascade away with the account it concerns) and **no
+  customer data, name, email, phone, or business name** — containing only:
+  - `deletion_event_id` (a fresh random UUID, unrelated to the tenant's
+    own id, so the record can't be used to re-derive which specific row
+    it was by id alone)
+  - `requested_at` / `completed_at`
+  - `user_id_hash` — a one-way SHA-256 hash of the original Supabase Auth
+    user id (lets a future lookup confirm "yes, this specific account's
+    deletion completed" without retaining a reversible pointer to it)
+  - `stripe_cancelled` (boolean) and `whatsapp_disconnected` (boolean or
+    the existing three-state true/false/null)
+- Proposed retention: **12-24 months** — long enough to resolve a
+  plausible billing dispute or "did you actually delete my data" support
+  inquiry, then purged. This is an engineering judgment call, not a legal
+  one; counsel should confirm whether a specific statutory retention
+  period applies instead (e.g. tied to Mexican consumer-protection or
+  accounting-record requirements already touched on in item 5).
+
+Question for counsel: is keeping this hashed, minimal record lawful and
+advisable under Mexican privacy law given it's created specifically to
+evidence that personal data WAS deleted, and does the proposed 12-24 month
+retention need to be shorter, longer, or justified differently?
+
 ---
 
 ## How to use this file

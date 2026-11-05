@@ -4,6 +4,7 @@ import { toast } from "sonner";
 
 import { PageHeader, Panel } from "@/components/app/DashboardShell";
 import { ConnectWhatsAppMeta } from "@/components/app/ConnectWhatsAppMeta";
+import { DataPrivacyPanel } from "@/components/app/DataPrivacyPanel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -346,6 +347,8 @@ function BusinessSettings() {
           </div>
         </form>
       </Panel>
+
+      {user && <DataPrivacyPanel />}
     </div>
   );
 }
