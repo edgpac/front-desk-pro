@@ -605,6 +605,27 @@ function formatQuotePriceLine(
   return pricedPortion;
 }
 
+// A soft prompt instruction asking the AI to keep its diagnosis text to one
+// brief sentence for a fully-deferred (hasNoPricedWork) quote proved
+// unreliable in production (confirmed live, 2026-11-05: a "hang things on
+// the wall" request still got a full paragraph — restating the request,
+// speculating about likely items, explaining why a look is needed — on top
+// of formatQuotePriceLine's own fixed explanation, right back to the
+// original "novel" complaint this whole fix exists for). Same lesson as
+// ai_notes/alwaysRequiresInspection: an unenforced prompt instruction is not
+// a guarantee. This is the hard, deterministic fix — for a fully-deferred
+// quote, the AI's diagnosis text is simply never sent to the customer at
+// all; formatQuotePriceLine's own fixed, short, already-accurate line is the
+// entire substantive reply. The diagnosis is still saved to the lead record
+// (createLead/finalizeLeadWithQuote's own diagnosis field, unaffected by
+// this) for the owner's own dashboard — only the outbound customer message
+// changes. Returns the diagnosis plus its trailing separator space so every
+// call site can splice it in unchanged; "" when fully deferred, so nothing
+// else needs to worry about a stray leading space.
+function customerFacingDiagnosisPrefix(diagnosis: string, hasNoPricedWork: boolean): string {
+  return hasNoPricedWork ? "" : `${diagnosis} `;
+}
+
 // WhatsApp-specific customer-facing copy, localized to the customer's
 // detected language (estimate-server.ts's detectLanguage/LANGUAGE_NAME —
 // Claude already localizes diagnosis/questions/options per that same
@@ -1773,7 +1794,7 @@ export async function handleInboundWhatsAppMessage(params: {
           priceSheetItemIds: clarifyResult.lineItems.map((item) => item.priceSheetItemId),
           amounts: [...clarifyResult.lineItems.map((item) => item.amount), clarifyResult.totalLow],
         },
-        messageText: `${clarifyResult.diagnosis} ${formatQuotePriceLine(clarifyResult.totalLow, tenant.currency, clarifyResult.isDiagnosisOnly, clarifyResult.hasNoPricedWork, clarifyResult.hasFeeFreeDeferralOnly, clarifyResult.hasPartiallyDeferredWork, language)}${clarifyResult.hasNoPricedWork ? "" : ` ${localizedEstimateBasisClosing(language, clarifyImageBase64 !== undefined)}`}`,
+        messageText: `${customerFacingDiagnosisPrefix(clarifyResult.diagnosis, clarifyResult.hasNoPricedWork)}${formatQuotePriceLine(clarifyResult.totalLow, tenant.currency, clarifyResult.isDiagnosisOnly, clarifyResult.hasNoPricedWork, clarifyResult.hasFeeFreeDeferralOnly, clarifyResult.hasPartiallyDeferredWork, language)}${clarifyResult.hasNoPricedWork ? "" : ` ${localizedEstimateBasisClosing(language, clarifyImageBase64 !== undefined)}`}`,
       });
 
       return;
@@ -2450,7 +2471,7 @@ async function handleQuotedFollowUpPhoto(params: {
       const previousPriceNote = existingHasNoPricedWork
         ? ""
         : localizedPreviousPriceNote(language, money(existingTotal, tenant.currency));
-      const updateMessage = `${localizedPhotoUpdateIntro(language)} ${reassessed.diagnosis} ${formatQuotePriceLine(newTotal, tenant.currency, reassessed.isDiagnosisOnly, reassessed.hasNoPricedWork, reassessed.hasFeeFreeDeferralOnly, reassessed.hasPartiallyDeferredWork, language)}${previousPriceNote}`;
+      const updateMessage = `${localizedPhotoUpdateIntro(language)} ${customerFacingDiagnosisPrefix(reassessed.diagnosis, reassessed.hasNoPricedWork)}${formatQuotePriceLine(newTotal, tenant.currency, reassessed.isDiagnosisOnly, reassessed.hasNoPricedWork, reassessed.hasFeeFreeDeferralOnly, reassessed.hasPartiallyDeferredWork, language)}${previousPriceNote}`;
       await sendGuardedReply({
         admin,
         tenant,
@@ -2796,6 +2817,6 @@ async function handleFreshQuote(params: {
       priceSheetItemIds: result.lineItems.map((item) => item.priceSheetItemId),
       amounts: [...result.lineItems.map((item) => item.amount), result.totalLow],
     },
-    messageText: `${firstContactGreeting}${result.diagnosis} ${formatQuotePriceLine(result.totalLow, tenant.currency, result.isDiagnosisOnly, result.hasNoPricedWork, result.hasFeeFreeDeferralOnly, result.hasPartiallyDeferredWork, language)}${result.hasNoPricedWork ? "" : ` ${localizedEstimateBasisClosing(language, imageBase64 !== undefined)}`}`,
+    messageText: `${firstContactGreeting}${customerFacingDiagnosisPrefix(result.diagnosis, result.hasNoPricedWork)}${formatQuotePriceLine(result.totalLow, tenant.currency, result.isDiagnosisOnly, result.hasNoPricedWork, result.hasFeeFreeDeferralOnly, result.hasPartiallyDeferredWork, language)}${result.hasNoPricedWork ? "" : ` ${localizedEstimateBasisClosing(language, imageBase64 !== undefined)}`}`,
   });
 }

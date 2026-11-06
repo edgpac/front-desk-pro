@@ -2670,6 +2670,11 @@ describe("quoted_follow_up text classification — four-way (same_job / differen
     expect(body).not.toContain("a service-call/diagnostic fee applies");
     expect(body).not.toContain("Price may change");
     expect(body).not.toContain("want me to get this booked in");
+    // The regression this test exists for: a soft prompt instruction asking
+    // the AI to keep this diagnosis brief proved unreliable in production —
+    // the AI's own diagnosis text must never reach the customer at all for
+    // a fully-deferred quote, regardless of what it says.
+    expect(body).not.toContain("concrete crack repair and touch-up paint");
   });
 
   it("a generic (fee-pending) deferral keeps the fee-applies wording but still drops the price-may-change closing", async () => {
@@ -2686,7 +2691,8 @@ describe("quoted_follow_up text classification — four-way (same_job / differen
       issueType: "General",
       severity: "Low",
       confidence: "Medium",
-      diagnosis: "Got it.",
+      diagnosis:
+        "Marina wants to hang additional items on the walls — likely pictures, mirrors, shelves, or decorative pieces. Since no photo was provided and the specific items aren't detailed, I'll need to see what's being hung to confirm the right service and any special mounting requirements.",
       isDiagnosisOnly: false,
       hasNoPricedWork: true,
       hasFeeFreeDeferralOnly: false,
@@ -2701,7 +2707,7 @@ describe("quoted_follow_up text classification — four-way (same_job / differen
     await handleInboundWhatsAppMessage({
       tenant: TEST_TENANT,
       fromPhone: TEST_PHONE,
-      body: "My ice maker is acting up, can you help?",
+      body: "I'll need your help with more hanging things in the walls",
       mediaRef: undefined,
       providerMessageId: undefined,
       profileName: undefined,
@@ -2714,6 +2720,12 @@ describe("quoted_follow_up text classification — four-way (same_job / differen
     expect(body).toContain("a service-call/diagnostic fee applies");
     expect(body).not.toContain("Price may change");
     expect(body).not.toContain("want me to get this booked in");
+    // Same regression guard as the fee-free test above — confirmed live,
+    // 2026-11-05: this exact kind of speculative, paragraph-length AI
+    // diagnosis reached a real customer despite the (unreliable) prompt
+    // instruction asking the AI to keep it brief.
+    expect(body).not.toContain("likely pictures, mirrors, shelves");
+    expect(body).not.toContain("I'll need to see what's being hung");
   });
 
   it('classification="ambiguous": asks one short clarifying question instead of quoting the old job — no lead created, no AI pricing call made', async () => {
