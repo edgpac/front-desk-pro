@@ -1,0 +1,65 @@
+-- Database hardening from the 2026-11-06 security audit. Both items
+-- were already recommended in SECURITY_REMEDIATION_TRACKER.md; this is
+-- the first time either is actually written as a migration. Neither
+-- changes application behavior — both are least-privilege/defense-in-
+-- depth hardening on functions whose current behavior is unchanged.
+--
+-- Not applied by this session. Review, then apply via the Supabase SQL
+-- Editor and paste back the verification queries' results, same gate as
+-- every other migration this engagement.
+
+-- 1. handle_new_user() RPC exposure.
+--
+-- Supabase's own security advisor flags this function as callable via
+-- RPC (POST /rest/v1/rpc/handle_new_user) by both the anon and
+-- authenticated roles. In practice this isn't currently exploitable:
+-- the function is declared `returns trigger`, and Postgres rejects any
+-- attempt to call a trigger function outside real trigger context with
+-- a runtime type error ("trigger functions can only be called as
+-- triggers") — confirmed directly: against a local disposable Postgres
+-- instance with this migration applied, EXECUTE was granted back to
+-- anon temporarily and the call attempted, producing exactly that
+-- error; a real signup (an insert into auth.users) was also tested
+-- immediately before and after this revoke, and the trigger fired and
+-- created the tenant row identically both times. This revoke closes
+-- the unnecessary EXECUTE grant
+-- anyway, as defense-in-depth: removing an exposed surface that
+-- shouldn't exist, even though it isn't currently exploitable, is worth
+-- doing on its own.
+--
+-- This does NOT affect the trigger's own ability to fire on new
+-- auth.users rows. Trigger execution is governed by the trigger
+-- definition itself (created by a privileged role) and this function's
+-- own `security definer` clause — it already runs as the function's
+-- owner regardless of which role performed the insert, never as a
+-- function of the inserting role's own EXECUTE grant. Revoking
+-- anon/authenticated's ability to call it directly as an RPC has no
+-- bearing on that separate mechanism.
+revoke execute on function public.handle_new_user() from public, anon, authenticated;
+
+-- 2. set_updated_at()'s mutable search_path.
+--
+-- Unlike handle_new_user() (which already set `search_path = public`),
+-- this trigger function had no fixed search_path at all — a theoretical
+-- schema-injection surface if a malicious schema were ever earlier in
+-- some caller's search_path than `public`. Practical risk is low (this
+-- function only assigns `new.updated_at = now()`, no dynamic SQL, no
+-- unqualified object lookups that could resolve to an attacker-planted
+-- object), but the fix is free and matches the hardening its sibling
+-- function already has.
+alter function public.set_updated_at() set search_path = public;
+
+-- Verification query (run after applying, paste the result back):
+-- select
+--   p.proname,
+--   p.prosecdef as security_definer,
+--   p.proconfig as search_path_config,
+--   has_function_privilege('anon', p.oid, 'EXECUTE') as anon_can_execute,
+--   has_function_privilege('authenticated', p.oid, 'EXECUTE') as authenticated_can_execute
+-- from pg_proc p
+-- join pg_namespace n on n.oid = p.pronamespace
+-- where n.nspname = 'public' and p.proname in ('handle_new_user', 'set_updated_at');
+--
+-- Expected result: both anon_can_execute and authenticated_can_execute
+-- = false for handle_new_user; search_path_config shows
+-- {search_path=public} for both functions.

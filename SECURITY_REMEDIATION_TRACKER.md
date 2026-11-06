@@ -10,9 +10,224 @@ to answer "is X actually released."
 build of that branch) · 🟡 committed locally, not pushed (blocked) · 🟠
 implemented + tested locally, **not yet committed** (awaiting review) · 🔵
 read-only finding, no fix implemented yet · ⚪ reviewed, left as-is (not a
-bug, or not in scope)
+bug, or not in scope) · 🟣 migration prepared, **not applied to
+production** · 🟤 manual Supabase dashboard action required, not something
+code or a migration can do
 
-Last updated: 2026-10-18.
+Last updated: 2026-11-06.
+
+---
+
+## 0. Stage 1 — 2026-11-06 security audit remediation 🟠
+
+Everything below is implemented + tested locally. **Nothing in this
+section is committed, pushed, or deployed, and no migration has been
+applied to production** — per this stage's own explicit stop point.
+Do not treat any item here as "done" until it's actually shipped; this
+section exists specifically so that distinction never gets lost.
+
+### 1A — SSRF fix 🟠
+**File**: new `src/lib/ssrf-safe-fetch.ts`, wired into
+`price-sheet-server.ts`'s `extractPriceSheetFromUrl` (replacing the old
+`isSafePublicUrl`, which validated hostnames as strings and never
+resolved DNS before connecting — the DNS-rebinding gap the audit found).
+**What it does**: resolves every DNS record for a hostname, rejects if
+any is private/loopback/link-local/reserved (IPv4 and IPv6, including
+IPv4-mapped IPv6), then pins the actual connection to the exact address
+already validated (via Node's own `http(s).request`'s `lookup` option)
+so a second, independent DNS lookup at connect time can never answer
+differently. Redirects are followed manually, one hop at a time, each
+hop re-validated from scratch.
+**Tests**: `src/lib/ssrf-safe-fetch.test.ts`, 26 tests — localhost,
+private IPv4/IPv6, link-local, mixed-safe/unsafe DNS results, redirects
+to a prohibited destination, a deliberate DNS-rebinding simulation
+(proven to actually catch a regression — the pinning was deliberately
+broken and the test failed, then restored and re-verified green), and a
+normal public HTTPS URL succeeding end to end.
+**Genuinely resolved?** Yes, as far as this app's own code goes — the
+exact bypass the audit described (a hostname that looks public but
+resolves to an internal address) is now closed and proven closed.
+**Remaining limitation**: none identified for this specific
+vulnerability class.
+**Migration required?** No. **Manual dashboard action?** No.
+
+### 1B — Database hardening 🟢 Applied to production, verified (2026-11-06)
+**File**: `supabase/migrations/0037_database_hardening.sql` — **applied to production
+and verified** via the SQL Editor: `handle_new_user` now shows
+`anon_can_execute=false`, `authenticated_can_execute=false`,
+`search_path_config=["search_path=public"]`; `set_updated_at` now shows
+`search_path_config=["search_path=public"]`. Matches the expected
+post-migration state exactly.
+**What it does**: revokes `anon`/`authenticated` EXECUTE on
+`handle_new_user()` (defense-in-depth — confirmed, by actually
+attempting the call against a local disposable Postgres instance, that
+Postgres already rejects it with "trigger functions can only be called
+as triggers" regardless of the grant); sets a fixed `search_path` on
+`set_updated_at()`.
+**Verification performed, not just asserted**: applied against a local
+disposable Postgres instance (`supabase start` + `db reset`, all 38
+migrations including this one), then: (1) confirmed via
+`has_function_privilege` that both grants are now `false`; (2) confirmed
+the trigger-type-mismatch error directly, by temporarily re-granting and
+attempting the call; (3) inserted a real row into `auth.users` and
+confirmed the `tenants` row was created identically before and after
+this migration; (4) updated a `tenants` row and confirmed
+`set_updated_at` still fired. Local stack torn down afterward.
+**Genuinely resolved?** The migration is written, correct, and
+empirically proven safe — but it is **not applied to production**. This
+item is not resolved until you run it.
+**Migration required?** Yes — `0037_database_hardening.sql`, prepared,
+not applied. **Manual dashboard action?** Separately, yes — see the
+leaked-password-protection item below, which this migration does not
+cover (that's a toggle, not SQL).
+
+🟤 **Leaked-password protection** — still disabled (confirmed live via
+`get_advisors` during this round). Not something a migration can fix.
+Dashboard path: **Authentication → Policies → Password Security** (or
+**Authentication → Providers → Email**, depending on your dashboard
+version) → enable "Leaked password protection." No code or migration
+dependency.
+
+### 1C — Durable AI rate limiting for the three classifiers 🟡 Database half applied; code half not yet deployed
+**Database**: `supabase/migrations/0038_tenant_ai_usage_kind.sql` —
+**applied to production and verified** (2026-11-06), transactional
+version. Confirmed: the one real pre-existing row survived with
+`kind='quote'`, count unchanged.
+**Application code**: **still not committed or deployed.** This matters:
+production's deployed code still uses the old 2-argument RPC call shape
+(confirmed safe — it correctly defaults to `kind='quote'`, no outage),
+but that also means the three classifiers are **not yet actually using**
+the new `classifier` bucket the database can now support. Until
+`estimate-server.ts`/`whatsapp-conversation-server.ts`'s changes are
+committed, pushed, and deployed, the classifiers remain protected only
+by the old in-memory `withinRateLimit()` counter — the durable fix
+this stage exists to ship is schema-ready but not yet live.
+**Files**: `supabase/migrations/0038_tenant_ai_usage_kind.sql`;
+`estimate-server.ts` (`enforceTenantAiLimit` now takes a `kind: "quote" |
+"classifier"`, each with its own ceiling and its own row in
+`tenant_ai_usage`); `whatsapp-conversation-server.ts` (the 4 call sites
+across `classifyFollowUpIntent`/`classifyBroadServiceInquiry`/
+`classifyFollowUpPhotoIntent` now pass `tenantSlug`).
+**Why a new migration, not just a code change**: `tenant_ai_usage` had
+no `kind` column — reusing it unmodified would make these three
+high-frequency classifiers share the exact same 300/day budget as real
+quote generation, risking a busy conversation day starving legitimate
+quoting. The migration gives classifiers their own 1000/day bucket,
+mirroring the `kind` design `tenant_ip_usage` (its own sibling table,
+same original migration) already uses.
+**Tests**: 8 new tests in `estimate-server.test.ts` covering both
+ceilings independently, the default-to-"quote" behavior (so the two
+pre-existing call sites don't need to change), failing closed on a
+database error, the no-tenant-resolves case, and a concurrent-requests
+test proving the boundary case (the request that crosses the ceiling is
+rejected, not an earlier or later one) — plus the stale test-assertion
+fix in `whatsapp-conversation-server.test.ts` this required.
+**Genuinely resolved?** The application code is correct and tested
+against a fake admin client. The real atomic-increment guarantee comes
+from Postgres's `on conflict ... do update` (same proven pattern as
+`0017`/`0018`'s already-live counters) — not re-provable in a unit test,
+but not new logic either. **Not applied to production** — this doesn't
+take effect until `0038` is run.
+**Migration required?** Yes — `0038_tenant_ai_usage_kind.sql`.
+**Manual dashboard action?** No.
+
+### 1D — JIR Chat import validation 🟠
+**File**: `whatsapp-import-server.ts` — `validateWhatsAppImportInput`,
+wired into both `previewMyWhatsAppImport` and `confirmMyWhatsAppImport`'s
+`.validator()` (previously a literal identity function with no check of
+any kind).
+**What it does**: rejects non-object input, missing/non-string/empty
+content, content over 10MB, non-boolean `preferDayFirst`, a non-string
+`originalFilename`; caps an oversized filename rather than rejecting the
+whole import over a cosmetic field.
+**Tests**: 14 new tests in `whatsapp-import-server.test.ts` — valid
+imports, every malformed-type case, the oversized case, the at-the-limit
+boundary, and unexpected extra fields.
+**Genuinely resolved?** Yes — this is a pure code change with no
+database or dashboard dependency, so once committed and deployed it's
+fully in effect.
+**Migration required?** No. **Manual dashboard action?** No.
+
+### 1E — Price-sheet photo upload size limit 🟠
+**File**: `price-sheet-server.ts` — new `validatePriceSheetPhotoUpload`
+(extracted for direct testability, same reasoning as every other
+`createServerFn`-wrapped handler in this codebase), wired into
+`extractPriceSheetFromImage` ahead of the real AI call. Same 2.8MB
+ceiling and message as `estimate-server.ts`'s own existing
+`MAX_IMAGE_BASE64_CHARS` (duplicated rather than imported, same
+import-protection constraint as this file's existing
+`isSupportedImageBase64` copy).
+**Tests**: 7 new tests — valid JPEG/PNG, wrong format, a
+format/size-mismatch combination (confirms the format error wins, not a
+confusing size error, when both are true), oversized, and exactly at the
+boundary.
+**Genuinely resolved?** Yes, same as 1D — pure code, no dependency.
+**Migration required?** No. **Manual dashboard action?** No.
+
+### 1F — Signup capacity enforcement — options only, nothing implemented 🔵
+The current `/signup` gate (`SIGNUPS_OPEN = false` in `signup.tsx`, from
+an earlier round) is UI-only — confirmed by this round's audit:
+`supabase.auth.signUp()` called directly against the public API still
+creates a working account, because `handle_new_user()`'s trigger fires
+on any new `auth.users` row regardless of how it was created.
+
+Per this stage's explicit instruction, options are presented here for
+your decision — **nothing below is built**:
+
+- **Option A (recommended): Supabase's own "Allow new users to sign up"
+  toggle** (Authentication → Sign In / Up settings, exact location
+  varies by dashboard version). Rejects every signup attempt at the
+  platform level, before this app's code or database ever runs —
+  including a direct API call, which is exactly the bypass found. Zero
+  code, zero migration, instantly reversible. 🟤 manual dashboard
+  action, no code dependency.
+- **Option B: a Postgres trigger on `auth.users` checking a flag.** More
+  moving parts (a new config-flag mechanism, a migration, real risk of
+  breaking signup if the trigger logic has a bug) for no additional
+  protection over Option A, since Option A already stops the row from
+  ever being inserted in the first place.
+- **Option C: a Supabase Auth Hook.** Either a Postgres-function hook or
+  an Edge Function hook, configured in the dashboard. More setup than
+  Option A, no clear advantage for this specific need.
+
+**Recommendation**: Option A. Not applied — waiting on your decision.
+
+### 1G — Content Security Policy 🟠 (Report-Only)
+**File**: `vercel.json` — added `Content-Security-Policy-Report-Only`
+(deliberately not the enforcing header yet), split into two header
+blocks mirroring the existing `X-Frame-Options` exception exactly (one
+for everything except `/widget/*` with `frame-ancestors 'self'`, one for
+`/widget/*` with `frame-ancestors *` — the embeddable quote-widget's
+whole purpose is being framed by an arbitrary external site). Built from
+a real inventory of this app's actual external resources, not a generic
+template: Google Fonts (`fonts.googleapis.com`/`fonts.gstatic.com`),
+Meta's Embedded Signup SDK (`connect.facebook.net`, plus
+`frame-src https://www.facebook.com` for its own login dialog), the
+Supabase project's REST/Realtime endpoints (`*.supabase.co`,
+`wss://*.supabase.co`). `script-src`/`style-src` include
+`'unsafe-inline'` — confirmed necessary, not a default: TanStack Start's
+own SSR streaming mechanism injects inline bootstrap scripts directly
+into the HTML (observed directly in this engagement's own earlier
+production-verification work), and a tenant's custom brand color is
+applied via an inline `style` prop (`QuoteFlow.tsx`). A stricter
+nonce-based policy is possible in principle (TanStack Router supports an
+`ssr.nonce` option) but needs its own per-request nonce middleware and
+disabling caching on nonce-bearing pages — real framework-level work,
+not attempted here; flagged as a follow-up, not guessed at.
+**Verification**: JSON-validated, full build/test suite re-run clean.
+**Not independently verified against real, live traffic** — this is
+Report-Only specifically so real page loads can be checked (browser
+DevTools' Console/Network tabs show CSP violations even in report-only
+mode) before ever switching to the enforcing header. No violation-
+collection endpoint (`report-to`) was built — recommended as a
+follow-up if you want structured, aggregated reports rather than
+checking the browser console by hand during a manual pass.
+**Genuinely resolved?** Partially — real protection exists once this
+header is live (even in report-only form, it tells you what WOULD
+break), but moving to actual enforcement needs a monitoring period
+first, by design.
+**Migration required?** No. **Manual dashboard action?** No — this is a
+`vercel.json` change, takes effect on next deploy.
 
 ---
 
@@ -648,23 +863,48 @@ or built here.
 **Dependencies**: none on other open items, but should be revisited
 before Meta Advanced Access traffic scales up if requirements change.
 
-### 3.3 — Supabase Auth rate limits / app-level protection 🔵
-**Confirmed still open** (re-verified 2026-10-18). Login (`login.tsx:43`),
-signup (`signup.tsx:43-47`), password-reset request
-(`forgot-password.tsx:42-44`), and password-reset completion
+### 3.3 — Supabase Auth rate limits / app-level protection ✅ resolved (checked live, 2026-11-06; independently re-verified 2026-11-06)
+Login (`login.tsx:43`), signup (`signup.tsx:43-47`), password-reset
+request (`forgot-password.tsx:42-44`), and password-reset completion
 (`reset-password.tsx:70`) all call Supabase's client SDK directly — zero
-`createServerFn`, zero app-level throttling. A real per-IP rate-limit
-pattern exists (`enforceTenantRateLimit`, `public-lead-server.ts`) but is
-wired only into public lead/quote endpoints, never auth.
-**Unknown (provider-side, not verifiable from this repo)**: whatever
-Supabase's own dashboard Auth rate-limit settings are currently
-configured to.
-**Decision needed from you**: (a) check the Supabase dashboard's current
-Auth rate-limit config and report back what it actually is, (b) decide
-whether that's sufficient or whether app-level throttling should be
-added on top (would need its own design — this repo doesn't have a
-generic IP-rate-limit helper for non-tenant-scoped endpoints like auth).
-**Dependencies**: (a) blocks a real answer on (b).
+`createServerFn`, zero app-level throttling of their own. A real per-IP
+rate-limit pattern exists (`enforceTenantRateLimit`, `public-lead-server.ts`)
+but is wired only into public lead/quote endpoints, never auth.
+
+**Previously unknown, now confirmed** by checking the live Dashboard
+(Authentication → Rate Limits) directly: every value is at Supabase's own
+documented platform default, nothing loosened —
+- Sign-ups and sign-ins (the one that matters for login brute-forcing):
+  30 requests/5 min per IP (360/hour)
+- Token refresh: 150 requests/5 min per IP
+- Token verification (OTP/magic link): 30 requests/5 min per IP
+- Anonymous sign-ins: 30/hour per IP
+- "IP address forwarding" is off, which is correct here, not a gap — it
+  only matters when a secret key proxies auth requests server-side on
+  behalf of many users; this app's auth calls go straight from each
+  visitor's own browser to Supabase, so Auth already sees their real IP.
+
+**Independently re-verified** (separate review, instructed to treat the
+above as an unverified claim, not ground truth): confirmed the four
+default values directly against Supabase's own documentation (not citing
+this entry), and confirmed `login.tsx`/`signup.tsx`/`forgot-password.tsx`/
+`reset-password.tsx` all call the Supabase client SDK with the public
+publishable key, never a secret key or server proxy. Added evidence this
+entry didn't have: the two IP-reading call sites this app's own code has
+(`getClientIpHash`, used only for rate-limiting, never auth) read
+`X-Forwarded-For` — and Vercel's own documentation states it overwrites
+that header and does not forward externally-supplied values, specifically
+to prevent spoofing. That's the fact that actually closes "could someone
+fake their IP," not just the architectural absence of a proxy point.
+
+**Decision:** no app-level throttling added on top. These are real,
+platform-enforced limits (not zero protection), signups are currently
+paused anyway (see the capacity-pause change on `/signup`), and this
+project has exactly one real user right now — building the restructuring
+needed to route login/signup/reset through a server function first (they
+currently call the Supabase client SDK directly from the browser) isn't
+justified by the current risk. Revisit if/when real third-party signups
+resume and traffic grows.
 
 ### 3.4 — Audit logging 🟠 implemented + tested locally, awaiting migration review/apply
 **Scope approved (2026-10-18)**: subscription/billing state changes,

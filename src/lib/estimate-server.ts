@@ -602,7 +602,26 @@ const TENANT_AI_MAX_PER_WINDOW = 300;
 const TENANT_AI_LIMIT_MESSAGE =
   "This business is getting an unusually high volume of requests right now — please try again shortly.";
 
-async function enforceTenantAiLimit(tenantSlug: string): Promise<void> {
+// Classifiers (classifyFollowUpIntent, classifyBroadServiceInquiry,
+// classifyFollowUpPhotoIntent) are cheap per call (small model, ~50
+// output tokens) but fire far more often than a full quote — on every
+// inbound follow-up message, not just once per job. Giving them their
+// own "classifier" bucket (migration 0038) rather than sharing the
+// "quote" bucket above means a busy day of real conversation traffic
+// can never itself exhaust the budget meant for actual quote
+// generation. Generous enough that no ordinarily-busy business should
+// ever hit it; still a real hard ceiling against abuse.
+const TENANT_CLASSIFIER_MAX_PER_WINDOW = 1000;
+
+// Exported for direct unit testing (with a fake admin client) — see
+// estimate-server.test.ts's "enforceTenantAiLimit" describe block. Every
+// real call site above still calls it the same way; this only makes it
+// independently testable without needing the full createServerFn
+// runtime.
+export async function enforceTenantAiLimit(
+  tenantSlug: string,
+  kind: "quote" | "classifier" = "quote",
+): Promise<void> {
   const admin = getAdminClient();
   const { data: tenant, error: tenantError } = await admin
     .from("tenants")
@@ -619,12 +638,14 @@ async function enforceTenantAiLimit(tenantSlug: string): Promise<void> {
   const { data: count, error } = await admin.rpc("increment_tenant_ai_usage", {
     p_tenant_id: tenant.id,
     p_window_seconds: TENANT_AI_WINDOW_SECONDS,
+    p_kind: kind,
   });
   if (error) {
     console.error("Tenant AI usage check failed:", error.message);
     throw new Error(TENANT_AI_LIMIT_MESSAGE);
   }
-  if ((count ?? 0) > TENANT_AI_MAX_PER_WINDOW) {
+  const max = kind === "classifier" ? TENANT_CLASSIFIER_MAX_PER_WINDOW : TENANT_AI_MAX_PER_WINDOW;
+  if ((count ?? 0) > max) {
     throw new Error(TENANT_AI_LIMIT_MESSAGE);
   }
 }
@@ -1877,6 +1898,10 @@ export type FollowUpClassifyInput = {
   priorProblem: string;
   priorDiagnosis: string;
   customerReply: string;
+  // Added for the durable, per-tenant rate limit below — every call
+  // site already has the tenant in scope (this classifier only ever
+  // runs mid-WhatsApp-conversation, never anonymously).
+  tenantSlug: string;
 };
 
 // Four-way, same shape as classifyFollowUpPhotoIntent's
@@ -1910,6 +1935,12 @@ export const classifyFollowUpIntent = createServerFn({ method: "POST" })
     if (!withinRateLimit()) {
       throw new Error("This demo is getting a lot of traffic right now — try again in a minute.");
     }
+    // Durable, per-tenant ceiling (migration 0038's "classifier" bucket)
+    // — the in-memory check above only ever protects a single warm
+    // instance; this is the real, cross-instance enforcement. See
+    // enforceTenantAiLimit's own comment for why classifiers get their
+    // own budget rather than sharing getQuoteEstimate's.
+    await enforceTenantAiLimit(data.tenantSlug, "classifier");
 
     const prompt = `A customer already received a quote for this job:
 
@@ -1976,11 +2007,12 @@ Respond with ONLY valid JSON, no markdown fences: {"classification": "same_job"}
 export type BroadServiceInquiryClassification = "broad_overview" | "specific_or_other";
 
 export const classifyBroadServiceInquiry = createServerFn({ method: "POST" })
-  .validator((input: { message: string }) => input)
+  .validator((input: { message: string; tenantSlug: string }) => input)
   .handler(async ({ data }): Promise<{ classification: BroadServiceInquiryClassification }> => {
     if (!withinRateLimit()) {
       throw new Error("This demo is getting a lot of traffic right now — try again in a minute.");
     }
+    await enforceTenantAiLimit(data.tenantSlug, "classifier");
 
     const prompt = `Decide whether this WhatsApp message to a service business is a BROAD question about what kinds of services/jobs the business offers in general, with no specific problem or service named — e.g. "what services do you offer", "what do you guys do", "can you send me your price list", "do you have a full list of services", "do you have a menu".
 
@@ -2033,6 +2065,7 @@ export type FollowUpPhotoClassifyInput = {
   customerReply: string;
   imageBase64: string;
   imageMediaType?: string | undefined;
+  tenantSlug: string;
 };
 
 export const classifyFollowUpPhotoIntent = createServerFn({ method: "POST" })
@@ -2041,6 +2074,7 @@ export const classifyFollowUpPhotoIntent = createServerFn({ method: "POST" })
     if (!withinRateLimit()) {
       throw new Error("This demo is getting a lot of traffic right now — try again in a minute.");
     }
+    await enforceTenantAiLimit(data.tenantSlug, "classifier");
     // Same format gate as getQuoteEstimate itself — an unsupported image
     // can't be reasoned about at all. Treated as ambiguous (ask, don't
     // guess) rather than silently defaulting either way.

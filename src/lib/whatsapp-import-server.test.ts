@@ -4,12 +4,15 @@ import {
   UnverifiableProfileVersionError,
   WhatsAppImportAlreadyExistsError,
   WhatsAppImportNotFoundError,
+  InvalidWhatsAppImportInputError,
+  MAX_IMPORT_CONTENT_CHARS,
   computeImportContentHash,
   confirmWhatsAppImport,
   deleteWhatsAppImport,
   listWhatsAppImports,
   previewWhatsAppImport,
   previewWhatsAppImportDeletion,
+  validateWhatsAppImportInput,
 } from "./whatsapp-import-server";
 
 // Same generic in-memory fake-table builder as communication-profile-
@@ -700,5 +703,115 @@ describe("previewWhatsAppImportDeletion — read-only, matches deleteWhatsAppImp
     await expect(previewWhatsAppImportDeletion(client, "tenant-A", "import-1")).rejects.toThrow(
       UnverifiableProfileVersionError,
     );
+  });
+});
+
+// Stage 1D of the 2026-11-06 security audit's remediation: the
+// `.validator()` on both previewMyWhatsAppImport and
+// confirmMyWhatsAppImport was previously a literal identity function —
+// `(input) => input` — with no size, type, or shape check anywhere in
+// the chain. These tests cover validateWhatsAppImportInput, the real
+// validator now wired into both.
+describe("validateWhatsAppImportInput", () => {
+  it("accepts a valid import with content only", () => {
+    const result = validateWhatsAppImportInput({ content: "1/1/24, 9:00 AM - Alice: hi" });
+    expect(result).toEqual({ content: "1/1/24, 9:00 AM - Alice: hi" });
+  });
+
+  it("accepts a valid import with all optional fields", () => {
+    const result = validateWhatsAppImportInput({
+      content: "hello",
+      originalFilename: "chat.txt",
+      preferDayFirst: true,
+    });
+    expect(result).toEqual({
+      content: "hello",
+      originalFilename: "chat.txt",
+      preferDayFirst: true,
+    });
+  });
+
+  it("rejects non-object input", () => {
+    expect(() => validateWhatsAppImportInput(null)).toThrow(InvalidWhatsAppImportInputError);
+    expect(() => validateWhatsAppImportInput("just a string")).toThrow(
+      InvalidWhatsAppImportInputError,
+    );
+    expect(() => validateWhatsAppImportInput(42)).toThrow(InvalidWhatsAppImportInputError);
+  });
+
+  it("rejects missing content", () => {
+    expect(() => validateWhatsAppImportInput({})).toThrow(InvalidWhatsAppImportInputError);
+  });
+
+  it("rejects non-string content (malformed/unexpected data type)", () => {
+    expect(() => validateWhatsAppImportInput({ content: 12345 })).toThrow(
+      InvalidWhatsAppImportInputError,
+    );
+    expect(() => validateWhatsAppImportInput({ content: { nested: true } })).toThrow(
+      InvalidWhatsAppImportInputError,
+    );
+    expect(() => validateWhatsAppImportInput({ content: null })).toThrow(
+      InvalidWhatsAppImportInputError,
+    );
+    expect(() => validateWhatsAppImportInput({ content: ["array"] })).toThrow(
+      InvalidWhatsAppImportInputError,
+    );
+  });
+
+  it("rejects empty content", () => {
+    expect(() => validateWhatsAppImportInput({ content: "" })).toThrow(
+      InvalidWhatsAppImportInputError,
+    );
+  });
+
+  it("rejects content over the size ceiling — the oversized-import case", () => {
+    const tooLarge = "a".repeat(MAX_IMPORT_CONTENT_CHARS + 1);
+    expect(() => validateWhatsAppImportInput({ content: tooLarge })).toThrow(
+      InvalidWhatsAppImportInputError,
+    );
+  });
+
+  it("accepts content exactly at the size ceiling", () => {
+    const atLimit = "a".repeat(MAX_IMPORT_CONTENT_CHARS);
+    expect(() => validateWhatsAppImportInput({ content: atLimit })).not.toThrow();
+  });
+
+  it("rejects a non-boolean preferDayFirst", () => {
+    expect(() => validateWhatsAppImportInput({ content: "hi", preferDayFirst: "yes" })).toThrow(
+      InvalidWhatsAppImportInputError,
+    );
+    expect(() => validateWhatsAppImportInput({ content: "hi", preferDayFirst: 1 })).toThrow(
+      InvalidWhatsAppImportInputError,
+    );
+  });
+
+  it("rejects a non-string, non-null originalFilename", () => {
+    expect(() => validateWhatsAppImportInput({ content: "hi", originalFilename: 123 })).toThrow(
+      InvalidWhatsAppImportInputError,
+    );
+    expect(() => validateWhatsAppImportInput({ content: "hi", originalFilename: {} })).toThrow(
+      InvalidWhatsAppImportInputError,
+    );
+  });
+
+  it("accepts a null originalFilename", () => {
+    const result = validateWhatsAppImportInput({ content: "hi", originalFilename: null });
+    expect(result.originalFilename).toBeNull();
+  });
+
+  it("caps an excessively long originalFilename rather than rejecting the whole import over a cosmetic field", () => {
+    const longName = "a".repeat(500) + ".txt";
+    const result = validateWhatsAppImportInput({ content: "hi", originalFilename: longName });
+    expect(result.originalFilename?.length).toBe(255);
+  });
+
+  it("ignores unexpected extra fields rather than passing them through unchecked", () => {
+    const result = validateWhatsAppImportInput({
+      content: "hi",
+      __proto__: { polluted: true },
+      unexpectedField: "should not appear",
+    } as any);
+    expect(result).toEqual({ content: "hi" });
+    expect((result as any).unexpectedField).toBeUndefined();
   });
 });

@@ -1,6 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { validatePriceSheetItem } from "./price-sheet-server";
+import {
+  validatePriceSheetItem,
+  validatePriceSheetPhotoUpload,
+  MAX_IMAGE_BASE64_CHARS,
+  UNSUPPORTED_IMAGE_MESSAGE,
+  IMAGE_TOO_LARGE_MESSAGE,
+} from "./price-sheet-server";
 import type { MaterialsPolicy, PricingType } from "@/lib/mock-data";
+
+const VALID_JPEG_BASE64 = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0]).toString("base64");
+const VALID_PNG_BASE64 = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).toString(
+  "base64",
+);
 
 // Business-rule validation coverage for the Save-changes path
 // (saveMyPriceSheet), requested ahead of pushing the price-sheet backup
@@ -168,5 +179,53 @@ describe("Integration-style tests — mirroring saveMyPriceSheet's exact call sh
     ];
     const errors = items.map(validatePriceSheetItem).filter((e): e is string => e !== null);
     expect(errors).toEqual(["\"Bad item\": hours can't be negative."]);
+  });
+});
+
+// Stage 1E of the 2026-11-06 security audit's remediation:
+// extractPriceSheetFromImage had the file-type (magic-byte) check but no
+// size cap at all — flagged by the audit. validatePriceSheetPhotoUpload
+// is the extracted, directly-testable version of what the handler now
+// calls (extractPriceSheetFromImage itself is a bare createServerFn,
+// same untestable-outside-TanStack-Start limitation as saveMyPriceSheet
+// above).
+describe("validatePriceSheetPhotoUpload", () => {
+  it("accepts a valid JPEG under the size ceiling", () => {
+    expect(() => validatePriceSheetPhotoUpload(VALID_JPEG_BASE64)).not.toThrow();
+  });
+
+  it("accepts a valid PNG under the size ceiling", () => {
+    expect(() => validatePriceSheetPhotoUpload(VALID_PNG_BASE64)).not.toThrow();
+  });
+
+  it("rejects an unsupported format (checked before size — MIME type and actual content must agree)", () => {
+    const notAnImage = Buffer.from("this is just text, not image bytes").toString("base64");
+    expect(() => validatePriceSheetPhotoUpload(notAnImage)).toThrow(UNSUPPORTED_IMAGE_MESSAGE);
+  });
+
+  it("rejects a file with a valid-looking extension but mismatched actual content — the exact MIME/content-mismatch case", () => {
+    // Deliberately not JPEG/PNG magic bytes, simulating a renamed file
+    // whose claimed type doesn't match what's actually inside it.
+    const fakeImage = Buffer.from([0x25, 0x50, 0x44, 0x46]).toString("base64"); // %PDF
+    expect(() => validatePriceSheetPhotoUpload(fakeImage)).toThrow(UNSUPPORTED_IMAGE_MESSAGE);
+  });
+
+  it("rejects an oversized JPEG — file size is checked before the expensive AI call, never after", () => {
+    const oversized = VALID_JPEG_BASE64 + "A".repeat(MAX_IMAGE_BASE64_CHARS);
+    expect(() => validatePriceSheetPhotoUpload(oversized)).toThrow(IMAGE_TOO_LARGE_MESSAGE);
+  });
+
+  it("accepts a JPEG exactly at the size ceiling", () => {
+    const atLimit =
+      VALID_JPEG_BASE64 + "A".repeat(MAX_IMAGE_BASE64_CHARS - VALID_JPEG_BASE64.length);
+    expect(atLimit.length).toBe(MAX_IMAGE_BASE64_CHARS);
+    expect(() => validatePriceSheetPhotoUpload(atLimit)).not.toThrow();
+  });
+
+  it("fails safely on an oversized file that is ALSO an unsupported format — reports the format problem, not a confusing size error for garbage input", () => {
+    const oversizedGarbage = "not-an-image-at-all-" + "A".repeat(MAX_IMAGE_BASE64_CHARS);
+    expect(() => validatePriceSheetPhotoUpload(oversizedGarbage)).toThrow(
+      UNSUPPORTED_IMAGE_MESSAGE,
+    );
   });
 });

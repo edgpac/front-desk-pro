@@ -1,6 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { callClaude } from "@/lib/estimate-server";
+import { fetchPublicUrlSafely, UnsafeUrlError } from "@/lib/ssrf-safe-fetch";
 import type { MaterialsPolicy, PriceSheetRow, PricingType } from "@/lib/mock-data";
 
 // Same server-side enforcement as estimate-server.ts's isSupportedImageBase64
@@ -12,6 +13,33 @@ import type { MaterialsPolicy, PriceSheetRow, PricingType } from "@/lib/mock-dat
 // all — client-side validation alone (dashboard.price-sheet.tsx) isn't
 // sufficient, since this is a public server function reachable directly.
 export const UNSUPPORTED_IMAGE_MESSAGE = "Please upload a JPG or PNG photo. HEIC photos aren't supported.";
+
+// Same ceiling and duplication reasoning as estimate-server.ts's own
+// MAX_IMAGE_BASE64_CHARS (not imported from there, same import-
+// protection constraint as isSupportedImageBase64 above) — this upload
+// path had the file-type check but no size cap at all, flagged by the
+// 2026-11-06 security audit. ~2MB decoded.
+export const MAX_IMAGE_BASE64_CHARS = 2_800_000;
+export const IMAGE_TOO_LARGE_MESSAGE = "That photo is too large — try a smaller image.";
+
+// Extracted from extractPriceSheetFromImage's handler body (mechanical
+// extraction, no behavior change) so the actual check is directly
+// testable — extractPriceSheetFromImage itself is a bare createServerFn
+// and can't be invoked outside TanStack Start's server runtime in this
+// test environment (same established limitation documented elsewhere
+// in this codebase, e.g. price-sheet-server.test.ts's own comment on
+// validatePriceSheetItem). Order matters and is deliberate: the cheap
+// magic-byte check runs first, then the cheap size check, both before
+// the handler ever reaches the actual Claude API call — "fail safely
+// before expensive processing," not after.
+export function validatePriceSheetPhotoUpload(imageBase64: string): void {
+  if (!isSupportedImageBase64(imageBase64)) {
+    throw new Error(UNSUPPORTED_IMAGE_MESSAGE);
+  }
+  if (imageBase64.length > MAX_IMAGE_BASE64_CHARS) {
+    throw new Error(IMAGE_TOO_LARGE_MESSAGE);
+  }
+}
 
 function isSupportedImageBase64(base64: string): boolean {
   let bytes: Buffer;
@@ -216,9 +244,7 @@ export const extractPriceSheetFromImage = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .validator((input: { imageBase64: string; imageMediaType: string }) => input)
   .handler(async ({ data }): Promise<ExtractedPriceSheetItem[]> => {
-    if (!isSupportedImageBase64(data.imageBase64)) {
-      throw new Error(UNSUPPORTED_IMAGE_MESSAGE);
-    }
+    validatePriceSheetPhotoUpload(data.imageBase64);
 
     const prompt = `This image shows a price list or menu of services for a trades/service business.
 
@@ -311,34 +337,6 @@ If no priced services are found in the text, respond with an empty array: []
 PAGE TEXT:
 """`;
 
-// Blocks the obvious SSRF targets (internal/loopback/link-local addresses) —
-// this is a server making a request to a URL an authenticated user chose,
-// so it shouldn't be usable to probe internal network addresses.
-function isSafePublicUrl(rawUrl: string): boolean {
-  let parsed: URL;
-  try {
-    parsed = new URL(rawUrl);
-  } catch {
-    return false;
-  }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
-
-  const host = parsed.hostname.toLowerCase();
-  if (host === "localhost" || host.endsWith(".localhost") || host === "0.0.0.0") return false;
-  if (host === "169.254.169.254") return false; // cloud metadata endpoint
-
-  const ipMatch = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (ipMatch) {
-    const [a, b] = [Number(ipMatch[1]), Number(ipMatch[2])];
-    if (a === 127) return false; // loopback
-    if (a === 10) return false; // private
-    if (a === 192 && b === 168) return false; // private
-    if (a === 172 && b >= 16 && b <= 31) return false; // private
-    if (a === 169 && b === 254) return false; // link-local
-  }
-  return true;
-}
-
 // Strips scripts/styles/tags and decodes the common entities — enough to
 // turn HTML into readable text for Claude without adding an HTML-parsing
 // dependency this codebase doesn't otherwise use.
@@ -370,34 +368,23 @@ export const extractPriceSheetFromUrl = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .validator((input: { url: string }) => input)
   .handler(async ({ data }): Promise<ExtractedPriceSheetItem[]> => {
-    if (!isSafePublicUrl(data.url)) {
-      throw new Error("That doesn't look like a public website address.");
-    }
-
     let html: string;
     try {
-      // redirect: "manual" — isSafePublicUrl only validated this URL's own
-      // hostname; letting fetch auto-follow a redirect would let a URL that
-      // passes the check 302 to an internal/private address and bypass the
-      // guard entirely (an authenticated tenant could host the redirect
-      // themselves). Treat any redirect as a hard failure rather than
-      // re-validating and following it — this importer has no real need to
-      // support redirecting pages.
-      const response = await fetch(data.url, {
-        signal: AbortSignal.timeout(10_000),
-        headers: { "user-agent": "Mozilla/5.0 (compatible; JobItReadyBot/1.0)" },
-        redirect: "manual",
-      });
-      if (response.type === "opaqueredirect" || (response.status >= 300 && response.status < 400)) {
-        throw new Error("That page redirects elsewhere — try the exact final URL instead.");
-      }
-      if (!response.ok) {
+      // fetchPublicUrlSafely resolves and validates every DNS result (not
+      // just the first) for this URL AND for every redirect hop, then
+      // pins the actual connection to the exact address it validated —
+      // see ssrf-safe-fetch.ts for why a plain fetch() can't do this
+      // safely on its own (a second, independent DNS lookup at connect
+      // time is exactly what a DNS-rebinding attack relies on).
+      const response = await fetchPublicUrlSafely(data.url);
+      if (response.status < 200 || response.status >= 300) {
         throw new Error(`That page returned an error (${response.status}).`);
       }
       html = await response.text();
     } catch (err) {
+      if (err instanceof UnsafeUrlError) throw new Error(err.message);
       throw new Error(
-        err instanceof Error && (err.message.includes("error (") || err.message.includes("redirects elsewhere"))
+        err instanceof Error && err.message.includes("error (")
           ? err.message
           : "Couldn't reach that page.",
       );

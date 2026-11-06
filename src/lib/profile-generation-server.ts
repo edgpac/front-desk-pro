@@ -229,12 +229,20 @@ const MAX_GENERATION_ATTEMPTS = 2;
 // loop, specifically so a retry can never charge a second unit for the
 // same user-initiated request.
 //
-// tenant_ai_usage has no "kind" column (unlike tenant_ip_usage's
-// quote/read split) — it is a single, feature-agnostic per-tenant AI
-// budget by design (the migration's own comment says "real tenant/
-// WhatsApp AI traffic", not "quote traffic"), so sharing it with
-// quote/follow-up generation is consistent with its original intent,
-// not a new coupling introduced here.
+// tenant_ai_usage gained a "kind" column in migration 0038, added so
+// the three WhatsApp follow-up classifiers (which fire on every
+// inbound message) get their own budget, separate from real quote/
+// follow-up generation — see that migration's own comment. This call
+// deliberately keeps passing only 2 arguments (no p_kind), so it
+// defaults to and continues sharing the 'quote' bucket, exactly as
+// before 0038 — reviewed specifically for this during the 2026-11-06
+// Stage 1 pre-commit review, not an oversight. The starvation concern
+// that justified splitting the classifiers out doesn't apply here: this
+// is an owner-initiated action with no customer-facing trigger and,
+// this phase, no dashboard UI to even reach it from (see
+// TENANT_AI_WINDOW_SECONDS/TENANT_AI_MAX_PER_WINDOW's own comment
+// below). If this ever gets a real UI and meaningful traffic, revisit
+// whether it still belongs in 'quote' or deserves its own kind.
 //
 // Not reusing enforceTenantAiLimit itself: it's private to
 // estimate-server.ts and takes a tenantSlug, doing its own internal

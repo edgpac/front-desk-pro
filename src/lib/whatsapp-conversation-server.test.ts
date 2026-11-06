@@ -1295,6 +1295,7 @@ describe("attemptConversationResume", () => {
         priorProblem: OLD_UNRESOLVED_LEAD.problem,
         priorDiagnosis: OLD_UNRESOLVED_LEAD.diagnosis,
         customerReply: "is that still happening?",
+        tenantSlug: TEST_TENANT.slug,
       },
     });
     expect(sent).toHaveLength(1);

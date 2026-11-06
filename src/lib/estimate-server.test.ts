@@ -1,4 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "vitest";
+
+// enforceTenantAiLimit is the only export in this file that reaches
+// outside its own module (via getAdminClient, imported from
+// public-lead-server.ts) — mocked here so its tests control exactly
+// what the "database" returns, the same way estimate-server.ts's own
+// established pattern elsewhere in this codebase (a fake client passed
+// in, never the real Supabase SDK) keeps these tests fast and
+// deterministic. Nothing else in this file touches public-lead-server.ts
+// at all, so this mock has no effect on any other test below.
+vi.mock("@/lib/public-lead-server", () => ({ getAdminClient: vi.fn() }));
+
+import { getAdminClient } from "@/lib/public-lead-server";
 import {
   validateSubmittedLineItem,
   validateQuoteAgainstPriceSheet,
@@ -17,6 +29,7 @@ import {
   NO_DESCRIPTION_PLACEHOLDER,
   detectLanguage,
   detectCurrentLanguage,
+  enforceTenantAiLimit,
   type PriceSheetItem,
   type QuoteInput,
   type QuoteResult,
@@ -1520,5 +1533,153 @@ describe("applyExclusionGuard — overrides a priced result when it matches a co
       // existing tenant today.
     };
     expect(applyExclusionGuard(priced, input)).toEqual(priced);
+  });
+});
+
+// Stage 1C of the 2026-11-06 security audit's remediation: the three AI
+// classifier functions (classifyFollowUpIntent, classifyBroadServiceInquiry,
+// classifyFollowUpPhotoIntent) previously relied only on the in-memory,
+// per-instance withinRateLimit() counter, which doesn't hold across
+// Vercel's concurrent serverless instances. These tests cover the durable,
+// per-tenant fix (enforceTenantAiLimit's new "classifier" bucket,
+// migration 0038) directly — the three classifiers themselves are
+// createServerFn-wrapped and can't be invoked outside TanStack Start's
+// runtime in this test environment (the same established limitation as
+// getQuoteEstimate itself), so this tests the shared enforcement function
+// every one of them now calls, with a fake admin client standing in for
+// Supabase.
+describe("enforceTenantAiLimit — durable per-tenant AI rate limit", () => {
+  function fakeAdmin(opts: {
+    tenantId?: string;
+    rpcImpl: (args: any) => { data: number | null; error: Error | null };
+  }) {
+    const rpc = vi.fn((_name: string, args: any) => Promise.resolve(opts.rpcImpl(args)));
+    return {
+      from: () => ({
+        select: () => ({
+          eq: () => ({
+            single: () =>
+              Promise.resolve(
+                opts.tenantId
+                  ? { data: { id: opts.tenantId }, error: null }
+                  : { data: null, error: new Error("not found") },
+              ),
+          }),
+        }),
+      }),
+      rpc,
+    };
+  }
+
+  beforeEach(() => {
+    vi.mocked(getAdminClient).mockReset();
+  });
+
+  it("allows a request under the quote ceiling (300/day) and passes kind through to the RPC", async () => {
+    const rpc = vi.fn(() => Promise.resolve({ data: 1, error: null }));
+    vi.mocked(getAdminClient).mockReturnValue({
+      from: () => ({
+        select: () => ({
+          eq: () => ({ single: () => Promise.resolve({ data: { id: "t1" }, error: null }) }),
+        }),
+      }),
+      rpc,
+    } as any);
+    await expect(enforceTenantAiLimit("acme", "quote")).resolves.toBeUndefined();
+    expect(rpc).toHaveBeenCalledWith(
+      "increment_tenant_ai_usage",
+      expect.objectContaining({ p_tenant_id: "t1", p_kind: "quote" }),
+    );
+  });
+
+  it("throws once the quote ceiling (300) is exceeded", async () => {
+    vi.mocked(getAdminClient).mockReturnValue(
+      fakeAdmin({ tenantId: "t1", rpcImpl: () => ({ data: 301, error: null }) }) as any,
+    );
+    await expect(enforceTenantAiLimit("acme", "quote")).rejects.toThrow(
+      "This business is getting an unusually high volume of requests right now",
+    );
+  });
+
+  it("classifier kind uses its own, higher ceiling (1000) — 301 requests does NOT throw for 'classifier', unlike 'quote'", async () => {
+    vi.mocked(getAdminClient).mockReturnValue(
+      fakeAdmin({ tenantId: "t1", rpcImpl: () => ({ data: 301, error: null }) }) as any,
+    );
+    await expect(enforceTenantAiLimit("acme", "classifier")).resolves.toBeUndefined();
+  });
+
+  it("throws once the classifier ceiling (1000) is exceeded", async () => {
+    vi.mocked(getAdminClient).mockReturnValue(
+      fakeAdmin({ tenantId: "t1", rpcImpl: () => ({ data: 1001, error: null }) }) as any,
+    );
+    await expect(enforceTenantAiLimit("acme", "classifier")).rejects.toThrow(
+      "This business is getting an unusually high volume of requests right now",
+    );
+  });
+
+  it("defaults to 'quote' when no kind is passed — the existing getQuoteEstimate/getFollowUpAnswer call sites don't need to change", async () => {
+    const rpc = vi.fn(() => Promise.resolve({ data: 1, error: null }));
+    vi.mocked(getAdminClient).mockReturnValue({
+      from: () => ({
+        select: () => ({
+          eq: () => ({ single: () => Promise.resolve({ data: { id: "t1" }, error: null }) }),
+        }),
+      }),
+      rpc,
+    } as any);
+    await enforceTenantAiLimit("acme");
+    expect(rpc).toHaveBeenCalledWith(
+      "increment_tenant_ai_usage",
+      expect.objectContaining({ p_kind: "quote" }),
+    );
+  });
+
+  it("fails closed on a database error, never silently allowing unlimited spend", async () => {
+    vi.mocked(getAdminClient).mockReturnValue(
+      fakeAdmin({
+        tenantId: "t1",
+        rpcImpl: () => ({ data: null, error: new Error("connection reset") }),
+      }) as any,
+    );
+    await expect(enforceTenantAiLimit("acme", "classifier")).rejects.toThrow(
+      "This business is getting an unusually high volume of requests right now",
+    );
+  });
+
+  it("does nothing when the tenant slug doesn't resolve to a real tenant", async () => {
+    const rpc = vi.fn();
+    vi.mocked(getAdminClient).mockReturnValue(
+      fakeAdmin({ rpcImpl: () => ({ data: 1, error: null }) }) as any,
+    );
+    await expect(enforceTenantAiLimit("nonexistent-slug", "classifier")).resolves.toBeUndefined();
+  });
+
+  it("concurrent requests: each one sees the atomically-incremented count, and the one that crosses the ceiling throws — not an earlier or later one", async () => {
+    // Simulates what the real increment_tenant_ai_usage RPC's atomic
+    // "on conflict ... do update set count = count + 1" guarantees in
+    // Postgres (proven separately against a real local instance this
+    // session) — a shared counter that increments exactly once per
+    // call, even when calls arrive concurrently, never losing or
+    // duplicating an increment.
+    let sharedCount = 998; // two requests under the 1000 classifier ceiling
+    const rpc = vi.fn(() => Promise.resolve({ data: ++sharedCount, error: null }));
+    vi.mocked(getAdminClient).mockReturnValue({
+      from: () => ({
+        select: () => ({
+          eq: () => ({ single: () => Promise.resolve({ data: { id: "t1" }, error: null }) }),
+        }),
+      }),
+      rpc,
+    } as any);
+
+    const results = await Promise.allSettled([
+      enforceTenantAiLimit("acme", "classifier"), // -> 999, allowed
+      enforceTenantAiLimit("acme", "classifier"), // -> 1000, allowed (boundary)
+      enforceTenantAiLimit("acme", "classifier"), // -> 1001, rejected
+    ]);
+    const statuses = results.map((r) => r.status);
+    expect(statuses.filter((s) => s === "fulfilled").length).toBe(2);
+    expect(statuses.filter((s) => s === "rejected").length).toBe(1);
+    expect(rpc).toHaveBeenCalledTimes(3);
   });
 });

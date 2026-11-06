@@ -1171,6 +1171,7 @@ export async function attemptConversationResume(params: {
           priorProblem: candidate.problem,
           priorDiagnosis: candidate.diagnosis || "",
           customerReply: body,
+          tenantSlug: tenant.slug,
         },
       }),
     ),
@@ -1877,6 +1878,7 @@ export async function handleInboundWhatsAppMessage(params: {
           priorProblem: openLead.problem,
           priorDiagnosis: openLead.diagnosis || "",
           customerReply: body,
+          tenantSlug: tenant.slug,
         },
       });
 
@@ -2254,6 +2256,7 @@ async function handleQuotedFollowUpPhoto(params: {
       customerReply: body,
       imageBase64,
       imageMediaType,
+      tenantSlug: tenant.slug,
     },
   });
 
@@ -2599,7 +2602,7 @@ async function handleFreshQuote(params: {
     );
     if (categories.length > 0) {
       const { classification: broadClassification } = await classifyBroadServiceInquiry({
-        data: { message: body },
+        data: { message: body, tenantSlug: tenant.slug },
       });
       if (broadClassification === "broad_overview") {
         const overviewMessage = localizedServiceOverviewMessage(language, categories, menuLink(tenant.slug));

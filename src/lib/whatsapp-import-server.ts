@@ -75,6 +75,79 @@ export async function computeImportContentHash(content: string): Promise<string>
   return createHash("sha256").update(content, "utf8").digest("hex");
 }
 
+// Previously, both server functions below validated nothing at all —
+// their TanStack Start `.validator()` was a literal identity function,
+// `(input) => input`, with no size, type, or shape check anywhere in
+// the chain down to parseWhatsAppExport (confirmed by reading that
+// whole path directly). Flagged by the 2026-11-06 security audit.
+// 10 MB is generous for a plain-text WhatsApp export — even a years-
+// long, several-thousand-message conversation is ordinarily well under
+// 1 MB as plain text — while still bounding worst-case memory/compute
+// for one request.
+export const MAX_IMPORT_CONTENT_CHARS = 10_000_000;
+
+export class InvalidWhatsAppImportInputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidWhatsAppImportInputError";
+  }
+}
+
+export type WhatsAppImportInput = {
+  content: string;
+  originalFilename?: string | null;
+  preferDayFirst?: boolean;
+};
+
+// Shared by both previewMyWhatsAppImport and confirmMyWhatsAppImport's
+// `.validator()` — real server-side validation (size, type, shape),
+// not the identity passthrough this previously had. Throwing here
+// (rather than returning a boolean) is TanStack Start's own convention
+// for a validator rejecting its input — the same pattern every other
+// *-server.ts file in this codebase's validators already uses.
+export function validateWhatsAppImportInput(input: unknown): WhatsAppImportInput {
+  if (typeof input !== "object" || input === null) {
+    throw new InvalidWhatsAppImportInputError("Invalid import request.");
+  }
+  const raw = input as Record<string, unknown>;
+
+  if (typeof raw["content"] !== "string") {
+    throw new InvalidWhatsAppImportInputError("Missing or invalid conversation content.");
+  }
+  if (raw["content"].length === 0) {
+    throw new InvalidWhatsAppImportInputError("The conversation export was empty.");
+  }
+  if (raw["content"].length > MAX_IMPORT_CONTENT_CHARS) {
+    throw new InvalidWhatsAppImportInputError(
+      `That conversation export is too large (over ${(MAX_IMPORT_CONTENT_CHARS / 1_000_000).toFixed(0)} MB as text) — try splitting it into smaller date ranges.`,
+    );
+  }
+
+  if (raw["preferDayFirst"] !== undefined && typeof raw["preferDayFirst"] !== "boolean") {
+    throw new InvalidWhatsAppImportInputError("Invalid date-format option.");
+  }
+
+  let originalFilename: string | null | undefined;
+  if ("originalFilename" in raw) {
+    const value = raw["originalFilename"];
+    if (value !== null && value !== undefined && typeof value !== "string") {
+      throw new InvalidWhatsAppImportInputError("Invalid file name.");
+    }
+    // A filename this long serves no real purpose and has no business
+    // being stored verbatim — cap it rather than reject the whole
+    // import over a cosmetic field.
+    originalFilename = typeof value === "string" ? value.slice(0, 255) : (value ?? null);
+  }
+
+  return {
+    content: raw["content"],
+    ...(originalFilename !== undefined ? { originalFilename } : {}),
+    ...(raw["preferDayFirst"] !== undefined
+      ? { preferDayFirst: raw["preferDayFirst"] as boolean }
+      : {}),
+  };
+}
+
 export type WhatsAppImportPreview = {
   contentHash: string;
   alreadyImported: boolean;
@@ -477,7 +550,7 @@ export const deleteWhatsAppImport = createServerOnlyFn(
 
 export const previewMyWhatsAppImport = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .validator((input: { content: string; preferDayFirst?: boolean }) => input)
+  .validator(validateWhatsAppImportInput)
   .handler(async ({ context, data }) => {
     const tenantId = await getTenantId(context.supabase, context.userId);
     return previewWhatsAppImport(
@@ -490,10 +563,7 @@ export const previewMyWhatsAppImport = createServerFn({ method: "POST" })
 
 export const confirmMyWhatsAppImport = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .validator(
-    (input: { content: string; originalFilename?: string | null; preferDayFirst?: boolean }) =>
-      input,
-  )
+  .validator(validateWhatsAppImportInput)
   .handler(async ({ context, data }) => {
     const tenantId = await getTenantId(context.supabase, context.userId);
     return confirmWhatsAppImport(
