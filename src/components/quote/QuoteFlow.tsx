@@ -679,7 +679,8 @@ export function QuoteFlow({
               </button>
             </div>
             <p className="mt-2 text-center text-xs text-neutral-400">
-              No account needed. Your photo only goes to {businessName}. See our{" "}
+              No account needed. Your photo may be processed by AI to help generate your estimate,
+              then shared with {businessName}. See our{" "}
               <a
                 href="/privacy"
                 target="_blank"

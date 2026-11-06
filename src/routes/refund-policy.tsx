@@ -25,7 +25,7 @@ function RefundPolicy() {
       <section className="mx-auto max-w-3xl px-5 py-14">
         <p className="label-caps text-primary">Legal</p>
         <h1 className="mt-3 text-4xl">Refund & Cancellation Policy</h1>
-        <p className="mt-2 text-sm text-muted-foreground">Draft — last updated November 4, 2026.</p>
+        <p className="mt-2 text-sm text-muted-foreground">Last updated November 4, 2026.</p>
 
         <div className="prose mt-8 max-w-none space-y-6 text-[15px] leading-relaxed text-foreground">
           <p>

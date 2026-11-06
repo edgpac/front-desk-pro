@@ -97,7 +97,7 @@ export function SimulationFlow() {
 
       {stage === "pick" && (
         <div className="p-5">
-          <p className="text-xs font-medium text-neutral-400">Get an estimate</p>
+          <p className="text-xs font-medium text-neutral-500">Get an estimate</p>
           <h3 className="mt-2 text-xl font-semibold text-neutral-900">Pick a sample job</h3>
           <p className="mt-1.5 text-sm text-neutral-500">
             Every outcome below is scripted ahead of time — same two questions, same result, every time.
@@ -119,7 +119,7 @@ export function SimulationFlow() {
 
       {stage === "clarify" && scenario && (
         <div className="p-5">
-          <p className="text-xs font-medium text-neutral-400">Just a couple of questions</p>
+          <p className="text-xs font-medium text-neutral-500">Just a couple of questions</p>
           <h3 className="mt-2 text-xl font-semibold text-neutral-900">This is what keeps the price honest.</h3>
           <p className="mt-1.5 text-sm text-neutral-500">{scenario.problem}</p>
 
@@ -162,7 +162,7 @@ export function SimulationFlow() {
 
       {stage === "result" && scenario && (
         <div className="p-5">
-          <p className="text-xs font-medium text-neutral-400">Your estimate</p>
+          <p className="text-xs font-medium text-neutral-500">Your estimate</p>
           <p className="num mt-2 text-4xl font-semibold tracking-tight text-neutral-900">
             {money(scenario.totalLow, "USD")} – {money(scenario.totalHigh, "USD")}
           </p>
@@ -171,7 +171,7 @@ export function SimulationFlow() {
           </p>
 
           <div className="mt-5 rounded-2xl border border-neutral-100 bg-neutral-50 p-4">
-            <p className="text-xs font-medium text-neutral-400">What we found</p>
+            <p className="text-xs font-medium text-neutral-500">What we found</p>
             <p className="mt-2 text-sm leading-relaxed text-neutral-700">{scenario.diagnosis}</p>
           </div>
 
@@ -180,7 +180,7 @@ export function SimulationFlow() {
               <li key={i.description} className="flex items-start justify-between gap-4 px-4 py-3">
                 <span>
                   <span className="block text-sm font-medium text-neutral-900">{i.description}</span>
-                  <span className="block text-xs text-neutral-400">{i.detail}</span>
+                  <span className="block text-xs text-neutral-500">{i.detail}</span>
                 </span>
                 <span className="num text-sm font-semibold text-neutral-900">{money(i.amount, "USD")}</span>
               </li>

@@ -87,8 +87,8 @@ function TermsOfService() {
             accept the revised terms.</p>
 
           <h2 className="text-xl font-semibold">Governing law</h2>
-          <p>These terms are governed by the laws of the State of Texas, without regard to conflict-of-law
-            rules.</p>
+          <p>These terms are governed by the laws of the State of California, without regard to
+            conflict-of-law rules.</p>
 
           <h2 className="text-xl font-semibold">Contact</h2>
           <p>Questions about these terms: <a className="text-primary underline-offset-4 hover:underline" href="mailto:jobitready@gmail.com">jobitready@gmail.com</a></p>
