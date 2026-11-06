@@ -81,12 +81,15 @@ not applied. **Manual dashboard action?** Separately, yes — see the
 leaked-password-protection item below, which this migration does not
 cover (that's a toggle, not SQL).
 
-🟤 **Leaked-password protection** — still disabled (confirmed live via
-`get_advisors` during this round). Not something a migration can fix.
-Dashboard path: **Authentication → Policies → Password Security** (or
-**Authentication → Providers → Email**, depending on your dashboard
-version) → enable "Leaked password protection." No code or migration
-dependency.
+🟤 **Leaked-password protection** — attempted 2026-11-06, **blocked by
+plan tier**: Supabase rejected the save with "Configuring leaked
+password protection via HaveIBeenPwned.org is available on Pro Plans
+and up" — this project is currently on the Free tier. Not something a
+migration or further dashboard effort can fix; requires either
+upgrading the Supabase project's plan, or accepting this as a known,
+documented limitation for now (current user base is the owner's own
+test accounts, not public signups — signups are also currently paused).
+Owner's call, not actioned either way.
 
 ### 1C — Durable AI rate limiting for the three classifiers 🟡 Database half applied; code half not yet deployed
 **Database**: `supabase/migrations/0038_tenant_ai_usage_kind.sql` —
@@ -164,7 +167,28 @@ boundary.
 **Genuinely resolved?** Yes, same as 1D — pure code, no dependency.
 **Migration required?** No. **Manual dashboard action?** No.
 
-### 1F — Signup capacity enforcement — options only, nothing implemented 🔵
+### 1F — Signup capacity enforcement 🟢 Done (2026-11-06, manual dashboard action)
+Supabase's **"Allow new users to sign up"** toggle (Authentication →
+Sign In / Providers → User Signups) has been switched off and saved —
+confirmed via screenshot (toggle in the disabled position, "Save
+changes" greyed out with no pending edit). This closes the real gap the
+audit found: a direct `supabase.auth.signUp()` call bypassing the
+UI-only `/signup` pause. New signups are now rejected at the platform
+level, before this app's code or the `handle_new_user` trigger ever
+runs. No code or migration involved; fully reversible by flipping it
+back.
+
+**Known loose end**: `src/routes/signup.tsx`'s own pause
+(`SIGNUPS_OPEN = false`) is still uncommitted locally (deliberately left
+out of the Stage 1 commit as out of scope). Until it's deployed, the
+live `/signup` page still shows the normal form — submitting it now
+fails with a Supabase error rather than silently succeeding, which is
+safe but not a clean UX. Not blocking; just not yet shipped.
+
+<details>
+<summary>Original options analysis (for reference — Option A is what was implemented above)</summary>
+
+
 The current `/signup` gate (`SIGNUPS_OPEN = false` in `signup.tsx`, from
 an earlier round) is UI-only — confirmed by this round's audit:
 `supabase.auth.signUp()` called directly against the public API still
@@ -191,6 +215,8 @@ your decision — **nothing below is built**:
   Option A, no clear advantage for this specific need.
 
 **Recommendation**: Option A. Not applied — waiting on your decision.
+
+</details>
 
 ### 1G — Content Security Policy 🟠 (Report-Only)
 **File**: `vercel.json` — added `Content-Security-Policy-Report-Only`
