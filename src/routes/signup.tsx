@@ -11,18 +11,38 @@ import { Label } from "@/components/ui/label";
 import { supabase } from "@/integrations/supabase/client";
 import heroMockup from "@/assets/aircraft-detailing-mockup.png";
 
+// Temporary pause on new sign-ups — flip back to true to reopen. Existing
+// accounts are completely unaffected; this only gates the /signup form
+// itself, never /login.
+const SIGNUPS_OPEN = false;
+
 export const Route = createFileRoute("/signup")({
   ssr: false,
   head: () => ({
     meta: [
-      { title: "Create your account — Job It Ready" },
+      {
+        title: SIGNUPS_OPEN
+          ? "Create your account — Job It Ready"
+          : "Sign-ups paused — Job It Ready",
+      },
       {
         name: "description",
-        content:
-          "Set up Job It Ready in about 10 minutes: your business details, your price sheet, your logo. No trial — you'll pick a plan as you get set up.",
+        content: SIGNUPS_OPEN
+          ? "Set up Job It Ready in about 10 minutes: your business details, your price sheet, your logo. No trial — you'll pick a plan as you get set up."
+          : "New sign-ups aren't available right now.",
       },
-      { property: "og:title", content: "Create your Job It Ready account" },
-      { property: "og:description", content: "About 10 minutes to set up. No trial — you'll pick a plan as you get set up." },
+      {
+        property: "og:title",
+        content: SIGNUPS_OPEN
+          ? "Create your Job It Ready account"
+          : "Sign-ups paused — Job It Ready",
+      },
+      {
+        property: "og:description",
+        content: SIGNUPS_OPEN
+          ? "About 10 minutes to set up. No trial — you'll pick a plan as you get set up."
+          : "New sign-ups aren't available right now.",
+      },
     ],
   }),
   component: Signup,
@@ -77,11 +97,13 @@ function Signup() {
               <Wordmark />
             </Link>
           </div>
-          <h1 className="mt-10 text-3xl">Create your account.</h1>
+          {SIGNUPS_OPEN ? (
+            <>
+              <h1 className="mt-10 text-3xl">Create your account.</h1>
 
-          <p className="mt-2 text-sm text-muted-foreground">
-                No card required to sign up — you'll pick a plan as you start setting things up, then
-                you're quoting off your own price sheet the same day.
+              <p className="mt-2 text-sm text-muted-foreground">
+                No card required to sign up — you'll pick a plan as you start setting things up,
+                then you're quoting off your own price sheet the same day.
               </p>
 
               <form className="mt-8 space-y-4" onSubmit={submit}>
@@ -138,11 +160,17 @@ function Signup() {
                 </Button>
                 <p className="text-center text-xs text-muted-foreground">
                   By creating an account, you agree to our{" "}
-                  <Link to="/terms" className="underline-offset-4 hover:underline hover:text-foreground">
+                  <Link
+                    to="/terms"
+                    className="underline-offset-4 hover:underline hover:text-foreground"
+                  >
                     Terms
                   </Link>{" "}
                   and{" "}
-                  <Link to="/privacy" className="underline-offset-4 hover:underline hover:text-foreground">
+                  <Link
+                    to="/privacy"
+                    className="underline-offset-4 hover:underline hover:text-foreground"
+                  >
                     Privacy Policy
                   </Link>
                   .
@@ -164,10 +192,33 @@ function Signup() {
 
               <p className="mt-6 text-sm text-muted-foreground">
                 Already set up?{" "}
-                <Link to="/login" className="font-semibold text-primary underline-offset-4 hover:underline">
+                <Link
+                  to="/login"
+                  className="font-semibold text-primary underline-offset-4 hover:underline"
+                >
                   Log in
                 </Link>
               </p>
+            </>
+          ) : (
+            <>
+              <h1 className="mt-10 text-3xl">We're at capacity.</h1>
+
+              <p className="mt-2 text-sm text-muted-foreground">
+                New sign-ups aren't available right now — check back soon.
+              </p>
+
+              <p className="mt-6 text-sm text-muted-foreground">
+                Already set up?{" "}
+                <Link
+                  to="/login"
+                  className="font-semibold text-primary underline-offset-4 hover:underline"
+                >
+                  Log in
+                </Link>
+              </p>
+            </>
+          )}
         </div>
       </div>
       <div className="hidden bg-ink lg:block">
