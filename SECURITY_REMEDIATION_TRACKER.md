@@ -178,12 +178,12 @@ level, before this app's code or the `handle_new_user` trigger ever
 runs. No code or migration involved; fully reversible by flipping it
 back.
 
-**Known loose end**: `src/routes/signup.tsx`'s own pause
-(`SIGNUPS_OPEN = false`) is still uncommitted locally (deliberately left
-out of the Stage 1 commit as out of scope). Until it's deployed, the
-live `/signup` page still shows the normal form — submitting it now
-fails with a Supabase error rather than silently succeeding, which is
-safe but not a clean UX. Not blocking; just not yet shipped.
+`src/routes/signup.tsx`'s own pause (`SIGNUPS_OPEN = false`) — deliberately
+left out of the Stage 1 commit as out of scope — was committed and pushed
+separately (`c3e5622`, 2026-11-06) and confirmed deployed to production:
+the live `/signup` page now shows the "we're at capacity" copy instead of
+the normal form, matching the Supabase-level block above. No loose end
+remains.
 
 <details>
 <summary>Original options analysis (for reference — Option A is what was implemented above)</summary>
