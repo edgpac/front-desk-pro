@@ -1576,17 +1576,10 @@ describe("enforceTenantAiLimit — durable per-tenant AI rate limit", () => {
   });
 
   it("allows a request under the quote ceiling (300/day) and passes kind through to the RPC", async () => {
-    const rpc = vi.fn(() => Promise.resolve({ data: 1, error: null }));
-    vi.mocked(getAdminClient).mockReturnValue({
-      from: () => ({
-        select: () => ({
-          eq: () => ({ single: () => Promise.resolve({ data: { id: "t1" }, error: null }) }),
-        }),
-      }),
-      rpc,
-    } as any);
+    const admin = fakeAdmin({ tenantId: "t1", rpcImpl: () => ({ data: 1, error: null }) });
+    vi.mocked(getAdminClient).mockReturnValue(admin as any);
     await expect(enforceTenantAiLimit("acme", "quote")).resolves.toBeUndefined();
-    expect(rpc).toHaveBeenCalledWith(
+    expect(admin.rpc).toHaveBeenCalledWith(
       "increment_tenant_ai_usage",
       expect.objectContaining({ p_tenant_id: "t1", p_kind: "quote" }),
     );
@@ -1618,17 +1611,10 @@ describe("enforceTenantAiLimit — durable per-tenant AI rate limit", () => {
   });
 
   it("defaults to 'quote' when no kind is passed — the existing getQuoteEstimate/getFollowUpAnswer call sites don't need to change", async () => {
-    const rpc = vi.fn(() => Promise.resolve({ data: 1, error: null }));
-    vi.mocked(getAdminClient).mockReturnValue({
-      from: () => ({
-        select: () => ({
-          eq: () => ({ single: () => Promise.resolve({ data: { id: "t1" }, error: null }) }),
-        }),
-      }),
-      rpc,
-    } as any);
+    const admin = fakeAdmin({ tenantId: "t1", rpcImpl: () => ({ data: 1, error: null }) });
+    vi.mocked(getAdminClient).mockReturnValue(admin as any);
     await enforceTenantAiLimit("acme");
-    expect(rpc).toHaveBeenCalledWith(
+    expect(admin.rpc).toHaveBeenCalledWith(
       "increment_tenant_ai_usage",
       expect.objectContaining({ p_kind: "quote" }),
     );
@@ -1662,15 +1648,11 @@ describe("enforceTenantAiLimit — durable per-tenant AI rate limit", () => {
     // call, even when calls arrive concurrently, never losing or
     // duplicating an increment.
     let sharedCount = 998; // two requests under the 1000 classifier ceiling
-    const rpc = vi.fn(() => Promise.resolve({ data: ++sharedCount, error: null }));
-    vi.mocked(getAdminClient).mockReturnValue({
-      from: () => ({
-        select: () => ({
-          eq: () => ({ single: () => Promise.resolve({ data: { id: "t1" }, error: null }) }),
-        }),
-      }),
-      rpc,
-    } as any);
+    const admin = fakeAdmin({
+      tenantId: "t1",
+      rpcImpl: () => ({ data: ++sharedCount, error: null }),
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin as any);
 
     const results = await Promise.allSettled([
       enforceTenantAiLimit("acme", "classifier"), // -> 999, allowed
@@ -1680,6 +1662,6 @@ describe("enforceTenantAiLimit — durable per-tenant AI rate limit", () => {
     const statuses = results.map((r) => r.status);
     expect(statuses.filter((s) => s === "fulfilled").length).toBe(2);
     expect(statuses.filter((s) => s === "rejected").length).toBe(1);
-    expect(rpc).toHaveBeenCalledTimes(3);
+    expect(admin.rpc).toHaveBeenCalledTimes(3);
   });
 });

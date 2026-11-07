@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   validatePriceSheetItem,
   validatePriceSheetPhotoUpload,
-  MAX_IMAGE_BASE64_CHARS,
   UNSUPPORTED_IMAGE_MESSAGE,
-  IMAGE_TOO_LARGE_MESSAGE,
 } from "./price-sheet-server";
+// These two are price-sheet-server.ts's own imports from estimate-server.ts
+// (not duplicated locally there, see that file's comment) — importing them
+// from the same source here instead of re-declaring them.
+import { MAX_IMAGE_BASE64_CHARS, IMAGE_TOO_LARGE_MESSAGE } from "./estimate-server";
 import type { MaterialsPolicy, PricingType } from "@/lib/mock-data";
 
 const VALID_JPEG_BASE64 = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0]).toString("base64");

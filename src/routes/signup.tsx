@@ -189,16 +189,6 @@ function Signup() {
                   </li>
                 ))}
               </ul>
-
-              <p className="mt-6 text-sm text-muted-foreground">
-                Already set up?{" "}
-                <Link
-                  to="/login"
-                  className="font-semibold text-primary underline-offset-4 hover:underline"
-                >
-                  Log in
-                </Link>
-              </p>
             </>
           ) : (
             <>
@@ -207,18 +197,17 @@ function Signup() {
               <p className="mt-2 text-sm text-muted-foreground">
                 New sign-ups aren't available right now — check back soon.
               </p>
-
-              <p className="mt-6 text-sm text-muted-foreground">
-                Already set up?{" "}
-                <Link
-                  to="/login"
-                  className="font-semibold text-primary underline-offset-4 hover:underline"
-                >
-                  Log in
-                </Link>
-              </p>
             </>
           )}
+          <p className="mt-6 text-sm text-muted-foreground">
+            Already set up?{" "}
+            <Link
+              to="/login"
+              className="font-semibold text-primary underline-offset-4 hover:underline"
+            >
+              Log in
+            </Link>
+          </p>
         </div>
       </div>
       <div className="hidden bg-ink lg:block">

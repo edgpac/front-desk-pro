@@ -1,6 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
-import { callClaude } from "@/lib/estimate-server";
+import { callClaude, MAX_IMAGE_BASE64_CHARS, IMAGE_TOO_LARGE_MESSAGE } from "@/lib/estimate-server";
 import { fetchPublicUrlSafely, UnsafeUrlError } from "@/lib/ssrf-safe-fetch";
 import type { MaterialsPolicy, PriceSheetRow, PricingType } from "@/lib/mock-data";
 
@@ -14,13 +14,13 @@ import type { MaterialsPolicy, PriceSheetRow, PricingType } from "@/lib/mock-dat
 // sufficient, since this is a public server function reachable directly.
 export const UNSUPPORTED_IMAGE_MESSAGE = "Please upload a JPG or PNG photo. HEIC photos aren't supported.";
 
-// Same ceiling and duplication reasoning as estimate-server.ts's own
-// MAX_IMAGE_BASE64_CHARS (not imported from there, same import-
-// protection constraint as isSupportedImageBase64 above) — this upload
-// path had the file-type check but no size cap at all, flagged by the
-// 2026-11-06 security audit. ~2MB decoded.
-export const MAX_IMAGE_BASE64_CHARS = 2_800_000;
-export const IMAGE_TOO_LARGE_MESSAGE = "That photo is too large — try a smaller image.";
+// Same ceiling as estimate-server.ts's own MAX_IMAGE_BASE64_CHARS —
+// imported from there rather than duplicated: unlike isSupportedImageBase64
+// above, these are plain constants with no server-only API dependency, so
+// they don't trip TanStack Start's import-protection check (confirmed by
+// actually importing them and running a full build + test pass, not
+// assumed by analogy). This upload path had the file-type check but no
+// size cap at all, flagged by the 2026-11-06 security audit. ~2MB decoded.
 
 // Extracted from extractPriceSheetFromImage's handler body (mechanical
 // extraction, no behavior change) so the actual check is directly
