@@ -1,5 +1,8 @@
 import {
   getQuoteEstimate,
+  outOfScopeFlag,
+  evaluateFollowUpScope,
+  signFollowUpScope,
   getFollowUpAnswer,
   classifyFollowUpIntent,
   classifyFollowUpPhotoIntent,
@@ -143,6 +146,13 @@ const LOOP_NOTICE_MARK_SENT_RETRY_DELAY_MS = 200;
 // Keeping "needs_human_review" here is still correct — localizedRecoveryMessage
 // really is sent for that flag, so the premise still holds for it.
 const ALREADY_HANDED_OFF_FLAG_TYPES = new Set(["needs_human_review"]);
+
+// Flag types that mean "this request was handed to the owner because it's
+// outside the business's configured scope" — see handleFreshQuote's
+// openOutOfScopeLeadId. needs_human_review is deliberately not one: it
+// marks an AI failure, after which the customer is explicitly invited to
+// start a new request.
+const OUT_OF_SCOPE_FLAG_TYPES = new Set(["outside_service_scope", "excluded_service"]);
 
 export async function handleLoopGuardPause(params: {
   admin: ReturnType<typeof getAdminClient>;
@@ -1738,14 +1748,16 @@ export async function handleInboundWhatsAppMessage(params: {
         // skipped. Flag update and owner notification happen unconditionally,
         // same as before this change — if automation is paused for other
         // reasons, the owner needs to know even more, not less.
+        const { flagType: clarifyFlagType, flagReason: clarifyFlagReason } = outOfScopeFlag(
+          clarifyResult,
+          openLead.problem,
+        );
         await admin
           .from("leads")
           .update({
             status: "flagged",
-            flag_type: clarifyResult.excludedServiceLabel ? "excluded_service" : "outside_service_scope",
-            flag_reason: clarifyResult.excludedServiceLabel
-              ? `Matches a configured exclusion: "${clarifyResult.excludedServiceLabel}" — ${openLead.problem}`
-              : `Nothing on the price sheet covers: ${openLead.problem}`,
+            flag_type: clarifyFlagType,
+            flag_reason: clarifyFlagReason,
           })
           .eq("id", openLead.id);
         void sendFollowUpNotificationEmail({
@@ -1779,6 +1791,7 @@ export async function handleInboundWhatsAppMessage(params: {
           lineItems: clarifyLineItems,
           pendingNegotiatedPrice: clarifyResult.hasNoPricedWork,
           hasPartiallyDeferredWork: clarifyResult.hasPartiallyDeferredWork,
+          quoteToken: clarifyResult.quoteToken,
         },
       });
 
@@ -1893,6 +1906,63 @@ export async function handleInboundWhatsAppMessage(params: {
       // inbound message is already logged above, and the lead is flagged
       // and the owner notified exactly like the other out-of-scope
       // branches.
+      // Follow-up audit (2026-11-09, third round): a quoted job's follow-up
+      // can't expand the quote. Checked deterministically against the
+      // quoted job's own stored words (the customer's original request and
+      // its quoted line items), never the classifier's judgment alone:
+      // - a configured exclusion → no reply at all (same_job or ambiguous);
+      // - a same-job follow-up asking for work beyond the quote → no AI
+      //   answer; the owner decides.
+      // Either way the lead is flagged and the owner notified once.
+      // different_job already goes through the fresh-quote flow's checks.
+      if (classification === "same_job" || classification === "ambiguous") {
+        const { exclusions: followUpExclusions } = await fetchCapabilitiesForQuote(
+          admin,
+          tenant.id,
+        );
+        const { data: quotedRows } = await admin
+          .from("lead_line_items")
+          .select("description")
+          .eq("lead_id", openLead.id);
+        const scopeDecision = evaluateFollowUpScope(
+          body,
+          [openLead.problem, ...(quotedRows ?? []).map((row) => row.description as string)],
+          followUpExclusions,
+        );
+        const handOff =
+          scopeDecision.kind === "excluded"
+            ? {
+                ...outOfScopeFlag(
+                  { excludedServiceLabel: scopeDecision.label },
+                  `follow-up on a quoted lead: ${body}`,
+                ),
+                tag: "[Excluded service, on a quoted lead]",
+              }
+            : scopeDecision.kind === "new_work" && classification === "same_job"
+              ? {
+                  flagType: "needs_human_review" as const,
+                  flagReason: `Follow-up asks for work beyond the quoted job (${scopeDecision.terms.join(", ")}): ${body}`,
+                  tag: "[New work requested on a quoted lead]",
+                }
+              : null;
+        if (handOff) {
+          await admin
+            .from("leads")
+            .update({
+              status: "flagged",
+              flag_type: handOff.flagType,
+              flag_reason: handOff.flagReason,
+            })
+            .eq("id", openLead.id);
+          void sendFollowUpNotificationEmail({
+            tenant: { name: tenant.name, email: tenant.email, currency: tenant.currency },
+            customerName: openLead.customer_name || profileName || "A customer",
+            body: `${handOff.tag} ${body}`,
+          });
+          return;
+        }
+      }
+
       if (classification === "out_of_scope") {
         await admin
           .from("leads")
@@ -1975,6 +2045,15 @@ export async function handleInboundWhatsAppMessage(params: {
               data: {
                 tenantSlug: tenant.slug,
                 businessName: tenant.name,
+                problem: openLead.problem,
+                // Minted here from the lead's own stored data — this is
+                // server code reading the database, so it is the trusted
+                // source getFollowUpAnswer's signature check exists for.
+                followUpToken: signFollowUpScope(tenant.slug, {
+                  problem: openLead.problem,
+                  diagnosis: openLead.diagnosis || "",
+                  items: lineItemsForAnswer,
+                }),
                 diagnosis: openLead.diagnosis || "",
                 lineItems: lineItemsForAnswer,
                 question: body,
@@ -2159,6 +2238,12 @@ export async function handleInboundWhatsAppMessage(params: {
       admin,
       isFirstContact,
       priorContextText: openLead?.problem,
+      openOutOfScopeLeadId:
+        openLead &&
+        openLead.confidence === null &&
+        OUT_OF_SCOPE_FLAG_TYPES.has(openLead.flag_type ?? "")
+          ? openLead.id
+          : undefined,
     });
   } finally {
     if (claimed) await releaseLeadSlot(admin, tenant.id, fromPhone);
@@ -2334,10 +2419,6 @@ async function handleQuotedFollowUpPhoto(params: {
         openLead.flag_type === "pending_negotiated_price" || existingLineItems.length === 0;
       const existingHasPartiallyDeferredWork = openLead.flag_type === "partially_priced";
 
-      const updatedDescription = body
-        ? `${openLead.problem}\n\nAdditional note from customer with this new photo: ${body}`
-        : openLead.problem;
-
       let reassessed;
       try {
         reassessed = await getQuoteEstimate({
@@ -2350,7 +2431,12 @@ async function handleQuotedFollowUpPhoto(params: {
             priceSheet,
             exclusions: reassessCapabilities.exclusions,
             specialties: reassessCapabilities.specialties,
-            description: updatedDescription || NO_DESCRIPTION_PLACEHOLDER,
+            // The stored request is the description — the evidence the
+            // eligibility checks use and the quote signature binds, and the
+            // problem finalizeLeadWithQuote verifies against (D1/D2). The new
+            // caption is prompt context only.
+            description: openLead.problem || NO_DESCRIPTION_PLACEHOLDER,
+            ...(body ? { photoFollowUpNote: body } : {}),
             detectedLanguage: language,
             imageBase64,
             imageMediaType,
@@ -2465,6 +2551,7 @@ async function handleQuotedFollowUpPhoto(params: {
           lineItems: newLineItems,
           pendingNegotiatedPrice: reassessed.hasNoPricedWork,
           hasPartiallyDeferredWork: reassessed.hasPartiallyDeferredWork,
+          quoteToken: reassessed.quoteToken,
         },
       });
 
@@ -2533,6 +2620,12 @@ async function handleFreshQuote(params: {
   // own comment describes. Undefined (genuinely first contact) is fine —
   // detectLanguage already treats a missing argument as no signal.
   priorContextText: string | undefined;
+  // V6 (adversarial review, 2026-11-09): an open, never-quoted lead this
+  // phone already has that was flagged as out of scope. If this message
+  // also comes back out of scope, it is attached there instead of creating
+  // another flagged lead and another owner email for the same hand-off.
+  // A message that IS in scope still gets its normal reply and its own lead.
+  openOutOfScopeLeadId: string | undefined;
 }): Promise<void> {
   const {
     tenant,
@@ -2545,6 +2638,7 @@ async function handleFreshQuote(params: {
     admin,
     isFirstContact,
     priorContextText,
+    openOutOfScopeLeadId,
   } = params;
   const language = detectCurrentLanguage(body, priorContextText);
   // "short" variant: by the time this is used (outOfScope hand-off, or a
@@ -2757,6 +2851,14 @@ async function handleFreshQuote(params: {
     // an outOfScope result; the lead is still created and flagged, the
     // inbound message is still logged, and the owner is still notified.
     const openingProblem = body || NO_DESCRIPTION_PLACEHOLDER;
+    if (openOutOfScopeLeadId) {
+      // The owner was already notified about this conversation's hand-off;
+      // the new message stays visible on that same lead for them.
+      await admin
+        .from("lead_messages")
+        .insert({ lead_id: openOutOfScopeLeadId, role: "customer", body: openingProblem });
+      return;
+    }
     const { id: leadId } = await createFlaggedLead({
       data: {
         tenantSlug: tenant.slug,
@@ -2765,10 +2867,7 @@ async function handleFreshQuote(params: {
         channel,
         photoUrl: mediaRef ?? null,
         problem: openingProblem,
-        flagType: result.excludedServiceLabel ? "excluded_service" : "outside_service_scope",
-        flagReason: result.excludedServiceLabel
-          ? `Matches a configured exclusion: "${result.excludedServiceLabel}" — ${openingProblem}`
-          : `Nothing on the price sheet covers: ${openingProblem}`,
+        ...outOfScopeFlag(result, openingProblem),
       },
     });
     await admin
@@ -2806,6 +2905,7 @@ async function handleFreshQuote(params: {
       lineItems,
       pendingNegotiatedPrice: result.hasNoPricedWork,
       hasPartiallyDeferredWork: result.hasPartiallyDeferredWork,
+      quoteToken: result.quoteToken,
     },
   });
 

@@ -13,10 +13,17 @@ vi.mock("@tanstack/react-start/server", () => ({
 }));
 
 import {
+  assertIssuedQuestions,
+  assertIssuedQuote,
   performCreateClarifyingLead,
   performFinalizeLeadWithQuote,
   type getAdminClient,
 } from "./public-lead-server";
+import { quoteScopeFromSubmission, signQuestionsScope, signQuoteScope } from "./estimate-server";
+
+// Quote/question signatures are keyed off the server-only service-role
+// secret (see estimate-server.ts's scopeSigningKey).
+vi.stubEnv("SUPABASE_SERVICE_ROLE_KEY", "test-service-role-key");
 
 const INTAKE_UNAVAILABLE_MESSAGE = "This business's estimate service is currently unavailable.";
 
@@ -25,6 +32,9 @@ type FakeAdminConfig = {
   subscriptionActive: boolean;
   leadInsert?: { data: { id: string } | null; error: { message: string } | null };
   updateLead?: { data: string | null; error: { message: string } | null };
+  // The lead's stored problem as finalize reads it back (D2). undefined →
+  // the base fixture's own problem; null → no such lead for this tenant.
+  storedLeadProblem?: string | null;
 };
 
 // Minimal, table-dispatching fake — same spirit as entitlements-server.test.ts's
@@ -76,6 +86,19 @@ function fakeAdmin(config: FakeAdminConfig) {
       if (table === "leads") {
         calls.push("from:leads");
         return {
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                maybeSingle: async () => ({
+                  data:
+                    config.storedLeadProblem === null
+                      ? null
+                      : { problem: config.storedLeadProblem ?? "Leaky faucet" },
+                  error: null,
+                }),
+              }),
+            }),
+          }),
           insert: (payload: Record<string, unknown>) => {
             writes.leadInsertPayload = payload;
             return {
@@ -118,7 +141,7 @@ const baseClarifyingInput = {
   problem: "Leaky faucet",
 };
 
-const baseFinalizeInput = {
+const unsignedFinalizeInput = {
   leadId: "lead-1",
   tenantSlug: "acme",
   customerName: "Jane Doe",
@@ -135,6 +158,11 @@ const baseFinalizeInput = {
     priceSheetItemId?: string | null | undefined;
     hours?: number | undefined;
   }>,
+};
+// A quote exactly as getQuoteEstimate issued it — signed by the server.
+const baseFinalizeInput = {
+  ...unsignedFinalizeInput,
+  quoteToken: signQuoteScope("acme", quoteScopeFromSubmission(unsignedFinalizeInput)),
 };
 
 describe("performCreateClarifyingLead — subscription gate (Task B)", () => {
@@ -218,6 +246,137 @@ describe("performFinalizeLeadWithQuote — subscription gate (Task B)", () => {
     const result = await performFinalizeLeadWithQuote(client, baseFinalizeInput);
     expect(result).toEqual({ id: "lead-1", total: 0 });
     expect(calls).toContain("rpc:update_lead_with_line_items");
+  });
+});
+
+// Third review round (2026-11-09): browser-supplied quote data and
+// clarification history are never trusted as proof of what JIR quoted or
+// asked — only server-signed data is stored as such.
+describe("C — lead writes only accept what the server actually issued", () => {
+  const activeTenant = () =>
+    fakeAdmin({
+      tenant: { id: "tenant-1", user_id: "owner-1" },
+      subscriptionActive: true,
+      updateLead: { data: "lead-1", error: null },
+    });
+
+  it("rejects a quote with no server signature and never finalizes the lead", async () => {
+    const { client, calls } = activeTenant();
+    await expect(
+      performFinalizeLeadWithQuote(client, { ...baseFinalizeInput, quoteToken: undefined }),
+    ).rejects.toThrow(INTAKE_UNAVAILABLE_MESSAGE);
+    expect(calls).not.toContain("rpc:update_lead_with_line_items");
+  });
+
+  it("rejects a signed quote whose diagnosis was altered in the browser", async () => {
+    const { client, calls } = activeTenant();
+    await expect(
+      performFinalizeLeadWithQuote(client, {
+        ...baseFinalizeInput,
+        diagnosis: "Car engine rebuild.",
+      }),
+    ).rejects.toThrow(INTAKE_UNAVAILABLE_MESSAGE);
+    expect(calls).not.toContain("rpc:update_lead_with_line_items");
+  });
+
+  it("rejects a signed quote with an added line item", async () => {
+    const { client } = activeTenant();
+    await expect(
+      performFinalizeLeadWithQuote(client, {
+        ...baseFinalizeInput,
+        lineItems: [
+          { description: "Engine work", qty: 1, unit: "job", rate: 300, priceSheetItemId: "x" },
+        ],
+      }),
+    ).rejects.toThrow(INTAKE_UNAVAILABLE_MESSAGE);
+  });
+
+  it("rejects another tenant's signature", async () => {
+    const { client } = activeTenant();
+    await expect(
+      performFinalizeLeadWithQuote(client, {
+        ...baseFinalizeInput,
+        quoteToken: signQuoteScope("other-tenant", quoteScopeFromSubmission(unsignedFinalizeInput)),
+      }),
+    ).rejects.toThrow(INTAKE_UNAVAILABLE_MESSAGE);
+  });
+
+  // D2 (2026-11-09 review package): a signed quote must not be attachable to
+  // a lead whose stored request says something else — finalize never writes
+  // `problem`, so it verifies against the stored one.
+  it("D2 attack: a signed faucet quote can't finalize a lead whose stored problem adds unrelated work", async () => {
+    const { client, calls } = fakeAdmin({
+      tenant: { id: "tenant-1", user_id: "owner-1" },
+      subscriptionActive: true,
+      updateLead: { data: "lead-1", error: null },
+      storedLeadProblem: "Leaky faucet, and my car engine",
+    });
+    await expect(performFinalizeLeadWithQuote(client, baseFinalizeInput)).rejects.toThrow(
+      INTAKE_UNAVAILABLE_MESSAGE,
+    );
+    expect(calls).not.toContain("rpc:update_lead_with_line_items");
+  });
+
+  it("D2: the stored problem is authoritative — a caller-supplied problem can't stand in for it", async () => {
+    const { client, calls } = activeTenant();
+    // Stored "Leaky faucet" matches the signature, so the caller's copy is
+    // irrelevant (finalize never writes it) and the quote is accepted…
+    await performFinalizeLeadWithQuote(client, {
+      ...baseFinalizeInput,
+      problem: "anything at all",
+    });
+    expect(calls).toContain("rpc:update_lead_with_line_items");
+  });
+
+  it("D2: a lead that doesn't exist for this tenant can't be finalized", async () => {
+    const { client } = fakeAdmin({
+      tenant: { id: "tenant-1", user_id: "owner-1" },
+      subscriptionActive: true,
+      storedLeadProblem: null,
+    });
+    await expect(performFinalizeLeadWithQuote(client, baseFinalizeInput)).rejects.toThrow(
+      INTAKE_UNAVAILABLE_MESSAGE,
+    );
+  });
+
+  it("D2 attack (lead creation): a signed quote submitted with altered problem text is rejected", () => {
+    const signed = { ...unsignedFinalizeInput, quoteToken: baseFinalizeInput.quoteToken };
+    expect(() => assertIssuedQuote(signed)).not.toThrow();
+    expect(() =>
+      assertIssuedQuote({ ...signed, problem: "Leaky faucet, and my car engine" }),
+    ).toThrow(INTAKE_UNAVAILABLE_MESSAGE);
+  });
+
+  it("assertIssuedQuestions: an 'assistant' message must be a question the server signed", () => {
+    const token = signQuestionsScope("acme", ["Which drain is clogged?"]);
+    expect(() =>
+      assertIssuedQuestions(
+        "acme",
+        [
+          { role: "customer", body: "my drain is clogged" },
+          { role: "assistant", body: "Which drain is clogged?" },
+        ],
+        token,
+      ),
+    ).not.toThrow();
+    expect(() =>
+      assertIssuedQuestions(
+        "acme",
+        [{ role: "assistant", body: "Do you want engine repair?" }],
+        token,
+      ),
+    ).toThrow(INTAKE_UNAVAILABLE_MESSAGE);
+    expect(() =>
+      assertIssuedQuestions(
+        "acme",
+        [{ role: "assistant", body: "Which drain is clogged?" }],
+        undefined,
+      ),
+    ).toThrow(INTAKE_UNAVAILABLE_MESSAGE);
+    // The customer's own words need no signature.
+    expect(() =>
+      assertIssuedQuestions("acme", [{ role: "customer", body: "anything" }], undefined),
+    ).not.toThrow();
   });
 });
 

@@ -30,6 +30,20 @@ import {
   detectLanguage,
   detectCurrentLanguage,
   enforceTenantAiLimit,
+  gateClarification,
+  runQuoteAttempts,
+  withAuthoritativeCatalog,
+  evaluateFollowUpScope,
+  checkFollowUpRequest,
+  attachScopeTokens,
+  signQuoteScope,
+  verifyQuoteScope,
+  signQuestionsScope,
+  verifyQuestionsScope,
+  signFollowUpScope,
+  outOfScopeFlag,
+  CLARIFICATION_SCOPE_RULE,
+  PHOTO_ONLY_SCOPE_RULE,
   type PriceSheetItem,
   type QuoteInput,
   type QuoteResult,
@@ -1663,5 +1677,1364 @@ describe("enforceTenantAiLimit — durable per-tenant AI rate limit", () => {
     expect(statuses.filter((s) => s === "fulfilled").length).toBe(2);
     expect(statuses.filter((s) => s === "rejected").length).toBe(1);
     expect(admin.rpc).toHaveBeenCalledTimes(3);
+  });
+});
+
+// PRODUCTION REGRESSION (2026-11-09): a handyman tenant received a photo of
+// a car engine on WhatsApp and the AI replied "What do you need help with
+// regarding this engine? (Engine won't start or is running poorly / ...)" —
+// an automotive diagnostic question for a business that doesn't do
+// automotive work. Root cause: a needsClarification response was returned
+// to every caller with no application-side scope check at all (price-sheet
+// validation and applyExclusionGuard only ever ran on priced results). These
+// tests pin the fix: a clarification question only reaches a customer when
+// it cites real, eligible items from THIS tenant's own price sheet and
+// matches none of its configured exclusions — the AI's own scope verdict and
+// cited ids are inputs to check, never proof.
+describe("gateClarification — price-sheet-first scope check for clarification questions", () => {
+  const handymanSheet = priceSheet; // ps-1 quick fix, ps-2 drain clearing, ps-3 AC diagnostic
+
+  const sheetRow = (
+    overrides: Partial<PriceSheetItem> & Pick<PriceSheetItem, "id" | "task" | "category">,
+  ): PriceSheetItem => ({
+    keywords: [],
+    pricingType: "flat",
+    priceMin: 100,
+    priceMax: 100,
+    hours: 1,
+    bundleable: false,
+    materialsPolicy: "included",
+    diagnosisFee: null,
+    aiNotes: null,
+    alwaysRequiresInspection: false,
+    ...overrides,
+  });
+  const paintingSheet = [
+    sheetRow({
+      id: "pt-1",
+      task: "Interior room painting",
+      category: "Painting",
+      keywords: ["paint", "walls"],
+    }),
+  ];
+  const applianceSheet = [
+    sheetRow({
+      id: "ap-1",
+      task: "Washing machine repair",
+      category: "Appliances",
+      keywords: ["washer", "washing machine"],
+    }),
+  ];
+  const customQuoteRow = sheetRow({
+    id: "cq-1",
+    task: "Custom cabinetry",
+    category: "Carpentry",
+    pricingType: "flat",
+    priceMin: 0,
+    priceMax: 0,
+    alwaysRequiresInspection: true,
+  });
+
+  const input = (overrides: Partial<QuoteInput> = {}): QuoteInput => ({
+    businessName: "Test Business",
+    laborRate: 60,
+    serviceCallFee: 89,
+    serviceCallFeeMode: "fixed",
+    priceSheet: handymanSheet,
+    description: NO_DESCRIPTION_PLACEHOLDER,
+    imageBase64: "x",
+    ...overrides,
+  });
+  const question = { question: "What do you need done?", options: ["Repair", "Something else"] };
+  // The exact shape the model produced in production: no scope verdict, no
+  // cited ids — just an industry-specific question.
+  const productionEngineResponse = {
+    needsClarification: true,
+    questions: [
+      {
+        question: "What do you need help with regarding this engine?",
+        options: [
+          "Engine won't start or is running poorly",
+          "Routine maintenance or inspection",
+          "Specific repair or replacement needed",
+          "Something else",
+        ],
+      },
+    ],
+  };
+
+  it("handyman + car engine photo: the exact production response (no verdict, no cited ids) is rejected", () => {
+    const gate = gateClarification(productionEngineResponse, input());
+    expect(gate.ok).toBe(false);
+  });
+
+  it("handyman + car engine photo: an explicit out_of_scope verdict fails closed with no retry", () => {
+    const gate = gateClarification(
+      {
+        needsClarification: true,
+        scopeVerdict: "out_of_scope",
+        candidatePriceSheetItemIds: [],
+        questions: [question],
+      },
+      input(),
+    );
+    expect(gate).toMatchObject({ ok: false, retryable: false });
+  });
+
+  it("handyman + car engine photo: an 'in_scope' claim citing a fabricated automotive id fails closed", () => {
+    const gate = gateClarification(
+      {
+        needsClarification: true,
+        scopeVerdict: "in_scope",
+        candidatePriceSheetItemIds: ["auto-engine-repair"],
+        questions: [question],
+      },
+      input(),
+    );
+    expect(gate.ok).toBe(false);
+    if (!gate.ok) expect(gate.ownerReason).toContain("auto-engine-repair");
+  });
+
+  it("a fabricated id alongside a real one still fails — every cited id must exist on this tenant's sheet", () => {
+    const gate = gateClarification(
+      {
+        needsClarification: true,
+        scopeVerdict: "in_scope",
+        candidatePriceSheetItemIds: ["ps-1", "made-up"],
+        questions: [question],
+      },
+      input(),
+    );
+    expect(gate.ok).toBe(false);
+  });
+
+  it("an id from a DIFFERENT tenant's sheet is not eligible here", () => {
+    const gate = gateClarification(
+      {
+        needsClarification: true,
+        scopeVerdict: "in_scope",
+        candidatePriceSheetItemIds: ["ap-1"],
+        questions: [question],
+      },
+      input({ priceSheet: paintingSheet }),
+    );
+    expect(gate.ok).toBe(false);
+  });
+
+  it("painting business + appliance photo: an 'unclear' verdict fails closed with no retry", () => {
+    const gate = gateClarification(
+      {
+        needsClarification: true,
+        scopeVerdict: "unclear",
+        candidatePriceSheetItemIds: [],
+        questions: [question],
+      },
+      input({ priceSheet: paintingSheet }),
+    );
+    expect(gate).toMatchObject({ ok: false, retryable: false });
+  });
+
+  it("appliance repair business + captioned washing machine photo: a question citing its real washer row is released", () => {
+    const gate = gateClarification(
+      {
+        needsClarification: true,
+        scopeVerdict: "in_scope",
+        candidatePriceSheetItemIds: ["ap-1"],
+        questions: [
+          { question: "What's the washer doing?", options: ["Won't drain", "Won't spin", "Other"] },
+        ],
+      },
+      input({ priceSheet: applianceSheet, description: "My washer is broken" }),
+    );
+    expect(gate).toEqual({
+      ok: true,
+      questions: [
+        { question: "What's the washer doing?", options: ["Won't drain", "Won't spin", "Other"] },
+      ],
+    });
+  });
+
+  it("explicitly excluded service: fails closed with the exclusion's own label, even when the model cites a real row", () => {
+    const gate = gateClarification(
+      {
+        needsClarification: true,
+        scopeVerdict: "in_scope",
+        candidatePriceSheetItemIds: ["ps-1"],
+        questions: [question],
+      },
+      input({
+        description: "My roof is leaking, can you do roof repair?",
+        exclusions: [{ label: "Roof repair" }],
+      }),
+    );
+    expect(gate).toMatchObject({
+      ok: false,
+      retryable: false,
+      excludedServiceLabel: "Roof repair",
+    });
+  });
+
+  it("an excluded service named only inside the model's own question/options also fails closed", () => {
+    const gate = gateClarification(
+      {
+        needsClarification: true,
+        scopeVerdict: "in_scope",
+        candidatePriceSheetItemIds: ["ps-1"],
+        questions: [{ question: "Is this for roof repair?", options: ["Yes", "No"] }],
+      },
+      input({ exclusions: [{ label: "Roof repair" }] }),
+    );
+    expect(gate).toMatchObject({ ok: false, excludedServiceLabel: "Roof repair" });
+  });
+
+  it("ALWAYS INSPECT custom-quote row with no fixed price stays eligible — by plain id or its ':inspection' id", () => {
+    const sheet = [...handymanSheet, customQuoteRow];
+    for (const id of ["cq-1", "cq-1:inspection"]) {
+      const gate = gateClarification(
+        {
+          needsClarification: true,
+          scopeVerdict: "in_scope",
+          candidatePriceSheetItemIds: [id],
+          questions: [question],
+        },
+        input({ priceSheet: sheet, description: "Can you build custom kitchen cabinets?" }),
+      );
+      expect(gate.ok).toBe(true);
+    }
+  });
+
+  it("a row's ':diagnosis' id resolves to that row and is eligible", () => {
+    const gate = gateClarification(
+      {
+        needsClarification: true,
+        scopeVerdict: "in_scope",
+        candidatePriceSheetItemIds: ["ps-3:diagnosis"],
+        questions: [question],
+      },
+      input({ description: "AC not cooling" }),
+    );
+    expect(gate.ok).toBe(true);
+  });
+
+  it("the generic service-call fee is not a service — citing only it fails", () => {
+    const gate = gateClarification(
+      {
+        needsClarification: true,
+        scopeVerdict: "in_scope",
+        candidatePriceSheetItemIds: [SERVICE_CALL_SENTINEL_ID],
+        questions: [question],
+      },
+      input(),
+    );
+    expect(gate.ok).toBe(false);
+  });
+
+  it("ambiguous photo with no cited items fails, even with an in_scope claim", () => {
+    const gate = gateClarification(
+      {
+        needsClarification: true,
+        scopeVerdict: "in_scope",
+        candidatePriceSheetItemIds: [],
+        questions: [question],
+      },
+      input(),
+    );
+    expect(gate.ok).toBe(false);
+  });
+
+  it("empty price sheet: nothing is eligible, fails closed with no retry even when the model claims a match", () => {
+    const gate = gateClarification(
+      {
+        needsClarification: true,
+        scopeVerdict: "in_scope",
+        candidatePriceSheetItemIds: ["ps-1"],
+        questions: [question],
+      },
+      input({ priceSheet: [] }),
+    );
+    expect(gate).toMatchObject({ ok: false, retryable: false });
+  });
+
+  it("a missing verdict is a format failure the model may correct once (retryable)", () => {
+    const gate = gateClarification(
+      { needsClarification: true, candidatePriceSheetItemIds: ["ps-1"], questions: [question] },
+      input(),
+    );
+    expect(gate).toMatchObject({ ok: false, retryable: true });
+  });
+
+  it("no usable question text fails, and malformed option entries are dropped from a released question", () => {
+    expect(
+      gateClarification(
+        {
+          needsClarification: true,
+          scopeVerdict: "in_scope",
+          candidatePriceSheetItemIds: ["ps-2"],
+          questions: [{ question: "  " }],
+        },
+        input(),
+      ).ok,
+    ).toBe(false);
+    expect(
+      gateClarification(
+        {
+          needsClarification: true,
+          scopeVerdict: "in_scope",
+          candidatePriceSheetItemIds: ["ps-2"],
+          questions: [{ question: "Which drain?", options: ["Kitchen", 42, null, "Bathroom"] }],
+        },
+        input({ description: "clogged drain" }),
+      ),
+    ).toEqual({
+      ok: true,
+      questions: [{ question: "Which drain?", options: ["Kitchen", "Bathroom"] }],
+    });
+  });
+});
+
+describe("runQuoteAttempts — every clarification, first attempt or corrective retry, passes the same gate", () => {
+  const input = (overrides: Partial<QuoteInput> = {}): QuoteInput => ({
+    businessName: "Test Business",
+    laborRate: 60,
+    serviceCallFee: 89,
+    serviceCallFeeMode: "fixed",
+    priceSheet,
+    description: NO_DESCRIPTION_PLACEHOLDER,
+    imageBase64: "x",
+    ...overrides,
+  });
+  const scripted = (responses: Array<Record<string, unknown>>) => {
+    let call = 0;
+    return vi.fn(async () => {
+      const parsed = responses[Math.min(call, responses.length - 1)]!;
+      call += 1;
+      return { raw: JSON.stringify(parsed), parsed };
+    });
+  };
+  const engineQuestion = {
+    needsClarification: true,
+    questions: [
+      {
+        question: "What do you need help with regarding this engine?",
+        options: ["Engine won't start", "Something else"],
+      },
+    ],
+  };
+
+  it("engine photo: the production response, repeated on the corrective retry, ends as an outOfScope hand-off — never a question", async () => {
+    const ask = scripted([engineQuestion, engineQuestion]);
+    const result = await runQuoteAttempts(input(), [], ask);
+    expect(ask).toHaveBeenCalledTimes(2);
+    expect(result.needsClarification).toBe(false);
+    expect(result).toMatchObject({ outOfScope: true });
+    if (!result.needsClarification && result.outOfScope)
+      expect(result.scopeGateReason).toBeTruthy();
+  });
+
+  it("a corrective retry that comes back compliant is released — and only after passing the same checks", async () => {
+    const ask = scripted([
+      { ...engineQuestion },
+      {
+        needsClarification: true,
+        scopeVerdict: "in_scope",
+        candidatePriceSheetItemIds: ["ps-2"],
+        questions: [{ question: "Which drain is clogged?", options: ["Kitchen", "Bathroom"] }],
+      },
+    ]);
+    const result = await runQuoteAttempts(input({ description: "clogged drain" }), [], ask);
+    expect(ask).toHaveBeenCalledTimes(2);
+    expect(result).toEqual({
+      needsClarification: true,
+      questions: [{ question: "Which drain is clogged?", options: ["Kitchen", "Bathroom"] }],
+    });
+  });
+
+  it("a fabricated id on both attempts fails closed", async () => {
+    const fabricated = {
+      needsClarification: true,
+      scopeVerdict: "in_scope",
+      candidatePriceSheetItemIds: ["auto-1"],
+      questions: [{ question: "Q?", options: [] }],
+    };
+    const result = await runQuoteAttempts(input(), [], scripted([fabricated, fabricated]));
+    expect(result).toMatchObject({ needsClarification: false, outOfScope: true });
+  });
+
+  it("an explicit out_of_scope verdict fails closed immediately — no retry that could talk the model into a match", async () => {
+    const ask = scripted([
+      {
+        needsClarification: true,
+        scopeVerdict: "out_of_scope",
+        candidatePriceSheetItemIds: [],
+        questions: [{ question: "Q?", options: [] }],
+      },
+    ]);
+    const result = await runQuoteAttempts(input(), [], ask);
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ needsClarification: false, outOfScope: true });
+  });
+
+  it("excluded service fails closed immediately and carries the exclusion label for the owner's flag", async () => {
+    const ask = scripted([
+      {
+        needsClarification: true,
+        scopeVerdict: "in_scope",
+        candidatePriceSheetItemIds: ["ps-1"],
+        questions: [{ question: "Which part of the roof?", options: [] }],
+      },
+    ]);
+    const result = await runQuoteAttempts(
+      input({ description: "need roof repair", exclusions: [{ label: "Roof repair" }] }),
+      [],
+      ask,
+    );
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      needsClarification: false,
+      outOfScope: true,
+      excludedServiceLabel: "Roof repair",
+    });
+  });
+
+  it("a legitimate in-scope question passes on the first attempt with no extra model call", async () => {
+    const ask = scripted([
+      {
+        needsClarification: true,
+        scopeVerdict: "in_scope",
+        candidatePriceSheetItemIds: ["ps-3"],
+        questions: [{ question: "Is it blowing warm air?", options: ["Yes", "No"] }],
+      },
+    ]);
+    const result = await runQuoteAttempts(input({ description: "AC not cooling" }), [], ask);
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(result.needsClarification).toBe(true);
+  });
+
+  it("the one-round clarification cap is unchanged: a second round of questions after answers still throws", async () => {
+    const question = {
+      needsClarification: true,
+      scopeVerdict: "in_scope",
+      candidatePriceSheetItemIds: ["ps-3"],
+      questions: [{ question: "Q?", options: [] }],
+    };
+    await expect(
+      runQuoteAttempts(
+        input({ description: "AC not cooling", answers: [{ question: "Q?", answer: "Yes" }] }),
+        [],
+        scripted([question, question]),
+      ),
+    ).rejects.toThrow();
+  });
+});
+
+describe("outOfScopeFlag — one place every caller derives the owner's flag from", () => {
+  it("excluded service → excluded_service, with the exclusion label", () => {
+    expect(outOfScopeFlag({ excludedServiceLabel: "Roof repair" }, "fix my roof")).toEqual({
+      flagType: "excluded_service",
+      flagReason: 'Matches a configured exclusion: "Roof repair" — fix my roof',
+    });
+  });
+  it("scope-gate failure → outside_service_scope, with the gate's own reason", () => {
+    expect(
+      outOfScopeFlag(
+        { scopeGateReason: "Couldn't match this to a price-sheet service" },
+        "engine photo",
+      ),
+    ).toEqual({
+      flagType: "outside_service_scope",
+      flagReason: "Couldn't match this to a price-sheet service — engine photo",
+    });
+  });
+  it("plain model outOfScope keeps today's exact wording", () => {
+    expect(outOfScopeFlag({}, "paint a mural")).toEqual({
+      flagType: "outside_service_scope",
+      flagReason: "Nothing on the price sheet covers: paint a mural",
+    });
+  });
+});
+
+describe("buildPrompt — clarification scope rules (advisory; gateClarification is the enforcement)", () => {
+  const input = (overrides: Partial<QuoteInput> = {}): QuoteInput => ({
+    businessName: "Test Business",
+    laborRate: 60,
+    serviceCallFee: 89,
+    serviceCallFeeMode: "fixed",
+    priceSheet,
+    description: "My doorknob is loose.",
+    ...overrides,
+  });
+
+  it("always tells the model a question must cite specific price-sheet ids, and documents the fields in the JSON shape", () => {
+    const prompt = buildPrompt(input());
+    expect(prompt).toContain(CLARIFICATION_SCOPE_RULE);
+    expect(prompt).toContain('"scopeVerdict": "in_scope", "candidatePriceSheetItemIds"');
+  });
+
+  it("a photo-only request gets the 'photo is context, not evidence' rule ahead of the open-ended-question instruction", () => {
+    const prompt = buildPrompt(
+      input({ imageBase64: "x", description: NO_DESCRIPTION_PLACEHOLDER }),
+    );
+    const scopeAt = prompt.indexOf(PHOTO_ONLY_SCOPE_RULE);
+    expect(scopeAt).toBeGreaterThan(-1);
+    expect(scopeAt).toBeLessThan(prompt.indexOf("No description was provided"));
+  });
+
+  it("the photo-only rule is not added when the customer also wrote a description", () => {
+    expect(buildPrompt(input({ imageBase64: "x" }))).not.toContain(PHOTO_ONLY_SCOPE_RULE);
+  });
+});
+
+// Adversarial-review corrections (2026-11-09): V1/V2 (service-call-only,
+// deferred, and retry results escaped the scope gate), V3/V4 (a real but
+// irrelevant item passed; exclusions missed photos), V5 (web price sheet
+// came from the browser). Eligibility now applies to EVERY result shape and
+// relevance is established only from the customer's own words.
+describe("price-sheet eligibility + customer-word relevance — every result shape", () => {
+  const row = (
+    o: Partial<PriceSheetItem> & Pick<PriceSheetItem, "id" | "task" | "category">,
+  ): PriceSheetItem => ({
+    keywords: [],
+    pricingType: "flat",
+    priceMin: 60,
+    priceMax: 60,
+    hours: 1,
+    bundleable: false,
+    materialsPolicy: "included",
+    diagnosisFee: null,
+    aiNotes: null,
+    alwaysRequiresInspection: false,
+    ...o,
+  });
+  const quickFix = row({
+    id: "qf",
+    task: "Quick fix / minor repair",
+    category: "General",
+    keywords: ["doorknob"],
+  });
+  const faucet = row({
+    id: "fc",
+    task: "Faucet replacement",
+    category: "Plumbing",
+    keywords: ["faucet", "llave", "grifo"],
+  });
+  const washer = row({
+    id: "wm",
+    task: "Washing machine repair",
+    category: "Appliances",
+    keywords: ["washer", "lavadora"],
+  });
+  const inspectOnly = row({
+    id: "ai",
+    task: "Water heater replacement",
+    category: "Plumbing",
+    keywords: ["water heater", "boiler"],
+    priceMin: 0,
+    priceMax: 0,
+    alwaysRequiresInspection: true,
+  });
+  const withDiagnosis = row({
+    id: "ac",
+    task: "AC repair",
+    category: "HVAC",
+    keywords: ["air conditioner", "cooling"],
+    diagnosisFee: { pricingType: "flat", amount: 75 },
+  });
+  const sheet = [quickFix, faucet, washer, inspectOnly, withDiagnosis];
+
+  const input = (o: Partial<QuoteInput> = {}): QuoteInput => ({
+    businessName: "Test Business",
+    laborRate: 60,
+    serviceCallFee: 89,
+    serviceCallFeeMode: "fixed",
+    priceSheet: sheet,
+    description: NO_DESCRIPTION_PLACEHOLDER,
+    imageBase64: "x",
+    ...o,
+  });
+  const scripted = (responses: Array<Record<string, unknown>>) => {
+    let call = 0;
+    return vi.fn(async () => {
+      const parsed = responses[Math.min(call, responses.length - 1)]!;
+      call += 1;
+      return { raw: JSON.stringify(parsed), parsed };
+    });
+  };
+  const priced = (o: Record<string, unknown>) => ({
+    needsClarification: false,
+    outOfScope: false,
+    isEmergency: false,
+    issueType: "x",
+    severity: "Low",
+    confidence: "Medium",
+    diagnosis: "Engine needs an inspection.",
+    ...o,
+  });
+  const serviceCallOnly = priced({
+    matchedServices: [{ customerIssue: "engine", priceSheetItemId: "service_call" }],
+    lineItems: [
+      { description: "Service call", detail: "", amount: 89, priceSheetItemId: "service_call" },
+    ],
+  });
+  const qfFor = (issue: string) =>
+    priced({
+      matchedServices: [{ customerIssue: issue, priceSheetItemId: "qf" }],
+      lineItems: [
+        { description: "Quick fix / minor repair", detail: "", amount: 60, priceSheetItemId: "qf" },
+      ],
+    });
+  const faucetPriced = priced({
+    matchedServices: [{ customerIssue: "faucet", priceSheetItemId: "fc" }],
+    lineItems: [
+      { description: "Faucet replacement", detail: "", amount: 60, priceSheetItemId: "fc" },
+    ],
+  });
+
+  it("V1: fixed-fee engine photo priced at the generic service-call fee alone fails closed", async () => {
+    const result = await runQuoteAttempts(
+      input({ description: "my car engine won't start" }),
+      [],
+      scripted([serviceCallOnly]),
+    );
+    expect(result).toMatchObject({ needsClarification: false, outOfScope: true });
+  });
+
+  it("V1: negotiated-mode engine 'deferred' result (null match, nothing priced) fails closed", async () => {
+    const deferred = priced({
+      matchedServices: [{ customerIssue: "engine", priceSheetItemId: null }],
+      lineItems: [],
+    });
+    const result = await runQuoteAttempts(
+      input({ serviceCallFeeMode: "negotiated", description: "my car engine won't start" }),
+      [],
+      scripted([deferred, deferred]),
+    );
+    expect(result).toMatchObject({ needsClarification: false, outOfScope: true });
+  });
+
+  it("V1: a null-matched (unidentified) issue alongside real priced work still fails closed", async () => {
+    const mixed = priced({
+      matchedServices: [
+        { customerIssue: "faucet", priceSheetItemId: "fc" },
+        { customerIssue: "car engine", priceSheetItemId: null },
+      ],
+      lineItems: [
+        { description: "Faucet replacement", detail: "", amount: 60, priceSheetItemId: "fc" },
+      ],
+    });
+    const result = await runQuoteAttempts(
+      input({ description: "replace my faucet and look at my car engine" }),
+      [],
+      scripted([mixed, mixed]),
+    );
+    expect(result).toMatchObject({ outOfScope: true });
+  });
+
+  it("V1: an empty price sheet fails closed even for a service-call-only result", async () => {
+    const result = await runQuoteAttempts(
+      input({ priceSheet: [], description: "my car engine won't start" }),
+      [],
+      scripted([serviceCallOnly]),
+    );
+    expect(result).toMatchObject({ outOfScope: true });
+  });
+
+  it("V2: the retry cannot escape — ungated question, then a service-call quote on retry, still fails closed", async () => {
+    const ask = scripted([
+      {
+        needsClarification: true,
+        questions: [{ question: "What's wrong with the engine?", options: [] }],
+      },
+      serviceCallOnly,
+    ]);
+    const result = await runQuoteAttempts(
+      input({ description: "my car engine won't start" }),
+      [],
+      ask,
+    );
+    expect(ask).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({ outOfScope: true });
+  });
+
+  it("V3: a real but irrelevant generic item fails — 'fix'/'repair' are not evidence the request is about that item", async () => {
+    const result = await runQuoteAttempts(
+      input({ description: "can you fix my car engine? it needs repair" }),
+      [],
+      scripted([qfFor("car engine"), qfFor("car engine")]),
+    );
+    expect(result).toMatchObject({ outOfScope: true });
+  });
+
+  it("V3: the same generic item IS released when the customer's own words match it", async () => {
+    const result = await runQuoteAttempts(
+      input({ description: "my doorknob is loose" }),
+      [],
+      scripted([qfFor("loose doorknob")]),
+    );
+    expect(result).toMatchObject({ needsClarification: false, outOfScope: false });
+  });
+
+  it("V3: AI text never establishes relevance — a diagnosis/question that names the item doesn't count", async () => {
+    const r1 = await runQuoteAttempts(
+      input({ description: "my car engine is making noise" }),
+      [],
+      scripted([{ ...qfFor("doorknob"), diagnosis: "Loose doorknob needs tightening." }]),
+    );
+    expect(r1).toMatchObject({ outOfScope: true });
+    const gate = gateClarification(
+      {
+        needsClarification: true,
+        scopeVerdict: "in_scope",
+        candidatePriceSheetItemIds: ["qf"],
+        questions: [{ question: "Is the doorknob loose?", options: ["Yes", "No"] }],
+      },
+      input({ description: "my car engine is making noise" }),
+    );
+    expect(gate.ok).toBe(false);
+  });
+
+  it("V3: a captionless photo has no customer words — fails closed for questions and priced results alike", async () => {
+    const gate = gateClarification(
+      {
+        needsClarification: true,
+        scopeVerdict: "in_scope",
+        candidatePriceSheetItemIds: ["wm"],
+        questions: [{ question: "What's the washer doing?", options: [] }],
+      },
+      input(),
+    );
+    expect(gate).toMatchObject({ ok: false, retryable: false });
+    const washerPriced = priced({
+      matchedServices: [{ customerIssue: "washer", priceSheetItemId: "wm" }],
+      lineItems: [
+        { description: "Washing machine repair", detail: "", amount: 60, priceSheetItemId: "wm" },
+      ],
+    });
+    const ask = scripted([washerPriced]);
+    expect(await runQuoteAttempts(input(), [], ask)).toMatchObject({ outOfScope: true });
+    expect(ask).toHaveBeenCalledTimes(1); // no customer words a retry could find — fails closed immediately
+  });
+
+  it("V3: a first attempt citing the wrong item may be corrected once, and the retry passes the same deterministic check", async () => {
+    const ask = scripted([qfFor("faucet"), faucetPriced]);
+    const result = await runQuoteAttempts(
+      input({ description: "my kitchen faucet drips" }),
+      [],
+      ask,
+    );
+    expect(ask).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({ outOfScope: false });
+  });
+
+  it("Spanish customer words match a tenant's own Spanish keywords, accents folded", async () => {
+    const lavadora = priced({
+      matchedServices: [{ customerIssue: "lavadora", priceSheetItemId: "wm" }],
+      lineItems: [
+        { description: "Washing machine repair", detail: "", amount: 60, priceSheetItemId: "wm" },
+      ],
+    });
+    expect(
+      await runQuoteAttempts(
+        input({ description: "Mi lavadora no centrifuga, necesito reparación" }),
+        [],
+        scripted([lavadora]),
+      ),
+    ).toMatchObject({ outOfScope: false });
+  });
+
+  it("Spanish generic request words (arreglar, reparación…) are not evidence either — even against a Spanish-named generic row", async () => {
+    const arreglos = row({
+      id: "am",
+      task: "Arreglos menores / reparación rápida",
+      category: "General",
+      keywords: ["perilla"],
+    });
+    const amFor = priced({
+      matchedServices: [{ customerIssue: "motor", priceSheetItemId: "am" }],
+      lineItems: [
+        { description: "Arreglos menores", detail: "", amount: 60, priceSheetItemId: "am" },
+      ],
+    });
+    expect(
+      await runQuoteAttempts(
+        input({
+          priceSheet: [...sheet, arreglos],
+          description: "¿Pueden arreglar el motor de mi carro? Necesito reparación rápida",
+        }),
+        [],
+        scripted([amFor, amFor]),
+      ),
+    ).toMatchObject({ outOfScope: true });
+  });
+
+  it("V4: exclusions win over a relevant item, and accented Spanish exclusions match", async () => {
+    const ask = scripted([faucetPriced]);
+    const result = await runQuoteAttempts(
+      input({
+        description: "necesito reparación de techos y cambiar la llave",
+        exclusions: [{ label: "Reparación de techos" }],
+      }),
+      [],
+      ask,
+    );
+    expect(result).toMatchObject({
+      outOfScope: true,
+      excludedServiceLabel: "Reparación de techos",
+    });
+    expect(ask).toHaveBeenCalledTimes(1);
+  });
+
+  it("ALWAYS INSPECT (no fee) stays eligible via its ':inspection' id when the customer names it", async () => {
+    const inspection = priced({
+      matchedServices: [{ customerIssue: "water heater", priceSheetItemId: "ai:inspection" }],
+      lineItems: [],
+    });
+    const result = await runQuoteAttempts(
+      input({ description: "my water heater is leaking" }),
+      [],
+      scripted([inspection]),
+    );
+    expect(result).toMatchObject({
+      outOfScope: false,
+      hasNoPricedWork: true,
+      hasFeeFreeDeferralOnly: true,
+    });
+  });
+
+  it("a diagnosis-fee id resolves to its own row and is eligible when relevant", async () => {
+    const diag = priced({
+      matchedServices: [{ customerIssue: "AC", priceSheetItemId: "ac:diagnosis" }],
+      lineItems: [
+        {
+          description: "AC repair — diagnosis",
+          detail: "",
+          amount: 75,
+          priceSheetItemId: "ac:diagnosis",
+        },
+      ],
+    });
+    const result = await runQuoteAttempts(
+      input({ description: "my air conditioner stopped cooling" }),
+      [],
+      scripted([diag]),
+    );
+    expect(result).toMatchObject({ outOfScope: false, isDiagnosisOnly: true });
+  });
+
+  it("a service-call fee alongside a real, relevant item is still fine — the fee just can't stand alone", async () => {
+    const both = priced({
+      diagnosis: "Faucet replacement. The service-call fee applies toward the approved repair.",
+      matchedServices: [
+        { customerIssue: "faucet", priceSheetItemId: "fc" },
+        { customerIssue: "visit", priceSheetItemId: "service_call" },
+      ],
+      lineItems: [
+        { description: "Faucet replacement", detail: "", amount: 60, priceSheetItemId: "fc" },
+        { description: "Service call", detail: "", amount: 89, priceSheetItemId: "service_call" },
+      ],
+    });
+    expect(
+      await runQuoteAttempts(
+        input({ description: "replace my faucet please" }),
+        [],
+        scripted([both]),
+      ),
+    ).toMatchObject({ outOfScope: false });
+  });
+
+  it("a follow-up photo's caption (photoFollowUpNote) is prompt context only — never evidence", async () => {
+    expect(
+      await runQuoteAttempts(
+        input({
+          description: "my car engine won't start",
+          photoFollowUpNote: "my kitchen faucet drips",
+        }),
+        [],
+        scripted([faucetPriced, faucetPriced]),
+      ),
+    ).toMatchObject({ outOfScope: true });
+  });
+});
+
+// D1 (2026-11-09 review package): a tampered browser request used to be able
+// to send customerEvidence that differed from the description the AI saw.
+// The field no longer exists — evidence is exactly the evaluated description.
+describe("D1 — browser-supplied evidence can't replace the evaluated description", () => {
+  const garageDoor: PriceSheetItem = {
+    ...priceSheet[0]!,
+    id: "gd",
+    task: "Garage door repair",
+    category: "Doors",
+    keywords: ["garage door", "opener"],
+  };
+  const tampered = {
+    businessName: "Biz",
+    laborRate: 60,
+    serviceCallFee: 89,
+    serviceCallFeeMode: "fixed" as const,
+    priceSheet: [garageDoor],
+    exclusions: [],
+    description: "fix my car engine",
+    // The exact attack from the review package — now an unknown field.
+    customerEvidence: ["my garage door"],
+  } as unknown as QuoteInput;
+  const garageQuestion = {
+    needsClarification: true,
+    scopeVerdict: "in_scope",
+    candidatePriceSheetItemIds: ["gd"],
+    questions: [{ question: "Is the door off its track?", options: ["Yes", "No"] }],
+  };
+
+  it("the exact attack: description 'fix my car engine' + injected garage-door evidence no longer releases the question", () => {
+    expect(gateClarification(garageQuestion, tampered).ok).toBe(false);
+  });
+
+  it("…nor a priced garage-door quote", async () => {
+    const garagePriced = {
+      needsClarification: false,
+      outOfScope: false,
+      isEmergency: false,
+      issueType: "Doors",
+      severity: "Low",
+      confidence: "High",
+      diagnosis: "Garage door repair.",
+      matchedServices: [{ customerIssue: "garage door", priceSheetItemId: "gd" }],
+      lineItems: [
+        { description: "Garage door repair", detail: "", amount: 60, priceSheetItemId: "gd" },
+      ],
+    };
+    let call = 0;
+    const ask = vi.fn(async () => {
+      call += 1;
+      return { raw: JSON.stringify(garagePriced), parsed: garagePriced };
+    });
+    expect(await runQuoteAttempts(tampered, [], ask)).toMatchObject({ outOfScope: true });
+    expect(call).toBeGreaterThan(0);
+  });
+
+  it("legitimate: the same question is released when the description itself asks for it", () => {
+    expect(
+      gateClarification(garageQuestion, { ...tampered, description: "my garage door won't open" })
+        .ok,
+    ).toBe(true);
+  });
+});
+
+describe("withAuthoritativeCatalog — V5: the server's price sheet, never the browser's", () => {
+  const tampered: QuoteInput = {
+    businessName: "Biz",
+    laborRate: 60,
+    serviceCallFee: 89,
+    serviceCallFeeMode: "fixed",
+    tenantSlug: "real-tenant",
+    description: "fix my car engine",
+    priceSheet: [
+      { ...priceSheet[0]!, id: "fake", task: "Car engine repair", keywords: ["engine"] },
+    ],
+    exclusions: [],
+  };
+  const realCatalog = {
+    businessName: "Real Biz",
+    laborRate: 75,
+    serviceCallFee: 95,
+    serviceCallFeeMode: "negotiated" as const,
+    priceSheet: [priceSheet[1]!],
+    exclusions: [{ label: "Automotive work" }],
+    specialties: [],
+  };
+
+  it("replaces a browser-supplied price sheet and exclusions with the tenant's real ones", async () => {
+    const load = vi.fn(async () => realCatalog);
+    const resolved = await withAuthoritativeCatalog(tampered, load);
+    expect(load).toHaveBeenCalledWith("real-tenant");
+    expect(resolved.priceSheet).toEqual(realCatalog.priceSheet);
+    expect(resolved.exclusions).toEqual(realCatalog.exclusions);
+  });
+
+  it("C: labor rate, service-call fee, fee mode and business name also come from the server, never the browser", async () => {
+    const resolved = await withAuthoritativeCatalog(
+      {
+        ...tampered,
+        laborRate: 1,
+        serviceCallFee: 0,
+        serviceCallFeeMode: "fixed",
+        businessName: "Fake",
+      },
+      async () => realCatalog,
+    );
+    expect(resolved).toMatchObject({
+      businessName: "Real Biz",
+      laborRate: 75,
+      serviceCallFee: 95,
+      serviceCallFeeMode: "negotiated",
+    });
+  });
+
+  it("the tampered 'Car engine repair' item can no longer authorize a question", async () => {
+    const resolved = await withAuthoritativeCatalog(tampered, async () => realCatalog);
+    const gate = gateClarification(
+      {
+        needsClarification: true,
+        scopeVerdict: "in_scope",
+        candidatePriceSheetItemIds: ["fake"],
+        questions: [{ question: "Q?", options: [] }],
+      },
+      resolved,
+    );
+    expect(gate.ok).toBe(false);
+  });
+
+  it("/demo (no tenant) keeps its own sample catalog and loads nothing", async () => {
+    const load = vi.fn();
+    const demo = { ...tampered, tenantSlug: undefined };
+    expect(await withAuthoritativeCatalog(demo, load)).toBe(demo);
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it("a catalog load failure propagates — never falls back to the browser's copy", async () => {
+    await expect(
+      withAuthoritativeCatalog(tampered, async () => {
+        throw new Error("db down");
+      }),
+    ).rejects.toThrow("db down");
+  });
+});
+
+// Third review round (2026-11-09).
+// A: an item's words merely appearing in the customer's message isn't a
+// request for that service — multi-word items must match as a phrase, and
+// an occurrence inside a location phrase ("in the garage", "frente a mi
+// garaje") is incidental, not the thing to be worked on.
+describe("A — phrase-level, non-incidental relevance from the customer's own words", () => {
+  const garageDoor: PriceSheetItem = {
+    id: "gd",
+    task: "Garage door repair",
+    category: "Garage",
+    keywords: ["garage door", "opener", "puerta de garaje", "garaje"],
+    pricingType: "flat",
+    priceMin: 150,
+    priceMax: 150,
+    hours: 1,
+    bundleable: false,
+    materialsPolicy: "included",
+    diagnosisFee: null,
+    aiNotes: null,
+    alwaysRequiresInspection: false,
+  };
+  const cabinetry: PriceSheetItem = {
+    ...garageDoor,
+    id: "cab",
+    task: "Custom cabinetry",
+    category: "Carpentry",
+    keywords: [],
+    priceMin: 0,
+    priceMax: 0,
+    alwaysRequiresInspection: true,
+  };
+  const heater: PriceSheetItem = {
+    ...garageDoor,
+    id: "wh",
+    task: "Water heater replacement",
+    category: "Plumbing",
+    keywords: ["water heater", "calentador"],
+    priceMin: 0,
+    priceMax: 0,
+    alwaysRequiresInspection: true,
+  };
+  const gate = (description: string, id = "gd") =>
+    gateClarification(
+      {
+        needsClarification: true,
+        scopeVerdict: "in_scope",
+        candidatePriceSheetItemIds: [id],
+        questions: [{ question: "Q?", options: [] }],
+      },
+      {
+        priceSheet: [garageDoor, cabinetry, heater],
+        exclusions: [],
+        description,
+      },
+    );
+
+  it.each([
+    "My car is parked in the garage.",
+    "There is a car in front of my garage.",
+    "My car is next to the garage and won't start",
+    "Mi carro está estacionado en el garaje.",
+    "Hay un carro frente a mi garaje.",
+    "El carro está dentro del garaje y no arranca",
+  ])("incidental mention fails closed: %s", (description) => {
+    expect(gate(description).ok).toBe(false);
+  });
+
+  it.each([
+    "My garage door won't open.",
+    "The garage door opener is broken",
+    "I need my garage door fixed, my car is stuck inside",
+    "La puerta de mi garaje no abre.",
+    "Mi garaje no abre",
+  ])("actual request is released: %s", (description) => {
+    expect(gate(description).ok).toBe(true);
+  });
+
+  it.each(["My car door won't close.", "La puerta de mi carro no cierra."])(
+    "sharing one word of a multi-word item isn't a request for it: %s",
+    (description) => {
+      expect(gate(description).ok).toBe(false);
+    },
+  );
+
+  it("a multi-word item doesn't match on one of its words alone", () => {
+    // "garage" without "door" can only match the single-word category /
+    // keyword, and here that occurrence is locative.
+    expect(gate("There's a door in my garage").ok).toBe(false);
+  });
+
+  it("custom-quote (ALWAYS INSPECT, no price) services stay eligible when actually requested", () => {
+    expect(gate("Can you build custom kitchen cabinets?", "cab").ok).toBe(true);
+    expect(gate("My water heater is leaking", "wh:inspection").ok).toBe(true);
+    expect(gate("Mi calentador no calienta", "wh").ok).toBe(true);
+  });
+
+  it("…and stay ineligible when only mentioned incidentally", () => {
+    expect(gate("There's a leak next to the water heater in my garage", "gd").ok).toBe(false);
+  });
+});
+
+// B: the quoted-job follow-up path must not let a "same job" classification
+// expand the scope of the original quote.
+describe("B — evaluateFollowUpScope: deterministic quoted-scope check", () => {
+  const scope = ["Kitchen faucet needs replacing.", "Faucet replacement"];
+
+  it.each([
+    "Can you also fix my car engine while you're there?",
+    "Could you install a ceiling fan too?",
+    "¿Pueden también arreglar el motor de mi carro?",
+    "Can you repair the garage door as well?",
+  ])("new work on a quoted job is detected: %s", (question) => {
+    expect(evaluateFollowUpScope(question, scope, []).kind).toBe("new_work");
+  });
+
+  it.each([
+    "When can you come?",
+    "Is the price for the faucet still the same?",
+    "Can you replace the faucet on Tuesday morning?",
+    "¿Pueden cambiar el faucet el lunes?",
+    "Do you take cash?",
+  ])("questions about the quoted job are allowed: %s", (question) => {
+    expect(evaluateFollowUpScope(question, scope, []).kind).toBe("allowed");
+  });
+
+  it("a configured exclusion wins over everything", () => {
+    expect(
+      evaluateFollowUpScope("can you do a roof repair?", scope, [{ label: "Roof repair" }]),
+    ).toEqual({
+      kind: "excluded",
+      label: "Roof repair",
+    });
+  });
+});
+
+// C: anything the web flow hands back to the server that the server itself
+// produced must carry a server signature, so browser-supplied history can't
+// pass as something JIR asked, quoted, or approved.
+describe("C — server-issued scope signatures", () => {
+  beforeEach(() => {
+    vi.stubEnv("SUPABASE_SERVICE_ROLE_KEY", "test-service-role-key");
+  });
+
+  const quote = {
+    problem: "My kitchen faucet drips",
+    diagnosis: "Worn cartridge.",
+    confidence: "High" as const,
+    items: [{ priceSheetItemId: "fc", amount: 60 }],
+    hasNoPricedWork: false,
+    hasPartiallyDeferredWork: false,
+  };
+
+  it("a quote signature verifies only for the exact tenant and quote it was issued for", () => {
+    const token = signQuoteScope("acme", quote);
+    expect(verifyQuoteScope("acme", quote, token)).toBe(true);
+    expect(verifyQuoteScope("other-tenant", quote, token)).toBe(false);
+    expect(
+      verifyQuoteScope("acme", { ...quote, items: [{ priceSheetItemId: "fc", amount: 6 }] }, token),
+    ).toBe(false);
+    expect(verifyQuoteScope("acme", { ...quote, diagnosis: "Engine rebuild." }, token)).toBe(false);
+    // D2: the request the quote was issued for is bound too.
+    expect(
+      verifyQuoteScope(
+        "acme",
+        { ...quote, problem: "My kitchen faucet drips, and my car engine" },
+        token,
+      ),
+    ).toBe(false);
+    expect(verifyQuoteScope("acme", quote, undefined)).toBe(false);
+    expect(verifyQuoteScope("acme", quote, "garbage")).toBe(false);
+  });
+
+  it("question signatures bind the exact question texts", () => {
+    const token = signQuestionsScope("acme", ["Which drain?"]);
+    expect(verifyQuestionsScope("acme", ["Which drain?"], token)).toBe(true);
+    expect(verifyQuestionsScope("acme", ["Is it your car engine?"], token)).toBe(false);
+  });
+
+  it("signing fails closed when the server secret is missing", () => {
+    vi.stubEnv("SUPABASE_SERVICE_ROLE_KEY", "");
+    expect(() => signQuoteScope("acme", quote)).toThrow();
+  });
+
+  it("attachScopeTokens signs released questions and priced results for a tenant, and nothing for /demo or a hand-off", () => {
+    const input = {
+      businessName: "B",
+      laborRate: 60,
+      serviceCallFee: 89,
+      serviceCallFeeMode: "fixed" as const,
+      priceSheet,
+      description: "clogged drain",
+      tenantSlug: "acme",
+    };
+    const clarifying = attachScopeTokens(
+      { needsClarification: true, questions: [{ question: "Which drain?", options: [] }] },
+      input,
+    );
+    expect(
+      clarifying.needsClarification &&
+        verifyQuestionsScope("acme", ["Which drain?"], clarifying.questionsToken),
+    ).toBe(true);
+    const priced = attachScopeTokens(
+      {
+        needsClarification: false,
+        outOfScope: false,
+        isEmergency: false,
+        issueType: "Plumbing",
+        severity: "Low",
+        confidence: "High",
+        diagnosis: "Clog.",
+        lineItems: [
+          { description: "Drain clearing", detail: "", amount: 150, priceSheetItemId: "ps-2" },
+        ],
+        totalLow: 150,
+        totalHigh: 150,
+        isDiagnosisOnly: false,
+        hasNoPricedWork: false,
+        hasFeeFreeDeferralOnly: false,
+        hasPartiallyDeferredWork: false,
+      },
+      input,
+    );
+    const pricedScope = {
+      diagnosis: "Clog.",
+      confidence: "High",
+      items: [{ priceSheetItemId: "ps-2", amount: 150 }],
+      hasNoPricedWork: false,
+      hasPartiallyDeferredWork: false,
+    };
+    const quoteToken =
+      !priced.needsClarification && !priced.outOfScope ? priced.quoteToken : undefined;
+    // D2: the quote signature binds the description the server evaluated.
+    expect(verifyQuoteScope("acme", { ...pricedScope, problem: "clogged drain" }, quoteToken)).toBe(
+      true,
+    );
+    expect(
+      verifyQuoteScope(
+        "acme",
+        { ...pricedScope, problem: "clogged drain and car engine" },
+        quoteToken,
+      ),
+    ).toBe(false);
+    const handedOff = attachScopeTokens({ needsClarification: false, outOfScope: true }, input);
+    expect(handedOff).toEqual({ needsClarification: false, outOfScope: true });
+    const demo = attachScopeTokens(
+      { needsClarification: true, questions: [{ question: "Which drain?", options: [] }] },
+      { ...input, tenantSlug: undefined },
+    );
+    expect(demo).toEqual({
+      needsClarification: true,
+      questions: [{ question: "Which drain?", options: [] }],
+    });
+  });
+});
+
+// D: the server-side follow-up validation, as a plain testable function.
+describe("D — checkFollowUpRequest (web + WhatsApp follow-up answers)", () => {
+  beforeEach(() => {
+    vi.stubEnv("SUPABASE_SERVICE_ROLE_KEY", "test-service-role-key");
+  });
+
+  const catalog = {
+    businessName: "Acme",
+    laborRate: 60,
+    serviceCallFee: 89,
+    serviceCallFeeMode: "fixed" as const,
+    priceSheet,
+    exclusions: [{ label: "Roof repair" }],
+    specialties: [],
+  };
+  const quoted = {
+    problem: "My kitchen faucet drips",
+    diagnosis: "Worn cartridge.",
+    items: [{ description: "Faucet replacement", amount: 60 }],
+  };
+  const followUp = (question: string, overrides: Record<string, unknown> = {}) => ({
+    businessName: "Acme",
+    tenantSlug: "acme",
+    problem: quoted.problem,
+    diagnosis: quoted.diagnosis,
+    lineItems: [{ description: "Faucet replacement", detail: "", amount: 60 }],
+    question,
+    history: [],
+    followUpToken: signFollowUpScope("acme", quoted),
+    ...overrides,
+  });
+  const load = async () => catalog;
+
+  it("a normal question about the quoted job is allowed", async () => {
+    expect(await checkFollowUpRequest(followUp("When can you come?"), load)).toEqual({ ok: true });
+  });
+
+  it("an excluded service is refused", async () => {
+    expect(await checkFollowUpRequest(followUp("Can you also do a roof repair?"), load)).toEqual({
+      ok: false,
+      reason: "excluded_service",
+    });
+  });
+
+  it("out-of-scope new work is refused", async () => {
+    expect(await checkFollowUpRequest(followUp("Can you also fix my car engine?"), load)).toEqual({
+      ok: false,
+      reason: "new_work",
+    });
+  });
+
+  it("a browser-forged quoted scope (an extra 'Car engine repair' line) fails verification", async () => {
+    const forged = followUp("Can you fix the car engine on Tuesday?", {
+      lineItems: [
+        { description: "Faucet replacement", detail: "", amount: 60 },
+        { description: "Car engine repair", detail: "", amount: 300 },
+      ],
+    });
+    expect(await checkFollowUpRequest(forged, load)).toEqual({
+      ok: false,
+      reason: "unverified_scope",
+    });
+  });
+
+  it("a missing signature fails verification", async () => {
+    expect(
+      await checkFollowUpRequest(
+        followUp("When can you come?", { followUpToken: undefined }),
+        load,
+      ),
+    ).toEqual({
+      ok: false,
+      reason: "unverified_scope",
+    });
+  });
+
+  it("/demo (no tenant) has no catalog or signature to check", async () => {
+    const demo = followUp("Can you also fix my car engine?", {
+      tenantSlug: undefined,
+      followUpToken: undefined,
+    });
+    expect(await checkFollowUpRequest(demo, vi.fn())).toEqual({ ok: true });
   });
 });

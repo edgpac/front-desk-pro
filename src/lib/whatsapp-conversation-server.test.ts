@@ -42,6 +42,18 @@ vi.mock("@/lib/estimate-server", async (importOriginal) => {
     isSupportedImageBase64: vi.fn(() => true),
     detectLanguage: actual.detectLanguage,
     detectCurrentLanguage: actual.detectCurrentLanguage,
+    // Real, not mocked: outOfScopeFlag is the pure flag derivation every
+    // outOfScope branch uses, and runQuoteAttempts lets the scope-gate
+    // regression tests below drive the REAL decision path (scripted model
+    // JSON in → gate → this file's real reply/flag handling out) instead of
+    // a hand-written QuoteResult that would prove nothing about the gate.
+    outOfScopeFlag: actual.outOfScopeFlag,
+    runQuoteAttempts: actual.runQuoteAttempts,
+    findMatchingExclusion: actual.findMatchingExclusion,
+    evaluateFollowUpScope: actual.evaluateFollowUpScope,
+    // Signing needs the server secret; the real signer is exercised in
+    // estimate-server.test.ts. Here it only has to be passed through.
+    signFollowUpScope: vi.fn(() => "signed-follow-up-scope"),
     NO_DESCRIPTION_PLACEHOLDER: "no description provided",
     UNSUPPORTED_IMAGE_MESSAGE: "unsupported image message",
   };
@@ -82,6 +94,8 @@ import {
   classifyBroadServiceInquiry,
   isSupportedImageBase64,
   getFollowUpAnswer,
+  runQuoteAttempts,
+  type QuoteInput,
 } from "@/lib/estimate-server";
 import { sendFollowUpNotificationEmail } from "@/lib/notify-server";
 
@@ -5872,5 +5886,819 @@ describe("resolveFirstContactGreeting — privacy disclosure present on every va
     const es = resolveFirstContactGreeting(TEST_TENANT, "es", "full");
     expect(es).toContain("pueden ser procesados por IA");
     expect(es).not.toMatch(/\bson procesados por IA\b/);
+  });
+});
+
+// PRODUCTION REGRESSION (2026-11-09): a handyman tenant received a
+// captionless car-engine photo and JIR replied "What do you need help with
+// regarding this engine? (Engine won't start or is running poorly / ...)".
+// These drive the REAL runQuoteAttempts + scope gate with a scripted model,
+// then assert what the customer actually receives on WhatsApp.
+describe("clarification scope gate — customer-facing WhatsApp output", () => {
+  beforeEach(() => {
+    vi.mocked(getQuoteEstimate).mockReset();
+    vi.mocked(createLead).mockClear();
+    vi.mocked(createClarifyingLead).mockClear();
+    vi.mocked(createFlaggedLead).mockClear();
+    vi.mocked(sendFollowUpNotificationEmail).mockClear();
+  });
+
+  // Routes getQuoteEstimate through the real attempt/gate logic with a
+  // scripted model, so the gate checks the tenant's real price sheet and
+  // exclusions exactly as this file fetched them.
+  function scriptModel(responses: Array<Record<string, unknown>>) {
+    let call = 0;
+    const ask = vi.fn(async () => {
+      const parsed = responses[Math.min(call, responses.length - 1)]!;
+      call += 1;
+      return { raw: JSON.stringify(parsed), parsed };
+    });
+    vi.mocked(getQuoteEstimate).mockImplementation((async ({ data }: { data: QuoteInput }) =>
+      runQuoteAttempts(data, [], ask)) as any);
+    return ask;
+  }
+
+  const ENGINE_RESPONSE = {
+    needsClarification: true,
+    questions: [
+      {
+        question: "What do you need help with regarding this engine?",
+        options: [
+          "Engine won't start or is running poorly",
+          "Routine maintenance or inspection",
+          "Specific repair or replacement needed",
+          "Something else",
+        ],
+      },
+    ],
+  };
+  const APPLIANCE_ROWS = [
+    {
+      ...PRICED_ROWS_FOR_OVERVIEW[0]!,
+      id: "ap-1",
+      task: "Washing machine repair",
+      category: "Appliances",
+      keywords: ["washer"],
+    },
+  ];
+  const PAINTING_ROWS = [
+    {
+      ...PRICED_ROWS_FOR_OVERVIEW[0]!,
+      id: "pt-1",
+      task: "Interior room painting",
+      category: "Painting",
+      keywords: ["paint"],
+    },
+  ];
+
+  async function sendPhoto(adapter: ChannelAdapter, body = "") {
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body,
+      mediaRef: "media-photo-1",
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+  }
+
+  it("handyman + captionless car-engine photo (the exact production response): no reply, lead flagged, owner notified", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: null,
+      leadSlotClaimSucceeds: true,
+      priceSheetRows: PRICED_ROWS_FOR_OVERVIEW,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(createFlaggedLead).mockResolvedValue({ id: "flagged-engine" } as any);
+    scriptModel([ENGINE_RESPONSE, ENGINE_RESPONSE]);
+    const { adapter, sent } = fakeAdapter();
+
+    await sendPhoto(adapter);
+
+    expect(sent).toEqual([]);
+    expect(createClarifyingLead).not.toHaveBeenCalled();
+    expect(createFlaggedLead).toHaveBeenCalledTimes(1);
+    const flagged = vi.mocked(createFlaggedLead).mock.calls[0]![0].data;
+    expect(flagged.flagType).toBe("outside_service_scope");
+    expect(flagged.flagReason).not.toContain("engine");
+    expect(flagged.flagReason).toMatch(/price sheet/);
+    expect(sendFollowUpNotificationEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it("painting business + appliance photo judged 'unclear': no reply, flagged for the owner", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: null,
+      leadSlotClaimSucceeds: true,
+      priceSheetRows: PAINTING_ROWS,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(createFlaggedLead).mockResolvedValue({ id: "flagged-appliance" } as any);
+    const ask = scriptModel([
+      {
+        needsClarification: true,
+        scopeVerdict: "unclear",
+        candidatePriceSheetItemIds: [],
+        questions: [{ question: "Is the fridge leaking?", options: ["Yes", "No"] }],
+      },
+    ]);
+    const { adapter, sent } = fakeAdapter();
+
+    await sendPhoto(adapter);
+
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(sent).toEqual([]);
+    expect(createFlaggedLead).toHaveBeenCalledTimes(1);
+  });
+
+  it("appliance repair business + captioned washing machine photo citing its real row: the question IS sent", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: null,
+      leadSlotClaimSucceeds: true,
+      priceSheetRows: APPLIANCE_ROWS,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(createClarifyingLead).mockResolvedValue({ id: "clarifying-washer" } as any);
+    scriptModel([
+      {
+        needsClarification: true,
+        scopeVerdict: "in_scope",
+        candidatePriceSheetItemIds: ["ap-1"],
+        questions: [
+          { question: "What's the washer doing?", options: ["Won't drain", "Won't spin"] },
+        ],
+      },
+    ]);
+    const { adapter, sent } = fakeAdapter();
+
+    await sendPhoto(adapter, "My washer won't drain");
+
+    expect(createFlaggedLead).not.toHaveBeenCalled();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body).toBe("What's the washer doing?\n(Won't drain / Won't spin)");
+  });
+
+  it("explicitly excluded service: no reply, flagged excluded_service with the configured label", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: null,
+      leadSlotClaimSucceeds: true,
+      priceSheetRows: PRICED_ROWS_FOR_OVERVIEW,
+      capabilities: [
+        { id: "c1", type: "exclusion", label: "Roof repair", notes: null, active: true },
+      ],
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(createFlaggedLead).mockResolvedValue({ id: "flagged-roof" } as any);
+    scriptModel([
+      {
+        needsClarification: true,
+        scopeVerdict: "in_scope",
+        candidatePriceSheetItemIds: ["p1"],
+        questions: [{ question: "How big is the leak?", options: [] }],
+      },
+    ]);
+    const { adapter, sent } = fakeAdapter();
+
+    await sendPhoto(adapter, "Can you do a roof repair? It's leaking");
+
+    expect(sent).toEqual([]);
+    const flagged = vi.mocked(createFlaggedLead).mock.calls[0]![0].data;
+    expect(flagged.flagType).toBe("excluded_service");
+    expect(flagged.flagReason).toContain('"Roof repair"');
+  });
+
+  it("ALWAYS INSPECT custom-quote row with no fixed price: still eligible, the question is sent", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: null,
+      leadSlotClaimSucceeds: true,
+      priceSheetRows: [
+        {
+          ...PRICED_ROWS_FOR_OVERVIEW[0]!,
+          id: "cq-1",
+          task: "Custom cabinetry",
+          category: "Carpentry",
+          price_min: 0,
+          price_max: 0,
+          always_requires_inspection: true,
+        },
+      ],
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(createClarifyingLead).mockResolvedValue({ id: "clarifying-cabinets" } as any);
+    scriptModel([
+      {
+        needsClarification: true,
+        scopeVerdict: "in_scope",
+        candidatePriceSheetItemIds: ["cq-1:inspection"],
+        questions: [
+          { question: "Which room are the cabinets for?", options: ["Kitchen", "Bathroom"] },
+        ],
+      },
+    ]);
+    const { adapter, sent } = fakeAdapter();
+
+    await sendPhoto(adapter, "Can you build custom cabinets?");
+
+    expect(createFlaggedLead).not.toHaveBeenCalled();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body).toContain("Which room are the cabinets for?");
+  });
+
+  it("ambiguous photo with no cited service: no guessed question, flagged for the owner", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: null,
+      leadSlotClaimSucceeds: true,
+      priceSheetRows: PRICED_ROWS_FOR_OVERVIEW,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(createFlaggedLead).mockResolvedValue({ id: "flagged-ambiguous" } as any);
+    const noIds = {
+      needsClarification: true,
+      scopeVerdict: "in_scope",
+      candidatePriceSheetItemIds: [],
+      questions: [{ question: "What do you need?", options: [] }],
+    };
+    scriptModel([noIds, noIds]);
+    const { adapter, sent } = fakeAdapter();
+
+    await sendPhoto(adapter);
+
+    expect(sent).toEqual([]);
+    expect(createFlaggedLead).toHaveBeenCalledTimes(1);
+  });
+
+  it("empty price sheet: nothing is eligible, no question is sent even when the model claims a match", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: null,
+      leadSlotClaimSucceeds: true,
+      priceSheetRows: [],
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(createFlaggedLead).mockResolvedValue({ id: "flagged-empty" } as any);
+    const ask = scriptModel([
+      {
+        needsClarification: true,
+        scopeVerdict: "in_scope",
+        candidatePriceSheetItemIds: ["p1"],
+        questions: [{ question: "Q?", options: [] }],
+      },
+    ]);
+    const { adapter, sent } = fakeAdapter();
+
+    await sendPhoto(adapter);
+
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(sent).toEqual([]);
+    expect(vi.mocked(createFlaggedLead).mock.calls[0]![0].data.flagReason).toContain(
+      "No services are configured",
+    );
+  });
+
+  it("fabricated item id on both attempts: no reply, flagged with the fabricated id named for the owner", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: null,
+      leadSlotClaimSucceeds: true,
+      priceSheetRows: PRICED_ROWS_FOR_OVERVIEW,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(createFlaggedLead).mockResolvedValue({ id: "flagged-fabricated" } as any);
+    const fabricated = {
+      needsClarification: true,
+      scopeVerdict: "in_scope",
+      candidatePriceSheetItemIds: ["auto-engine-repair"],
+      questions: [{ question: "Is the engine misfiring?", options: [] }],
+    };
+    const ask = scriptModel([fabricated, fabricated]);
+    const { adapter, sent } = fakeAdapter();
+
+    await sendPhoto(adapter);
+
+    expect(ask).toHaveBeenCalledTimes(2);
+    expect(sent).toEqual([]);
+    expect(vi.mocked(createFlaggedLead).mock.calls[0]![0].data.flagReason).toContain(
+      "auto-engine-repair",
+    );
+  });
+
+  it("mid-conversation clarification: an ungated question is never sent, the existing lead is flagged instead", async () => {
+    const { admin, calls } = fakeInboundAdmin({
+      openLead: {
+        id: "lead-mid",
+        customer_name: "Pat",
+        photo_url: null,
+        problem: "my car engine makes a noise",
+        confidence: null,
+        diagnosis: null,
+        flag_type: null,
+      },
+      leadSlotClaimSucceeds: true,
+      priceSheetRows: PRICED_ROWS_FOR_OVERVIEW,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    scriptModel([ENGINE_RESPONSE, ENGINE_RESPONSE]);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "it rattles when I start it",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toEqual([]);
+    expect(calls.lastLeadUpdatePatch?.["flag_type"]).toBe("outside_service_scope");
+    expect(String(calls.lastLeadUpdatePatch?.["flag_reason"])).toMatch(/price sheet/);
+    expect(sendFollowUpNotificationEmail).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Adversarial-review corrections (2026-11-09) — customer-facing WhatsApp
+// output for V1 (service-call-only result), V6 (duplicate flagged leads and
+// owner emails), and the quoted-job follow-up path.
+describe("adversarial-review corrections — customer-facing WhatsApp output", () => {
+  beforeEach(() => {
+    vi.mocked(getQuoteEstimate).mockReset();
+    vi.mocked(getFollowUpAnswer).mockReset();
+    vi.mocked(classifyFollowUpIntent).mockReset();
+    vi.mocked(createLead).mockClear();
+    vi.mocked(createClarifyingLead).mockClear();
+    vi.mocked(createFlaggedLead).mockClear();
+    vi.mocked(sendFollowUpNotificationEmail).mockClear();
+  });
+
+  function scriptModel(responses: Array<Record<string, unknown>>) {
+    let call = 0;
+    const ask = vi.fn(async () => {
+      const parsed = responses[Math.min(call, responses.length - 1)]!;
+      call += 1;
+      return { raw: JSON.stringify(parsed), parsed };
+    });
+    vi.mocked(getQuoteEstimate).mockImplementation((async ({ data }: { data: QuoteInput }) =>
+      runQuoteAttempts(data, [], ask)) as any);
+    return ask;
+  }
+
+  it("V1: captioned engine photo priced at the service-call fee alone — no reply, flagged, owner notified once", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: null,
+      leadSlotClaimSucceeds: true,
+      priceSheetRows: PRICED_ROWS_FOR_OVERVIEW,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(createFlaggedLead).mockResolvedValue({ id: "flagged-engine-fee" } as any);
+    scriptModel([
+      {
+        needsClarification: false,
+        outOfScope: false,
+        isEmergency: false,
+        issueType: "Automotive",
+        severity: "Medium",
+        confidence: "Low",
+        diagnosis: "Your engine likely has an ignition problem; we'll inspect it.",
+        matchedServices: [{ customerIssue: "engine", priceSheetItemId: "service_call" }],
+        lineItems: [
+          { description: "Service call", detail: "", amount: 60, priceSheetItemId: "service_call" },
+        ],
+      },
+    ]);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "My car engine won't start",
+      mediaRef: "media-engine-2",
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toEqual([]);
+    expect(createLead).not.toHaveBeenCalled();
+    expect(createFlaggedLead).toHaveBeenCalledTimes(1);
+    expect(sendFollowUpNotificationEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it("V6: another out-of-scope message while a flagged lead is open is attached to it — no new lead, no second email, no reply", async () => {
+    const { admin, calls } = fakeInboundAdmin({
+      openLead: {
+        id: "lead-flagged-engine",
+        customer_name: "Pat",
+        photo_url: null,
+        problem: "my car engine won't start",
+        confidence: null,
+        diagnosis: null,
+        flag_type: "outside_service_scope",
+      },
+      leadSlotClaimSucceeds: true,
+      priceSheetRows: PRICED_ROWS_FOR_OVERVIEW,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    scriptModel([
+      { needsClarification: false, outOfScope: true, acknowledgment: "Got it — car engine." },
+    ]);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "hello?? can you help with my car engine",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toEqual([]);
+    expect(createFlaggedLead).not.toHaveBeenCalled();
+    expect(sendFollowUpNotificationEmail).not.toHaveBeenCalled();
+    expect(calls.leadMessageInserts).toContainEqual({
+      lead_id: "lead-flagged-engine",
+      role: "customer",
+      body: "hello?? can you help with my car engine",
+    });
+  });
+
+  it("V6: a needs_human_review lead is NOT treated as an out-of-scope hand-off — a new out-of-scope message still flags its own lead", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: {
+        id: "lead-review",
+        customer_name: "Pat",
+        photo_url: null,
+        problem: "something earlier",
+        confidence: null,
+        diagnosis: null,
+        flag_type: "needs_human_review",
+      },
+      leadSlotClaimSucceeds: true,
+      priceSheetRows: PRICED_ROWS_FOR_OVERVIEW,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(createFlaggedLead).mockResolvedValue({ id: "flagged-new" } as any);
+    scriptModel([{ needsClarification: false, outOfScope: true }]);
+    const { adapter } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "can you fix my car engine too",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(createFlaggedLead).toHaveBeenCalledTimes(1);
+  });
+
+  it("quoted-job follow-up (same_job) naming an excluded service: no AI answer, no reply, lead flagged excluded_service, owner notified once", async () => {
+    const { admin, calls } = fakeInboundAdmin({
+      openLead: {
+        id: "lead-quoted-faucet",
+        customer_name: "Riley",
+        photo_url: null,
+        problem: "Kitchen faucet needs replacing.",
+        confidence: "High",
+        diagnosis: "Standard kitchen faucet replacement.",
+        flag_type: null,
+      },
+      leadSlotClaimSucceeds: true,
+      capabilities: [
+        { id: "c1", type: "exclusion", label: "Roof repair", notes: null, active: true },
+      ],
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(classifyFollowUpIntent).mockResolvedValue({ classification: "same_job" } as any);
+    vi.mocked(getFollowUpAnswer).mockResolvedValue("Sure, we can do the roof too!");
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "While you're here can you also do a roof repair?",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(getFollowUpAnswer).not.toHaveBeenCalled();
+    expect(sent).toEqual([]);
+    expect(calls.lastLeadUpdatePatch?.["flag_type"]).toBe("excluded_service");
+    expect(String(calls.lastLeadUpdatePatch?.["flag_reason"])).toContain('"Roof repair"');
+    expect(sendFollowUpNotificationEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it("quoted-job follow-up (same_job) with no exclusion match still gets its normal answer (regression guard)", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: {
+        id: "lead-quoted-faucet-2",
+        customer_name: "Riley",
+        photo_url: null,
+        problem: "Kitchen faucet needs replacing.",
+        confidence: "High",
+        diagnosis: "Standard kitchen faucet replacement.",
+        flag_type: null,
+      },
+      leadSlotClaimSucceeds: true,
+      capabilities: [
+        { id: "c1", type: "exclusion", label: "Roof repair", notes: null, active: true },
+      ],
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(classifyFollowUpIntent).mockResolvedValue({ classification: "same_job" } as any);
+    vi.mocked(getFollowUpAnswer).mockResolvedValue("Yes, Tuesday works.");
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "Can you come Tuesday?",
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(getFollowUpAnswer).toHaveBeenCalledTimes(1);
+    expect(sent.map((m) => m.body)).toContain("Yes, Tuesday works.");
+  });
+
+  it("quoted-job follow-up photo: the stored request is the evaluated description, the new caption is prompt-only", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: {
+        id: "lead-quoted-photo",
+        customer_name: "Riley",
+        photo_url: null,
+        problem: "Kitchen faucet needs replacing.",
+        confidence: "High",
+        diagnosis: "Standard kitchen faucet replacement.",
+        flag_type: null,
+      },
+      leadSlotClaimSucceeds: true,
+      existingLineItems: [{ description: "Kitchen faucet replacement", rate: 120, qty: 1 }],
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(classifyFollowUpPhotoIntent).mockResolvedValue({ classification: "same_job" } as any);
+    vi.mocked(getQuoteEstimate).mockResolvedValue({
+      needsClarification: false,
+      outOfScope: true,
+    } as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "here's the other angle",
+      mediaRef: "media-angle",
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    const data = vi.mocked(getQuoteEstimate).mock.calls[0]![0].data;
+    // D1/D2: the stored request is the evaluated description (the evidence
+    // and the problem the signature binds); the caption is prompt-only.
+    expect(data.description).toBe("Kitchen faucet needs replacing.");
+    expect(data.photoFollowUpNote).toBe("here's the other angle");
+    expect(data).not.toHaveProperty("customerEvidence");
+    expect(sent).toEqual([]);
+    expect(sendFollowUpNotificationEmail).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Third review round (2026-11-09).
+describe("third-round corrections — WhatsApp", () => {
+  beforeEach(() => {
+    vi.stubEnv("SUPABASE_SERVICE_ROLE_KEY", "test-service-role-key");
+    vi.mocked(getQuoteEstimate).mockReset();
+    vi.mocked(getFollowUpAnswer).mockReset();
+    vi.mocked(classifyFollowUpIntent).mockReset();
+    vi.mocked(createLead).mockClear();
+    vi.mocked(finalizeLeadWithQuote).mockClear();
+    vi.mocked(createFlaggedLead).mockClear();
+    vi.mocked(sendFollowUpNotificationEmail).mockClear();
+  });
+
+  const QUOTED_FAUCET: FakeOpenLead = {
+    id: "lead-quoted-faucet-3",
+    customer_name: "Riley",
+    photo_url: null,
+    problem: "Kitchen faucet needs replacing.",
+    confidence: "High",
+    diagnosis: "Standard kitchen faucet replacement.",
+    flag_type: null,
+  };
+
+  async function sendText(adapter: ChannelAdapter, body: string) {
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body,
+      mediaRef: undefined,
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+  }
+
+  it.each([
+    "Can you also fix my car engine while you're there?",
+    "¿Pueden también arreglar el motor de mi carro?",
+  ])(
+    "B: a 'same job' follow-up asking for work beyond the quote gets no AI answer — flagged, owner notified once: %s",
+    async (body) => {
+      const { admin, calls } = fakeInboundAdmin({
+        openLead: QUOTED_FAUCET,
+        leadSlotClaimSucceeds: true,
+        existingLineItems: [{ description: "Kitchen faucet replacement", rate: 120, qty: 1 }],
+      });
+      vi.mocked(getAdminClient).mockReturnValue(admin);
+      vi.mocked(classifyFollowUpIntent).mockResolvedValue({ classification: "same_job" } as any);
+      vi.mocked(getFollowUpAnswer).mockResolvedValue("Sure, we can look at the engine too!");
+      const { adapter, sent } = fakeAdapter();
+
+      await sendText(adapter, body);
+
+      expect(getFollowUpAnswer).not.toHaveBeenCalled();
+      expect(sent).toEqual([]);
+      expect(calls.lastLeadUpdatePatch?.["flag_type"]).toBe("needs_human_review");
+      expect(String(calls.lastLeadUpdatePatch?.["flag_reason"])).toContain("beyond the quoted job");
+      expect(sendFollowUpNotificationEmail).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("B: a same-job request about the quoted work itself still gets its answer, with the stored scope passed for verification", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: QUOTED_FAUCET,
+      leadSlotClaimSucceeds: true,
+      existingLineItems: [{ description: "Kitchen faucet replacement", rate: 120, qty: 1 }],
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(classifyFollowUpIntent).mockResolvedValue({ classification: "same_job" } as any);
+    vi.mocked(getFollowUpAnswer).mockResolvedValue("Yes, Thursday works for the faucet.");
+    const { adapter, sent } = fakeAdapter();
+
+    await sendText(adapter, "Can you replace the faucet on Thursday?");
+
+    expect(getFollowUpAnswer).toHaveBeenCalledTimes(1);
+    const data = vi.mocked(getFollowUpAnswer).mock.calls[0]![0].data;
+    expect(data.problem).toBe(QUOTED_FAUCET.problem);
+    expect(data.followUpToken).toBe("signed-follow-up-scope");
+    expect(sent.map((m) => m.body)).toContain("Yes, Thursday works for the faucet.");
+  });
+
+  // C: the quote WhatsApp stores must carry a signature that verifies
+  // against exactly what it submits — otherwise every real WhatsApp quote
+  // would be rejected by createLead/finalizeLeadWithQuote in production
+  // (mocked here, so only this end-to-end check can catch a mismatch).
+  async function scriptSignedModel(responses: Array<Record<string, unknown>>) {
+    const actual =
+      await vi.importActual<typeof import("@/lib/estimate-server")>("@/lib/estimate-server");
+    let call = 0;
+    const ask = vi.fn(async () => {
+      const parsed = responses[Math.min(call, responses.length - 1)]!;
+      call += 1;
+      return { raw: JSON.stringify(parsed), parsed };
+    });
+    vi.mocked(getQuoteEstimate).mockImplementation((async ({ data }: { data: QuoteInput }) =>
+      actual.attachScopeTokens(await runQuoteAttempts(data, [], ask), data)) as any);
+    return actual;
+  }
+  const FAN_QUOTE = {
+    needsClarification: false,
+    outOfScope: false,
+    isEmergency: false,
+    issueType: "Electrical",
+    severity: "Low",
+    confidence: "High",
+    diagnosis: "Ceiling fan installation.",
+    matchedServices: [{ customerIssue: "ceiling fan", priceSheetItemId: "p1" }],
+    lineItems: [
+      { description: "Ceiling fan install", detail: "", amount: 150, priceSheetItemId: "p1" },
+    ],
+  };
+
+  it("C: fresh quote — the signature createLead receives verifies against exactly what WhatsApp submits", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: null,
+      leadSlotClaimSucceeds: true,
+      priceSheetRows: PRICED_ROWS_FOR_OVERVIEW,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(createLead).mockResolvedValue({ id: "lead-fan" } as any);
+    const actual = await scriptSignedModel([FAN_QUOTE]);
+    const { adapter, sent } = fakeAdapter();
+
+    await sendText(adapter, "Please install a ceiling fan in my bedroom");
+
+    expect(sent).toHaveLength(1);
+    const data = vi.mocked(createLead).mock.calls[0]![0].data;
+    expect(data.quoteToken).toBeTruthy();
+    expect(
+      actual.verifyQuoteScope(
+        TEST_TENANT.slug,
+        actual.quoteScopeFromSubmission(data),
+        data.quoteToken,
+      ),
+    ).toBe(true);
+  });
+
+  it("C: follow-up photo re-quote — the signature finalizeLeadWithQuote receives verifies too", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: QUOTED_FAUCET,
+      leadSlotClaimSucceeds: true,
+      existingLineItems: [{ description: "Kitchen faucet replacement", rate: 120, qty: 1 }],
+      priceSheetRows: [
+        {
+          ...PRICED_ROWS_FOR_OVERVIEW[0]!,
+          id: "fx",
+          task: "Faucet replacement",
+          category: "Plumbing",
+          keywords: ["faucet"],
+          price_min: 140,
+          price_max: 140,
+        },
+      ],
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(classifyFollowUpPhotoIntent).mockResolvedValue({ classification: "same_job" } as any);
+    vi.mocked(finalizeLeadWithQuote).mockResolvedValue({ id: QUOTED_FAUCET.id, total: 140 } as any);
+    const actual = await scriptSignedModel([
+      {
+        ...FAN_QUOTE,
+        diagnosis: "Faucet replacement, confirmed from the new photo.",
+        matchedServices: [{ customerIssue: "faucet", priceSheetItemId: "fx" }],
+        lineItems: [
+          { description: "Faucet replacement", detail: "", amount: 140, priceSheetItemId: "fx" },
+        ],
+      },
+    ]);
+    const { adapter } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "here's the faucet from another angle",
+      mediaRef: "media-faucet-2",
+      providerMessageId: undefined,
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(finalizeLeadWithQuote).toHaveBeenCalledTimes(1);
+    const data = vi.mocked(finalizeLeadWithQuote).mock.calls[0]![0].data;
+    expect(
+      actual.verifyQuoteScope(
+        TEST_TENANT.slug,
+        actual.quoteScopeFromSubmission(data),
+        data.quoteToken,
+      ),
+    ).toBe(true);
+  });
+
+  it("C: mid-conversation quote — the signature finalizeLeadWithQuote receives verifies too", async () => {
+    const { admin } = fakeInboundAdmin({
+      openLead: {
+        id: "lead-mid-fan",
+        customer_name: "Pat",
+        photo_url: null,
+        problem: "Please install a ceiling fan in my bedroom",
+        confidence: null,
+        diagnosis: null,
+        flag_type: null,
+      },
+      leadSlotClaimSucceeds: true,
+      priceSheetRows: PRICED_ROWS_FOR_OVERVIEW,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(finalizeLeadWithQuote).mockResolvedValue({ id: "lead-mid-fan", total: 150 } as any);
+    const actual = await scriptSignedModel([FAN_QUOTE]);
+    const { adapter } = fakeAdapter();
+
+    await sendText(adapter, "It's a 52 inch fan");
+
+    expect(finalizeLeadWithQuote).toHaveBeenCalledTimes(1);
+    const data = vi.mocked(finalizeLeadWithQuote).mock.calls[0]![0].data;
+    expect(
+      actual.verifyQuoteScope(
+        TEST_TENANT.slug,
+        actual.quoteScopeFromSubmission(data),
+        data.quoteToken,
+      ),
+    ).toBe(true);
   });
 });

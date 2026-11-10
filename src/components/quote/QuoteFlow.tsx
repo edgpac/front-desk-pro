@@ -10,6 +10,7 @@ import { fileToCompressedBase64, urlToCompressedBase64, isSupportedImageFile, UN
 import {
   getFollowUpAnswer,
   getQuoteEstimate,
+  outOfScopeFlag,
   SAMPLE_PRICE_SHEET,
   type Answer,
   type ClarifyingQuestion,
@@ -68,6 +69,10 @@ function isRateLimitMessage(message: string): boolean {
 const MAX_FOLLOW_UP_QUESTIONS = 5;
 
 type ResultState = {
+  // Server signatures from getQuoteEstimate, handed back unchanged on lead
+  // submission and follow-up questions (see attachScopeTokens).
+  quoteToken?: string | undefined;
+  followUpToken?: string | undefined;
   isEmergency: boolean;
   issueType: string;
   severity: "Low" | "Medium" | "High";
@@ -140,12 +145,15 @@ export function QuoteFlow({
   // is ever persisted. Once set, later rounds/finalization update this same
   // lead instead of creating new ones.
   const [clarifyingLeadId, setClarifyingLeadId] = useState<string | null>(null);
-  // Set only when an outOfScope result came back because it matched a
-  // configured exclusion (getQuoteEstimate's applyExclusionGuard), not a
-  // genuine no-match — read later in sendFlaggedRequest to pick a more
-  // specific flag_type/flag_reason for the dashboard. Null for every other
-  // case, including a real "nothing on the price sheet covers this."
-  const [outOfScopeExclusion, setOutOfScopeExclusion] = useState<string | null>(null);
+  // What an outOfScope result said about WHY — a configured exclusion
+  // (applyExclusionGuard / gateClarification) or a clarification question
+  // the scope gate refused to release. Read later in sendFlaggedRequest,
+  // via outOfScopeFlag, to pick the flag_type/flag_reason for the
+  // dashboard. Empty for a plain "nothing on the price sheet covers this."
+  const [outOfScopeSource, setOutOfScopeSource] = useState<{
+    excludedServiceLabel?: string | undefined;
+    scopeGateReason?: string | undefined;
+  }>({});
   const fileRef = useRef<HTMLInputElement>(null);
   const descriptionRef = useRef<HTMLInputElement>(null);
 
@@ -188,7 +196,11 @@ export function QuoteFlow({
   // flow on a persistence failure: the in-memory clarification loop (via
   // priorAnswers/questions state) already works today regardless of this,
   // so a failure here is logged and swallowed, not surfaced as an error.
-  async function persistClarificationRound(newAnswersThisRound: Answer[], nextQuestions: ClarifyingQuestion[]) {
+  async function persistClarificationRound(
+    newAnswersThisRound: Answer[],
+    nextQuestions: ClarifyingQuestion[],
+    questionsToken?: string,
+  ) {
     if (!tenantSlug) return; // demo/no-tenant session — nothing to persist to
     try {
       if (clarifyingLeadId === null) {
@@ -205,6 +217,7 @@ export function QuoteFlow({
           data: {
             leadId: id,
             tenantSlug,
+            questionsToken,
             messages: [
               { role: "customer", body: description },
               ...nextQuestions.map((q) => ({ role: "assistant" as const, body: q.question })),
@@ -216,6 +229,7 @@ export function QuoteFlow({
           data: {
             leadId: clarifyingLeadId,
             tenantSlug,
+            questionsToken,
             messages: [
               ...newAnswersThisRound.map((a) => ({ role: "customer" as const, body: a.answer })),
               ...nextQuestions.map((q) => ({ role: "assistant" as const, body: q.question })),
@@ -250,7 +264,11 @@ export function QuoteFlow({
       });
 
       if (outcome.needsClarification) {
-        await persistClarificationRound(newAnswersThisRound, outcome.questions);
+        await persistClarificationRound(
+          newAnswersThisRound,
+          outcome.questions,
+          outcome.questionsToken,
+        );
         setQuestions(outcome.questions);
         setAnswers({});
         setStage("clarify");
@@ -262,7 +280,10 @@ export function QuoteFlow({
         // further questions — so persist the round's answers with no
         // follow-up questions, same helper, empty nextQuestions.
         await persistClarificationRound(newAnswersThisRound, []);
-        setOutOfScopeExclusion(outcome.excludedServiceLabel ?? null);
+        setOutOfScopeSource({
+          excludedServiceLabel: outcome.excludedServiceLabel,
+          scopeGateReason: outcome.scopeGateReason,
+        });
         setStage("outOfScope");
         return;
       }
@@ -331,6 +352,8 @@ export function QuoteFlow({
       const answer = await getFollowUpAnswer({
         data: {
           businessName,
+          problem: description,
+          followUpToken: result.followUpToken,
           diagnosis: result.diagnosis,
           lineItems: result.lineItems,
           question,
@@ -413,6 +436,7 @@ export function QuoteFlow({
             pendingNegotiatedPrice: result.hasNoPricedWork,
             hasPartiallyDeferredWork: result.hasPartiallyDeferredWork,
             lineItems,
+            quoteToken: result.quoteToken,
           },
         });
       } else {
@@ -430,6 +454,7 @@ export function QuoteFlow({
             pendingNegotiatedPrice: result.hasNoPricedWork,
             hasPartiallyDeferredWork: result.hasPartiallyDeferredWork,
             lineItems,
+            quoteToken: result.quoteToken,
           },
         });
       }
@@ -454,9 +479,7 @@ export function QuoteFlow({
     }
     setSendingLead(true);
     try {
-      const flagReason = outOfScopeExclusion
-        ? `Matches a configured exclusion: "${outOfScopeExclusion}" — ${description}`
-        : `Nothing on the price sheet covers: ${description}`;
+      const { flagType, flagReason } = outOfScopeFlag(outOfScopeSource, description);
       // P1-D: same reasoning as sendQuoteToBusiness above — complete the
       // existing clarifying lead rather than creating a duplicate.
       if (clarifyingLeadId !== null) {
@@ -467,7 +490,7 @@ export function QuoteFlow({
             customerName: customerName.trim(),
             phone: phone.trim(),
             flagReason,
-            flagType: outOfScopeExclusion ? "excluded_service" : "outside_service_scope",
+            flagType,
           },
         });
       } else {
@@ -479,7 +502,7 @@ export function QuoteFlow({
             channel,
             photoUrl: null,
             problem: description,
-            flagType: outOfScopeExclusion ? "excluded_service" : "outside_service_scope",
+            flagType,
             flagReason,
           },
         });

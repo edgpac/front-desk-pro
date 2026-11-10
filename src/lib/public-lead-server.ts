@@ -4,7 +4,14 @@ import { createClient } from "@supabase/supabase-js";
 import { createHash } from "node:crypto";
 import { hasActiveSubscriptionForOwner } from "@/lib/entitlements-server";
 import { lineItemsTotal } from "@/lib/mock-data";
-import { validateSubmittedLineItem, type PriceSheetItem } from "@/lib/estimate-server";
+import {
+  validateSubmittedLineItem,
+  quoteScopeFromSubmission,
+  verifyQuoteScope,
+  verifyQuestionsScope,
+  type PriceSheetItem,
+  type QuoteCatalog,
+} from "@/lib/estimate-server";
 import { normalizePhone } from "@/lib/whatsapp-loop-guard-server";
 
 // Duplicated from estimate-server.ts's own private getClientIpHash rather
@@ -42,6 +49,83 @@ export function getAdminClient() {
   return createClient(url, serviceRoleKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
+}
+
+const PRICE_SHEET_COLUMNS =
+  "id, task, category, keywords, pricing_type, price_min, price_max, hours, bundleable, materials_policy, diagnosis_pricing_type, diagnosis_fee, ai_notes, always_requires_inspection";
+
+function toPriceSheetItem(item: Record<string, unknown>): PriceSheetItem {
+  return {
+    id: item["id"] as string,
+    task: item["task"] as string,
+    category: item["category"] as string,
+    keywords: item["keywords"] as string[],
+    pricingType: item["pricing_type"] as "flat" | "hourly" | "range",
+    priceMin: item["price_min"] as number,
+    priceMax: item["price_max"] as number,
+    hours: item["hours"] as number,
+    bundleable: item["bundleable"] as boolean,
+    materialsPolicy: item["materials_policy"] as
+      "included" | "customer_pays_receipt" | "confirmed_after_inspection",
+    diagnosisFee: item["diagnosis_pricing_type"]
+      ? {
+          pricingType: item["diagnosis_pricing_type"] as "flat" | "hourly",
+          amount: item["diagnosis_fee"] as number,
+        }
+      : null,
+    aiNotes: item["ai_notes"] as string | null,
+    alwaysRequiresInspection: item["always_requires_inspection"] as boolean,
+  };
+}
+
+// The authoritative service catalog and pricing configuration
+// getQuoteEstimate checks eligibility and prices against (V5 and the third
+// review round, 2026-11-09) — always read here on the server, never taken
+// from the caller. Unlike getActiveCapabilitiesForTenant
+// (which deliberately degrades to "no exclusions" on a read error), every
+// read failure here throws: an eligibility decision made without the
+// tenant's real exclusions could let excluded work through, so it must
+// fail closed instead.
+export async function loadQuoteCatalogForSlug(
+  admin: ReturnType<typeof getAdminClient>,
+  slug: string,
+): Promise<QuoteCatalog> {
+  const { data: tenant, error: tenantError } = await admin
+    .from("tenants")
+    .select("id, name, labor_rate, service_call_fee, service_call_fee_mode")
+    .eq("slug", slug)
+    .single();
+  if (tenantError || !tenant) {
+    throw new Error(INTAKE_UNAVAILABLE_MESSAGE);
+  }
+  const { data: items, error: itemsError } = await admin
+    .from("price_sheet_items")
+    .select(PRICE_SHEET_COLUMNS)
+    .eq("tenant_id", tenant.id)
+    .order("sort_order", { ascending: true });
+  if (itemsError) {
+    throw new Error(`Could not load price sheet: ${itemsError.message}`);
+  }
+  const { data: capabilities, error: capabilitiesError } = await admin
+    .from("tenant_capabilities")
+    .select("type, label")
+    .eq("tenant_id", tenant.id)
+    .eq("active", true);
+  if (capabilitiesError) {
+    throw new Error(`Could not load business capabilities: ${capabilitiesError.message}`);
+  }
+  const rows = (capabilities ?? []) as Array<{ type: string; label: string }>;
+  return {
+    businessName: tenant.name as string,
+    laborRate: tenant.labor_rate as number,
+    serviceCallFee: tenant.service_call_fee as number,
+    serviceCallFeeMode: tenant.service_call_fee_mode as "fixed" | "negotiated",
+    priceSheet: (items ?? []).map(toPriceSheetItem),
+    exclusions: rows.filter((c) => c.type === "exclusion").map((c) => ({ label: c.label })),
+    specialties: rows
+      .filter((c) => c.type === "specialty" || c.type === "certification" || c.type === "equipment")
+      .map((c) => ({ label: c.label })),
+  };
 }
 
 export type QuoteTenant = {
@@ -99,9 +183,7 @@ export const getTenantForQuote = createServerFn({ method: "GET" })
     // leak another tenant's prices.
     const { data: items, error: itemsError } = await admin
       .from("price_sheet_items")
-      .select(
-        "id, task, category, keywords, pricing_type, price_min, price_max, hours, bundleable, materials_policy, diagnosis_pricing_type, diagnosis_fee, ai_notes, always_requires_inspection",
-      )
+      .select(PRICE_SHEET_COLUMNS)
       .eq("tenant_id", tenant.id)
       .order("sort_order", { ascending: true });
     if (itemsError) {
@@ -127,27 +209,7 @@ export const getTenantForQuote = createServerFn({ method: "GET" })
       specialties: capabilities
         .filter((c) => c.type === "specialty" || c.type === "certification" || c.type === "equipment")
         .map((c) => ({ label: c.label })),
-      priceSheet: (items ?? []).map((item) => ({
-        id: item["id"] as string,
-        task: item["task"] as string,
-        category: item["category"] as string,
-        keywords: item["keywords"] as string[],
-        pricingType: item["pricing_type"] as "flat" | "hourly" | "range",
-        priceMin: item["price_min"] as number,
-        priceMax: item["price_max"] as number,
-        hours: item["hours"] as number,
-        bundleable: item["bundleable"] as boolean,
-        materialsPolicy: item["materials_policy"] as
-          "included" | "customer_pays_receipt" | "confirmed_after_inspection",
-        diagnosisFee: item["diagnosis_pricing_type"]
-          ? {
-              pricingType: item["diagnosis_pricing_type"] as "flat" | "hourly",
-              amount: item["diagnosis_fee"] as number,
-            }
-          : null,
-        aiNotes: item["ai_notes"] as string | null,
-        alwaysRequiresInspection: item["always_requires_inspection"] as boolean,
-      })),
+      priceSheet: (items ?? []).map(toPriceSheetItem),
     };
   });
 
@@ -201,6 +263,9 @@ type CreateLeadInput = {
   // this requires at least one real one). Takes priority when both could
   // theoretically be checked — see the flag_type logic below.
   hasPartiallyDeferredWork?: boolean;
+  // Server signature over this exact quote, issued by getQuoteEstimate
+  // (see attachScopeTokens). Required: see assertIssuedQuote.
+  quoteToken?: string | undefined;
 };
 
 // P0 security fix: createLead/finalizeLeadWithQuote run on the service-role
@@ -285,6 +350,40 @@ async function validateLineItemsAgainstPriceSheet(
 // IP or a DB error blocks the call rather than silently allowing
 // unlimited requests — same posture as estimate-server.ts's
 // enforceDemoLimit/enforceTenantAiLimit.
+// Third review round (2026-11-09): a lead may only be stored as quoted when
+// the diagnosis, confidence, line items and pricing flags are exactly what
+// getQuoteEstimate issued for this tenant — browser-supplied quote data is
+// never trusted as proof that JIR quoted it. Amounts are still re-checked
+// against the real price sheet separately (validateLineItemsAgainstPriceSheet).
+export function assertIssuedQuote(data: {
+  tenantSlug: string;
+  problem: string;
+  diagnosis: string;
+  confidence: string;
+  lineItems: Array<{ priceSheetItemId?: string | null | undefined; rate: number; qty: number }>;
+  pendingNegotiatedPrice?: boolean | undefined;
+  hasPartiallyDeferredWork?: boolean | undefined;
+  quoteToken?: string | undefined;
+}): void {
+  if (!verifyQuoteScope(data.tenantSlug, quoteScopeFromSubmission(data), data.quoteToken)) {
+    throw new Error(INTAKE_UNAVAILABLE_MESSAGE);
+  }
+}
+
+// Same principle for stored clarification history: an "assistant" message
+// is only ever a question the server actually issued and signed. The
+// customer's own messages are their words and need no signature.
+export function assertIssuedQuestions(
+  tenantSlug: string,
+  messages: Array<{ role: "customer" | "assistant"; body: string }>,
+  questionsToken: string | undefined,
+): void {
+  const asked = messages.filter((m) => m.role === "assistant").map((m) => m.body);
+  if (asked.length > 0 && !verifyQuestionsScope(tenantSlug, asked, questionsToken)) {
+    throw new Error(INTAKE_UNAVAILABLE_MESSAGE);
+  }
+}
+
 const TENANT_RATE_WINDOW_SECONDS = 24 * 60 * 60;
 // 'quote' (createLead/createClarifyingLead/finalizeLeadWithQuote) is a
 // write with a real cost downstream (an AI call already happened, an
@@ -344,6 +443,7 @@ export const createLead = createServerFn({ method: "POST" })
     if (!(await hasActiveSubscriptionForOwner(admin, tenant["user_id"] as string))) {
       throw new Error(INTAKE_UNAVAILABLE_MESSAGE);
     }
+    assertIssuedQuote(data);
     await validateLineItemsAgainstPriceSheet(
       admin,
       tenant.id as string,
@@ -618,6 +718,9 @@ type FinalizeLeadInput = {
   pendingNegotiatedPrice?: boolean;
   // Same meaning/authority as CreateLeadInput.hasPartiallyDeferredWork above.
   hasPartiallyDeferredWork?: boolean;
+  // Server signature over this exact quote, issued by getQuoteEstimate
+  // (see attachScopeTokens). Required: see assertIssuedQuote.
+  quoteToken?: string | undefined;
 };
 
 // Completes a lead that createClarifyingLead started earlier in the same
@@ -647,6 +750,21 @@ export const performFinalizeLeadWithQuote = createServerOnlyFn(
     if (!(await hasActiveSubscriptionForOwner(admin, tenant["user_id"] as string))) {
       throw new Error(INTAKE_UNAVAILABLE_MESSAGE);
     }
+    // D2 (2026-11-09): finalize never writes `problem` — the lead keeps the
+    // one stored when it was created. So the signature is checked against
+    // that STORED problem, not the caller's copy: a quote issued for one
+    // request can't be attached to a lead whose stored request says
+    // something else (e.g. a clarifying lead created with different text).
+    const { data: storedLead, error: storedLeadError } = await admin
+      .from("leads")
+      .select("problem")
+      .eq("id", data.leadId)
+      .eq("tenant_id", tenant.id)
+      .maybeSingle();
+    if (storedLeadError || !storedLead) {
+      throw new Error(INTAKE_UNAVAILABLE_MESSAGE);
+    }
+    assertIssuedQuote({ ...data, problem: storedLead.problem as string });
     await validateLineItemsAgainstPriceSheet(
       admin,
       tenant.id as string,
@@ -786,12 +904,14 @@ type SaveClarificationMessagesInput = {
   // FinalizeLeadInput.tenantSlug above, not previously required here.
   tenantSlug: string;
   messages: Array<{ role: "customer" | "assistant"; body: string }>;
+  questionsToken?: string | undefined;
 };
 
 export const saveClarificationMessages = createServerFn({ method: "POST" })
   .validator((input: SaveClarificationMessagesInput) => input)
   .handler(async ({ data }) => {
     if (data.messages.length === 0) return { ok: true as const };
+    assertIssuedQuestions(data.tenantSlug, data.messages, data.questionsToken);
     const admin = getAdminClient();
 
     const { data: tenant, error: tenantError } = await admin

@@ -2,6 +2,306 @@
 
 Legend: ✅ real and working · 🟡 built, but mocked/disconnected from a real backend · ⬜ not built yet
 
+Last updated: November 9, 2026 (D1/D2 fix) — **The two demonstrated gaps
+from the scope review package are closed. Verified locally, NOT committed,
+pushed, or deployed — awaiting review.**
+
+- **D1 — browser-supplied evidence**: `QuoteInput.customerEvidence` is
+  removed. Eligibility/relevance evidence is now exactly the `description`
+  `getQuoteEstimate` evaluated (the same text the quote signature binds). The
+  one legitimate former user, WhatsApp's follow-up-photo reassessment, now
+  passes the lead's stored request as the description and the new caption as
+  `photoFollowUpNote` — prompt context only, never evidence. The exact attack
+  (description "fix my car engine" + injected "my garage door" evidence) now
+  fails closed.
+- **D2 — unsigned problem text**: the quote signature now also covers
+  `problem` (the evaluated description). `createLead` verifies the submitted
+  problem; `finalizeLeadWithQuote` — which never writes `problem` — verifies
+  against the problem **already stored on the lead** (read server-side), so a
+  quote can't be attached to a lead whose stored request was created with
+  different text (e.g. a clarifying lead). The exact attack (signed faucet
+  quote stored with "…and my car engine") is rejected on both write paths.
+  WhatsApp quoted-job follow-ups therefore read a problem that was verified
+  at write time.
+
+Verified: 939/939 tests (D1/D2 attack regressions plus legitimate creation,
+finalize, and follow-up cases), mutation checks (re-accepting caller
+evidence, unsigning `problem`, or trusting the caller's problem in finalize
+each fail tests), `tsc` clean, production build clean, `git diff --check`
+clean, no new lint findings vs `HEAD`. No migrations or schema changes.
+
+Still documented, unchanged (accepted in the review): no replay protection
+(a replay re-submits the identical quote, rate-limited); signatures not bound
+to a lead id; `isEmergency` unsigned (owner email styling only); word-based
+matching limits; the B check treats words in the customer's *original*
+request as quoted scope (a request that genuinely mentioned other work at
+creation time widens it — that text is now server-verified, not alterable
+afterwards).
+
+**Accepted limitation (owner-approved final review, 2026-11-10)**: quote
+signatures are bound to the business and the exact quote, not to a lead or
+phone. A valid signature can be replayed (re-submitting the identical
+server-issued quote — subscription-gated, rate-limited 15/day per IP per
+business, amounts re-checked), and since the phone isn't signed, a quoted lead
+could be created under another person's phone, routing that phone's WhatsApp
+messages for 48 hours as follow-ups on that quote (still deterministically
+scope-checked; owner notified). Re-using a signature on another lead needs
+that lead's UUID plus an identical stored problem. Both predate this work and
+are strictly narrower than before. **Recommended follow-up before broad public
+release**: bind finalize to a per-lead secret returned only by
+`createClarifyingLead`, and add the phone (or a lead nonce) plus a short
+expiry to the quote signature.
+
+Last updated: November 9, 2026 (third round) — **Scope-gate third review
+round: incidental keyword matches, quoted-job scope expansion, and the web
+trust boundary. Implemented test-first, verified locally, NOT committed,
+pushed, or deployed — awaiting the owner's review of the full diff (all
+three rounds together) before any commit.**
+
+The owner approved the second round's V6 deviation (a later out-of-scope
+message attaches to the open flagged lead with no second email; a genuinely
+in-scope request proceeds normally — both existing tests preserved).
+
+- **A — relevance is phrase-level and non-incidental** (`estimate-server.ts`,
+  `isRequestedByCustomer`): each of an item's names (task, category, each
+  keyword) is a phrase that must occur together in the customer's own words
+  (all of a 1–2 word phrase, all but one of a longer one, within a short
+  window, with no location word splitting it), and an occurrence introduced
+  by a location phrase doesn't count. Built only from English/Spanish
+  prepositions and articles — no trade or object lists. "My car is parked in
+  the garage", "There is a car in front of my garage", "Mi carro está
+  estacionado en el garaje", "Hay un carro frente a mi garaje", "My car door
+  won't close" all fail closed against a "Garage door repair" row; "My garage
+  door won't open" / "La puerta de mi garaje no abre" pass. ALWAYS INSPECT
+  and custom-quote rows stay eligible when actually requested. Shared word
+  stems of 6+ letters now also match (cabinets/cabinetry). Scheduling/time
+  and connective words (EN/ES) were added to the generic-word filter.
+- **B — quoted jobs can't be expanded by a "same job" classification**
+  (`evaluateFollowUpScope`): a follow-up that asks for work
+  (fix/repair/install/replace/inspect/maintain, arreglar/reparar/instalar/
+  cambiar/revisar…) and names anything outside the quoted job's own words
+  (the customer's original request + the stored quoted line items) is new
+  work: no AI answer, lead flagged `needs_human_review` with the new terms,
+  owner notified once (WhatsApp). Questions that don't ask for work
+  (timing, payment, "same price?") are unaffected. Exclusions still win.
+- **C — the server is authoritative for everything** (`QuoteCatalog`,
+  `loadQuoteCatalogForSlug`): business name, labor rate, service-call fee
+  and fee mode now also come from the server, alongside price sheet and
+  exclusions. **Server-issued signatures** (HMAC-SHA256, key derived from
+  the existing server-only service-role secret — no new setting): every
+  tenant result from `getQuoteEstimate` carries a signature over the
+  questions it asked, the quote it issued (diagnosis, confidence, line-item
+  ids + amounts, pricing flags), and the quoted scope for follow-ups.
+  `createLead`/`finalizeLeadWithQuote` reject any quote whose signature
+  doesn't match (`assertIssuedQuote`); `saveClarificationMessages` only
+  stores an "assistant" message that is a signed question
+  (`assertIssuedQuestions`); `getFollowUpAnswer` refuses an unsigned or
+  altered quoted scope. WhatsApp passes the issued signature through on all
+  three lead writes, and mints the follow-up scope signature from the lead's
+  own stored data (server-side, trusted).
+- **D — `checkFollowUpRequest`**: the follow-up validation (signature →
+  exclusions → quoted-scope rule) is one plain function, unit-tested;
+  `getFollowUpAnswer` returns its fixed fallback line when it refuses.
+
+**Verified**: 932/932 tests (48 new this round), including end-to-end checks
+that the signature each WhatsApp lead write receives verifies against
+exactly what it submits (fresh quote, mid-conversation, follow-up photo) —
+the one place a canonicalization mismatch would silently break real quotes,
+since those writes are mocked elsewhere. Mutation checks: disabling the
+incidental-mention rule, the phrase rule, the in-phrase location split, the
+new-work rule, each of the three signature checks, server-side pricing, the
+WhatsApp new-work hand-off, the generic-word filter, or result eligibility
+each fails tests (the phrase rule initially wasn't isolated by any test —
+two cases were added until it was). The six original bypass probes stay
+blocked. `tsc` clean, production build clean, no new lint findings vs
+`HEAD`, `git diff --check` clean. No migrations, no schema changes.
+
+**Remaining limitations (honest)**:
+- Relevance is still lexical. Location phrases are only detected by a
+  preposition directly before the item's words; "on"/"over" are deliberately
+  not treated as locations ("work on the roof"), so "my car is on the garage
+  ramp" can still match a single-word "garage" keyword. Negation isn't
+  understood ("my garage door is fine, it's my car") — it matches. A
+  location phrase that marks the actual target ("a leak in my kitchen sink"
+  against a two-word "Kitchen sink" item) fails closed to the owner. Tenants
+  get the best results with specific keywords (including Spanish ones).
+- The new-work rule is word-based: a work request naming any word not in the
+  quoted job's text (e.g. "fix the faucet sooner-than-planned") can be handed
+  to the owner unnecessarily — fail-closed by design. Non-work questions are
+  still answered by the AI under a prompt-only scope rule.
+- The quoted scope uses the stored line-item descriptions (system-validated
+  quote text) alongside the customer's words to define what was quoted.
+- Not signed: the lead's `problem` text and `isEmergency` flag on web
+  submissions (the customer's own description / an owner-facing flag), the
+  web follow-up conversation `history` (prompt context only — never used as
+  evidence), and `createFlaggedLead`/`finalizeLeadAsOutOfScope` flag reasons
+  (owner-facing text, no AI output).
+- Signatures don't expire; replaying one only re-submits the exact quote it
+  was issued for.
+- Pre-existing, unchanged: the dashboard's "send test lead" button submits a
+  line item with no price-sheet id, which `createLead` already rejected
+  before this work (and still does).
+- A live-model image evaluation has still not been run.
+
+**Outstanding uncommitted work (all in this working tree, all three
+rounds)**: `ROADMAP.md`, `src/components/quote/QuoteFlow.tsx`,
+`src/lib/estimate-server.ts`, `src/lib/estimate-server.test.ts`,
+`src/lib/public-lead-server.ts`, `src/lib/public-lead-server.test.ts`,
+`src/lib/whatsapp-conversation-server.ts`,
+`src/lib/whatsapp-conversation-server.test.ts`. `Home folder/` and
+`jir-carousel-photos/` remain untracked and untouched.
+
+Last updated: November 9, 2026 (later) — **Adversarial-review corrections to
+the clarification scope gate: eligibility + customer-word relevance now
+apply to every AI result shape. Implemented test-first, verified locally,
+NOT committed, pushed, or deployed. Still uncommitted together with the
+earlier same-day scope-gate entry below.**
+
+An adversarial review of the scope gate (entry below) confirmed six
+bypasses with scripted-model probes; all six are now closed (the same
+probes, re-run against the fixed code, all fail as intended):
+
+- **V1/V2 — every result shape, every attempt** (`estimate-server.ts`):
+  priced quotes, service-call-fee-only results, "deferred" (null-match)
+  results and the corrective retry previously skipped the gate. Now
+  `runQuoteAttempts` sends every non-outOfScope result through
+  `checkResultEligibility` → `checkCitedEligibility` (the same check
+  `gateClarification` uses). A result must cite ≥1 real row from this
+  tenant's sheet; the generic service-call fee never counts on its own; any
+  null match fails (an unidentified issue is exactly the unverifiable claim);
+  an empty sheet makes nothing eligible. A retry's result passes the same
+  check or fails closed.
+- **V3/V4 — relevance from the customer's own words only**: every cited row
+  must share a meaningful word (task/category/keywords) with what the
+  customer wrote (`customerEvidence`, defaulting to the description).
+  AI-written text — questions, options, diagnosis — can only ever trigger an
+  exclusion, never establish relevance. Generic request words in English and
+  Spanish ("fix", "repair", "arreglar", "reparación"…, compared by a light
+  stem so gender/plural forms stay generic) don't count. Accents are folded
+  in the shared tokenizer (also fixes accented Spanish exclusions). A photo
+  with no caption has no customer words and always fails closed to the
+  owner. Exclusions are checked before relevance and always win.
+- **V5 — authoritative catalog** (`withAuthoritativeCatalog`,
+  `public-lead-server.ts` `loadQuoteCatalogForSlug`): for any tenant request
+  the price sheet, exclusions and specialties are re-read on the server and
+  the caller's (browser's) copy discarded; any read error fails closed rather
+  than proceeding without exclusions. `/demo` keeps its sample sheet.
+- **V6 — duplicate flagged leads/emails** (`whatsapp-conversation-server.ts`):
+  if a phone already has an open, never-quoted lead flagged
+  `outside_service_scope`/`excluded_service`, a further out-of-scope message
+  is attached to it (lead_messages) — no new lead, no second email, no reply.
+  **Deliberate deviation from the literal approval ("attach subsequent
+  messages")**: an in-scope follow-up still gets its normal reply and its own
+  lead, because two existing production-regression tests protect exactly
+  that (a flagged lead must never trap a later legitimate request).
+  `needs_human_review` is intentionally not treated as an out-of-scope
+  hand-off.
+- **Quoted-job follow-ups**: audited. `different_job` already goes through
+  the (now gated) fresh-quote flow. `same_job`/`ambiguous` follow-ups that
+  name a configured exclusion now get no automated reply — lead flagged
+  `excluded_service`, owner notified once. `getFollowUpAnswer` itself checks
+  the server-loaded exclusions before calling the model (returns its fixed
+  fallback line — used by the web flow) and its prompt now limits answers to
+  the quoted work. Follow-up-photo reassessments pass `customerEvidence`
+  ([original problem, new caption]) so the system-written "Additional note
+  from customer…" wrapper never counts as customer words. (Correction to the
+  review: that path already notified the owner on every outcome.)
+- Prompt: `PRICE_SHEET_ELIGIBILITY_RULE` (rule 8, explicitly overriding the
+  older null/deferred and service-call-only guidance) — advisory only.
+
+**Behavior changes to know before deploying**: (1) photo-only messages never
+get an automated reply — always flagged for the owner; (2) the negotiated
+"deferred, we'll confirm the fee" path and partially-deferred quotes are
+effectively retired — any unidentified issue now flags the request; (3) a
+price-sheet row with no subject words in its task/category/keywords (e.g. a
+bare "Handyman hour") can only be matched if the customer's words hit one —
+tenants should add keywords (including Spanish ones; no translation is built
+in, by design); (4) every tenant AI quote call does three extra catalog
+reads (WhatsApp already had the same data).
+
+**Verified**: 884/884 tests (52 new across both rounds of this work, plus
+updates to two tests whose expectations intentionally changed — a captionless
+washer photo now fails closed). Mutation checks: disabling result
+eligibility, relevance, the authoritative catalog, V6 attach, the follow-up
+exclusion check, or the generic-word filter each fails tests. `tsc` clean,
+production build clean, no new lint findings vs `HEAD`, `git diff --check`
+clean. No migrations, no schema changes.
+
+**Residual risks (not closed)**: relevance is word overlap, so a coincidental
+shared subject word still passes (e.g. "car in my garage" vs a "Garage door
+repair" row); `same_job` vs `different_job` on quoted follow-ups is still an
+AI classification, and a same-job answer's scope is prompt-only beyond the
+exclusion check; the web flow's `saveClarificationMessages` still stores
+browser-supplied question text in lead history (pre-existing, not a
+customer-delivery path); the web route still takes labor rate/service-call
+fee from the browser (pricing inputs, not eligibility — out of this scope).
+A live-model image evaluation has still not been run.
+
+**Outstanding uncommitted work (all in this working tree)**: `ROADMAP.md`,
+`src/components/quote/QuoteFlow.tsx`, `src/lib/estimate-server.ts`,
+`src/lib/estimate-server.test.ts`, `src/lib/public-lead-server.ts`,
+`src/lib/whatsapp-conversation-server.ts`,
+`src/lib/whatsapp-conversation-server.test.ts` — both scope-gate rounds,
+awaiting the owner's review before commit. `Home folder/` and
+`jir-carousel-photos/` remain untracked and untouched, as before.
+
+Last updated: November 9, 2026 — **Clarification scope gate: AI follow-up
+questions can no longer reach a customer unless they cite this tenant's own
+price-sheet items. Implemented test-first, verified locally, NOT committed,
+pushed, or deployed yet.**
+
+**The production failure**: a handyman tenant received a captionless photo
+of a car engine on WhatsApp and JIR replied "What do you need help with
+regarding this engine? (Engine won't start or is running poorly / Routine
+maintenance or inspection / ...)". Root cause (confirmed in code):
+`getQuoteEstimate` returned every `needsClarification` response unchecked —
+`validateQuoteAgainstPriceSheet` and `applyExclusionGuard` only ever ran on
+*priced* results — so the model's own judgement was the only scope check on
+every route that shows clarification questions (WhatsApp fresh quote,
+WhatsApp mid-conversation, the web `QuoteFlow`). The communication-profile
+(JIR Chat dashboard) feature is not in this path.
+
+**The fix** (`estimate-server.ts`): the model must now return
+`scopeVerdict` + `candidatePriceSheetItemIds` with any clarification, and
+the new deterministic `gateClarification` releases a question only if the
+verdict is `in_scope`, every cited id resolves to a row on *this tenant's*
+price sheet (plain id or its `:diagnosis`/`:inspection` sentinel; the generic
+service-call fee is not a service and never counts), there is a usable
+question, and nothing matches a configured exclusion. Any row the tenant
+configured is eligible, priced or not — ALWAYS INSPECT/custom-quote rows
+stay eligible. An empty price sheet makes nothing eligible. A format failure
+(missing verdict/ids, unknown id) gets the existing single corrective retry,
+which must pass the same gate; a substantive failure (out_of_scope /
+excluded / unclear verdict, exclusion match, no price sheet) fails closed
+immediately with no retry. Every failure becomes the existing outOfScope
+hand-off — **no automatic customer reply** (per the owner's decision; no new
+decline message was added), lead flagged (`outside_service_scope`, or
+`excluded_service` with the label), owner notified — with an owner-readable
+`scopeGateReason` in the flag reason. The model-calling half of the handler
+moved into an exported `runQuoteAttempts(data, content, ask)` so the full
+raw-model-JSON → customer-output path is testable; `outOfScopeFlag` is now
+the one flag derivation shared by all three outOfScope callers. Prompt:
+`CLARIFICATION_SCOPE_RULE` (rule 2) and `PHOTO_ONLY_SCOPE_RULE` ("a photo is
+context, never evidence"), advisory only. No migrations, no schema changes.
+
+**Verified**: 38 new tests (gate unit tests; `runQuoteAttempts` with a
+scripted model incl. retry-must-pass-same-gate; WhatsApp end-to-end
+customer-output tests for the engine photo, painter + appliance photo,
+appliance repair + washer, excluded service, ALWAYS INSPECT custom quote,
+ambiguous photo, empty price sheet, fabricated id, mid-conversation). A
+mutation check (gate bypassed) fails 12 of them. `tsc` clean, full suite
+857/857, production build clean, no new lint findings vs `HEAD` on any
+touched file, `git diff --check` clean.
+
+**Known limitations**: a *real but irrelevant* id (engine photo citing the
+handyman's "Quick fix" row) passes the gate — relevance can't be judged
+deterministically; the prompt rules are the only defense there. Mocked
+tests prove the gate, not how the live model classifies real photos — a
+live-model eval with real photos has not been run. Behavior change to
+watch: a photo the model can't tie to a price-sheet item now gets no reply
+(flagged for the owner) where it previously got an open-ended "describe what
+you need" question, including on a customer's first contact.
+
 Last updated: November 2, 2026 — **Production-readiness audit: accounted
 for every outstanding change in the working tree, shipped the one verified
 piece with no outstanding dependency, held back the rest with documented
