@@ -455,11 +455,31 @@ const HEBREW_PATTERN = /[֐-׿]/;
 
 export type DetectedLanguage = "es" | "he" | "en";
 
+// PRODUCTION REGRESSION (2026-11-15): English-speaking customers in Los
+// Cabos often open with "Hola, buenos días" and close with "muchas gracias"
+// around an otherwise fully English message — and any one of those words
+// used to flip the whole reply to Spanish. Courtesy phrases are stripped
+// before the Spanish check; a message made of courtesy alone ("Hola",
+// "Muchas gracias") still counts as Spanish unless enough English
+// surrounds it.
+const SPANISH_COURTESY_PATTERN =
+  /¡?\b(hola|buen[oa]s\s+(d[ií]as|tardes|noches)|buen\s+d[ií]a|(muchas\s+)?gracias|por\s+favor|saludos|amig[oa])\b!?/gi;
+const ENGLISH_FUNCTION_WORD_PATTERN =
+  /\b(the|and|is|are|was|were|it|its|i|i'm|my|we|our|you|your|to|of|in|on|for|with|this|that|can|could|need|have|has|be|do|does|what|how|from|under|there|hi|hello|thanks|please|sorry)\b/gi;
+const MIN_ENGLISH_WORDS_AROUND_COURTESY = 2;
+
+function hasSpanishSignal(text: string): boolean {
+  return SPANISH_PATTERNS.some((pattern) => pattern.test(text));
+}
+
 export function detectLanguage(...texts: (string | undefined)[]): DetectedLanguage {
   const combined = texts.filter(Boolean).join(" ");
   if (HEBREW_PATTERN.test(combined)) return "he";
-  if (SPANISH_PATTERNS.some((pattern) => pattern.test(combined))) return "es";
-  return "en";
+  if (!hasSpanishSignal(combined)) return "en";
+  const withoutCourtesy = combined.replace(SPANISH_COURTESY_PATTERN, " ");
+  if (hasSpanishSignal(withoutCourtesy)) return "es";
+  const englishWords = withoutCourtesy.match(ENGLISH_FUNCTION_WORD_PATTERN)?.length ?? 0;
+  return englishWords >= MIN_ENGLISH_WORDS_AROUND_COURTESY ? "en" : "es";
 }
 
 // PRODUCTION REGRESSION (2026-10-27): a real WhatsApp conversation showed a

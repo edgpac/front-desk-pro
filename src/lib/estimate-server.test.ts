@@ -1217,6 +1217,40 @@ describe("detectLanguage — unchanged direct callers (getFollowUpAnswer-shaped,
   });
 });
 
+// PRODUCTION REGRESSION (2026-11-15): an English-speaking customer opened
+// with "Hola. Buenas Dias." and closed with "Muchas gracias." around a
+// fully English plumbing-emergency message, and got the greeting plus the
+// follow-up question in Spanish. A Spanish courtesy phrase on its own is
+// politeness, not the customer's language.
+describe("detectLanguage — Spanish courtesy phrases inside English messages", () => {
+  const REPORTED_MESSAGE =
+    "Hola. Buenas Dias. Sorry to message you early on a Sunday morning but we have a plumbing emergency. " +
+    "Our plumbing in the kitchen sink and dishwasher is very backed up and it’s leaking from under our " +
+    "dishwasher now. We need our plumbing lines completely cleaned out and possibly more done if that " +
+    "doesn’t fix the dishwasher situation. Are you able to help??? Muchas gracias.";
+
+  it("the exact reported message resolves English", () => {
+    expect(detectLanguage(REPORTED_MESSAGE)).toBe("en");
+    expect(detectCurrentLanguage(REPORTED_MESSAGE)).toBe("en");
+  });
+
+  it("an English message opened with a short Spanish greeting resolves English", () => {
+    expect(detectLanguage("Hola, my sink is leaking")).toBe("en");
+    expect(detectLanguage("Buenos días! Can you fix a ceiling fan this week? Gracias")).toBe("en");
+  });
+
+  it("a greeting with nothing else stays Spanish", () => {
+    expect(detectLanguage("Hola")).toBe("es");
+    expect(detectLanguage("Hola, buenas tardes")).toBe("es");
+    expect(detectLanguage("Muchas gracias")).toBe("es");
+  });
+
+  it("a real Spanish message that starts with a greeting stays Spanish", () => {
+    expect(detectLanguage("Hola, necesito ayuda con una fuga en el baño")).toBe("es");
+    expect(detectLanguage("Buenos días, tengo un problema con el boiler")).toBe("es");
+  });
+});
+
 // Photo-intelligence investigation (2026-10-19): the user asked whether the
 // AI actually "sees" a photo or merely gets told one was attached. Traced
 // end to end: getQuoteEstimate's handler builds this exact content array
