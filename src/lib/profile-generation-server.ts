@@ -344,7 +344,7 @@ export const runProfileGeneration = createServerOnlyFn(
 
       let parsed: unknown;
       try {
-        parsed = JSON.parse(raw);
+        parsed = JSON.parse(extractJsonObject(raw));
       } catch {
         lastFailureReason = "The AI response was not valid JSON.";
         continue;
@@ -372,9 +372,22 @@ export const runProfileGeneration = createServerOnlyFn(
       return { status: "generated", version };
     }
 
+    // Server-side only: without this, a profile that failed validation on
+    // every attempt left no trace (the client just shows the reason once).
+    console.warn(`Profile generation for tenant ${tenantId} produced no valid profile: ${lastFailureReason}`);
     return { status: "insufficient_evidence", reason: lastFailureReason };
   },
 );
+
+// The model often wraps its JSON in a ```json fence or adds a lead-in
+// sentence despite the prompt (every other AI call in this codebase strips
+// fences too — see estimate-server.ts). Takes the outermost {...} span;
+// anything without one is left as-is and fails JSON.parse as before.
+function extractJsonObject(raw: string): string {
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+  return start !== -1 && end > start ? raw.slice(start, end + 1) : raw;
+}
 
 // The only production AI-calling path — reuses estimate-server.ts's
 // existing callClaude (same ANTHROPIC_API_KEY, same endpoint, same
@@ -400,7 +413,9 @@ async function callProfileGenerationAi(prompt: string): Promise<string> {
   const response = await callClaude(
     {
       model: "claude-haiku-4-5-20251001",
-      max_tokens: 4096,
+      // Every field carries an evidence list; 4096 risked truncating the
+      // JSON mid-object on a large import.
+      max_tokens: 8192,
       messages: [{ role: "user", content: prompt }],
     },
     { timeoutMs: PROFILE_GENERATION_TIMEOUT_MS },

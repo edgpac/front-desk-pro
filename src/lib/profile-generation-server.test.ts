@@ -397,6 +397,25 @@ describe("runProfileGeneration — cost-guard enforcement", () => {
     expect(aiCalled).toBe(true);
   });
 
+  // PRODUCTION REGRESSION (2026-11-15): the model wrapped its JSON in a
+  // ```json fence; strict JSON.parse failed both attempts, so a real
+  // 130-message import never produced a profile.
+  it.each([
+    ["a ```json fence", "```json\n" + validResponse + "\n```"],
+    ["a bare ``` fence", "```\n" + validResponse + "\n```"],
+    ["a short lead-in sentence", "Here is the profile:\n" + validResponse],
+  ])("accepts a response wrapped in %s", async (_label, raw) => {
+    const client = fakeClient(tablesWithOneOwnerMessage());
+    const result = await runProfileGeneration(client, "tenant-A", async () => raw, noopCostGuard);
+    expect(result.status).toBe("generated");
+  });
+
+  it("still rejects a response with no JSON object at all", async () => {
+    const client = fakeClient(tablesWithOneOwnerMessage());
+    const result = await runProfileGeneration(client, "tenant-A", async () => "Sorry, I can't.", noopCostGuard);
+    expect(result).toEqual({ status: "insufficient_evidence", reason: "The AI response was not valid JSON." });
+  });
+
   it("a tenant over the limit is rejected BEFORE the AI provider is ever called", async () => {
     const tables = tablesWithOneOwnerMessage();
     const client = fakeClient(tables);
