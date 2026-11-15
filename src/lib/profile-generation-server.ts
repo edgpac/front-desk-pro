@@ -118,9 +118,10 @@ export function buildProfileGenerationPrompt(
   ownerMessages: OwnerMessageForGeneration[],
   customerMessages: CustomerMessageForGeneration[],
 ): string {
-  const fieldList = [...PROFILE_STRING_FIELDS, ...PROFILE_LIST_FIELDS]
-    .map(([key, label]) => `- ${key}: ${label}`)
-    .join("\n");
+  const fieldList = [
+    ...PROFILE_STRING_FIELDS.map(([key, label]) => `- ${key}: ${label} (a string)`),
+    ...PROFILE_LIST_FIELDS.map(([key, label]) => `- ${key}: ${label} (a JSON list of strings)`),
+  ].join("\n");
 
   const noOwnerEvidenceInstruction =
     ownerMessages.length === 0
@@ -350,7 +351,7 @@ export const runProfileGeneration = createServerOnlyFn(
         continue;
       }
 
-      const shapeResult = validateCommunicationProfileShape(parsed);
+      const shapeResult = validateCommunicationProfileShape(coerceListFieldStrings(parsed));
       if (!shapeResult.ok) {
         lastFailureReason = `The AI response did not match the expected profile shape: ${shapeResult.errors.join("; ")}`;
         continue;
@@ -378,6 +379,32 @@ export const runProfileGeneration = createServerOnlyFn(
     return { status: "insufficient_evidence", reason: lastFailureReason };
   },
 );
+
+// The model sometimes returns a list field's value as one string
+// ("English, Spanish") despite the prompt. Splits it into a list before the
+// strict shape check: on newlines/semicolons for every list field, and also
+// on commas for preferredLanguages only — response examples and phrases are
+// sentences that legitimately contain commas. Returns a new object; anything
+// that isn't a plain object, or a value that isn't a string, is left as-is
+// for the shape validator to judge.
+function coerceListFieldStrings(parsed: unknown): unknown {
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return parsed;
+  const record = parsed as Record<string, unknown>;
+  const coerced: Record<string, unknown> = { ...record };
+  for (const [key] of PROFILE_LIST_FIELDS) {
+    const field = record[key];
+    if (typeof field !== "object" || field === null) continue;
+    const value = (field as Record<string, unknown>)["value"];
+    if (typeof value !== "string") continue;
+    const separator = key === "preferredLanguages" ? /[\n;,]/ : /[\n;]/;
+    const items = value
+      .split(separator)
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0);
+    coerced[key] = { ...field, value: items };
+  }
+  return coerced;
+}
 
 // The model often wraps its JSON in a ```json fence or adds a lead-in
 // sentence despite the prompt (every other AI call in this codebase strips

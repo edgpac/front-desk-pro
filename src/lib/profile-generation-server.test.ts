@@ -410,6 +410,27 @@ describe("runProfileGeneration — cost-guard enforcement", () => {
     expect(result.status).toBe("generated");
   });
 
+  // PRODUCTION REGRESSION (2026-11-15): the model returned
+  // preferredLanguages.value as "English, Spanish" — a string where the
+  // shape requires a list — and both attempts failed validation.
+  it("accepts a list field the model returned as a comma-separated string, splitting it into a list", async () => {
+    const tables = tablesWithOneOwnerMessage();
+    const client = fakeClient(tables);
+    const raw = JSON.stringify({
+      preferredLanguages: {
+        value: "English, Spanish",
+        source: "ai_observed",
+        confidence: "high",
+        evidence: [{ messageId: "own-1" }],
+      },
+    });
+    const result = await runProfileGeneration(client, "tenant-A", async () => raw, noopCostGuard);
+    expect(result.status).toBe("generated");
+    if (result.status === "generated") {
+      expect(result.version.profile.preferredLanguages?.value).toEqual(["English", "Spanish"]);
+    }
+  });
+
   it("still rejects a response with no JSON object at all", async () => {
     const client = fakeClient(tablesWithOneOwnerMessage());
     const result = await runProfileGeneration(client, "tenant-A", async () => "Sorry, I can't.", noopCostGuard);
