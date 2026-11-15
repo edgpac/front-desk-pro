@@ -225,7 +225,15 @@ describe("toInboundWhatsAppTenant", () => {
       greetingMode: "custom",
       customGreetingEn: "Hey! Thanks for texting Acme.",
       customGreetingEs: "¡Hola! Gracias por escribir a Acme.",
+      firstContactDisclosure: false,
     });
+  });
+
+  it("keeps the first-contact disclosure OFF unless the column is exactly true (null/missing stay off)", () => {
+    expect(toInboundWhatsAppTenant(BASE_ROW).firstContactDisclosure).toBe(false);
+    expect(toInboundWhatsAppTenant({ ...BASE_ROW, first_contact_disclosure: null }).firstContactDisclosure).toBe(false);
+    expect(toInboundWhatsAppTenant({ ...BASE_ROW, first_contact_disclosure: true }).firstContactDisclosure).toBe(true);
+    expect(toInboundWhatsAppTenant({ ...BASE_ROW, first_contact_disclosure: false }).firstContactDisclosure).toBe(false);
   });
 
   it('defaults greetingMode to "recommended" for any value other than exactly "custom" (null, unset, or corrupted)', () => {
@@ -257,6 +265,7 @@ const TEST_TENANT: InboundWhatsAppTenant = {
   greetingMode: "recommended",
   customGreetingEn: null,
   customGreetingEs: null,
+  firstContactDisclosure: false,
 };
 const TEST_PHONE = "+15551234567";
 
@@ -5775,11 +5784,12 @@ describe("WhatsApp opt-out — handleInboundWhatsAppMessage's state machine", ()
 // privacy/AI-processing disclosure, the Privacy Policy link, and the
 // opt-out instruction — and must never claim anything about the
 // subscriber's own privacy obligations.
-describe("resolveFirstContactGreeting — privacy disclosure present on every variant", () => {
+describe("resolveFirstContactGreeting — shop that switched the notice on: present on every variant", () => {
+  const ON: InboundWhatsAppTenant = { ...TEST_TENANT, firstContactDisclosure: true };
   const PRIVACY_URL = "https://www.jobitready.com/privacy";
 
   it("recommended, full, English", () => {
-    const text = resolveFirstContactGreeting(TEST_TENANT, "en", "full");
+    const text = resolveFirstContactGreeting(ON, "en", "full");
     expect(text).toContain(
       "Hi! 👋 Thanks for reaching out to Acme Handyman. How can I help you today?",
     );
@@ -5790,7 +5800,7 @@ describe("resolveFirstContactGreeting — privacy disclosure present on every va
   });
 
   it("recommended, short, English", () => {
-    const text = resolveFirstContactGreeting(TEST_TENANT, "en", "short");
+    const text = resolveFirstContactGreeting(ON, "en", "short");
     expect(text).toContain("Hi! 👋 Thanks for reaching out to Acme Handyman.");
     expect(text).not.toContain("How can I help you today?");
     expect(text).toContain("processed by AI");
@@ -5799,7 +5809,7 @@ describe("resolveFirstContactGreeting — privacy disclosure present on every va
   });
 
   it("recommended, full, Spanish", () => {
-    const text = resolveFirstContactGreeting(TEST_TENANT, "es", "full");
+    const text = resolveFirstContactGreeting(ON, "es", "full");
     expect(text).toContain(
       "¡Hola! 👋 Gracias por contactar a Acme Handyman. ¿En qué podemos ayudarte?",
     );
@@ -5810,7 +5820,7 @@ describe("resolveFirstContactGreeting — privacy disclosure present on every va
   });
 
   it("recommended, short, Spanish", () => {
-    const text = resolveFirstContactGreeting(TEST_TENANT, "es", "short");
+    const text = resolveFirstContactGreeting(ON, "es", "short");
     expect(text).toContain("¡Hola! 👋 Gracias por contactar a Acme Handyman.");
     expect(text).not.toContain("¿En qué podemos ayudarte?");
     expect(text).toContain("procesados por IA");
@@ -5819,7 +5829,7 @@ describe("resolveFirstContactGreeting — privacy disclosure present on every va
 
   it("custom greeting, English — disclosure still appended, custom text untouched", () => {
     const custom: InboundWhatsAppTenant = {
-      ...TEST_TENANT,
+      ...ON,
       greetingMode: "custom",
       customGreetingEn: "Yo! Thanks for texting {business_name}, what's up?",
       customGreetingEs: null,
@@ -5836,7 +5846,7 @@ describe("resolveFirstContactGreeting — privacy disclosure present on every va
 
   it("custom greeting, Spanish — disclosure still appended", () => {
     const custom: InboundWhatsAppTenant = {
-      ...TEST_TENANT,
+      ...ON,
       greetingMode: "custom",
       customGreetingEn: null,
       customGreetingEs: "¡Qué tal! Gracias por escribir a {business_name}.",
@@ -5849,7 +5859,7 @@ describe("resolveFirstContactGreeting — privacy disclosure present on every va
 
   it("custom greeting mode but empty/deleted custom text — safely falls back to recommended, still with disclosure", () => {
     const custom: InboundWhatsAppTenant = {
-      ...TEST_TENANT,
+      ...ON,
       greetingMode: "custom",
       customGreetingEn: "   ",
       customGreetingEs: null,
@@ -5866,7 +5876,7 @@ describe("resolveFirstContactGreeting — privacy disclosure present on every va
     // The disclosure describes what THIS platform does with a message —
     // it must never claim to speak for, or on behalf of, the business's
     // own privacy practices.
-    const text = resolveFirstContactGreeting(TEST_TENANT, "en", "full");
+    const text = resolveFirstContactGreeting(ON, "en", "full");
     expect(text.toLowerCase()).not.toContain("on behalf of");
     expect(text.toLowerCase()).not.toContain("covers all");
     expect(text.toLowerCase()).not.toContain("your privacy rights");
@@ -5879,13 +5889,94 @@ describe("resolveFirstContactGreeting — privacy disclosure present on every va
     // handleInboundWhatsAppMessage/handleFreshQuote) — that message is
     // never itself sent to the AI, so an unconditional "are processed"
     // claim would be false for that real, reachable path.
-    const en = resolveFirstContactGreeting(TEST_TENANT, "en", "full");
+    const en = resolveFirstContactGreeting(ON, "en", "full");
     expect(en).toContain("may be processed by AI");
     expect(en).not.toMatch(/\bare processed by AI\b/);
 
-    const es = resolveFirstContactGreeting(TEST_TENANT, "es", "full");
+    const es = resolveFirstContactGreeting(ON, "es", "full");
     expect(es).toContain("pueden ser procesados por IA");
     expect(es).not.toMatch(/\bson procesados por IA\b/);
+  });
+});
+
+describe("resolveFirstContactGreeting — default (notice off): greeting only", () => {
+  const OFF = TEST_TENANT;
+
+  it("sends exactly the recommended greeting and nothing else, English", () => {
+    expect(resolveFirstContactGreeting(OFF, "en", "full")).toBe(
+      "Hi! 👋 Thanks for reaching out to Acme Handyman. How can I help you today?",
+    );
+    expect(resolveFirstContactGreeting(OFF, "en", "short")).toBe("Hi! 👋 Thanks for reaching out to Acme Handyman.");
+  });
+
+  it("sends exactly the recommended greeting and nothing else, Spanish", () => {
+    expect(resolveFirstContactGreeting(OFF, "es", "full")).toBe(
+      "¡Hola! 👋 Gracias por contactar a Acme Handyman. ¿En qué podemos ayudarte?",
+    );
+  });
+
+  it("sends a custom greeting verbatim, and its empty-text fallback without the disclosure", () => {
+    const custom: InboundWhatsAppTenant = { ...OFF, greetingMode: "custom", customGreetingEn: "Yo! Thanks for texting {business_name}." };
+    expect(resolveFirstContactGreeting(custom, "en", "full")).toBe("Yo! Thanks for texting Acme Handyman.");
+    const blank: InboundWhatsAppTenant = { ...OFF, greetingMode: "custom", customGreetingEn: "  " };
+    expect(resolveFirstContactGreeting(blank, "en", "full")).toBe(
+      "Hi! 👋 Thanks for reaching out to Acme Handyman. How can I help you today?",
+    );
+  });
+});
+
+describe("privacy/help keyword — the notice moved out of the first message", () => {
+  async function send(tenant: InboundWhatsAppTenant, body: string) {
+    const { admin } = fakeFreshQuoteAdmin();
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(getQuoteEstimate).mockReset();
+    vi.mocked(getQuoteEstimate).mockResolvedValue(PRICED_RESULT as any);
+    const { adapter, sent } = fakeAdapter();
+    await handleInboundWhatsAppMessage({
+      tenant, fromPhone: TEST_PHONE, body, mediaRef: undefined, providerMessageId: undefined,
+      profileName: undefined, channel: "WhatsApp", adapter,
+    });
+    return sent;
+  }
+  const OFF = TEST_TENANT;
+
+  it.each(["privacy", "Privacy?", "  PRIVACY. "])("%s → the English notice with the opt-out keywords, no AI call", async (body) => {
+    const sent = await send(OFF, body);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body).toContain("may be processed by AI");
+    expect(sent[0]!.body).toContain("https://www.jobitready.com/privacy");
+    expect(sent[0]!.body).toContain("STOP or CANCELAR");
+    expect(getQuoteEstimate).not.toHaveBeenCalled();
+  });
+
+  it.each(["privacidad", "Aviso de privacidad", "PRIVACIDAD!"])("%s → the Spanish notice", async (body) => {
+    const sent = await send(OFF, body);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body).toContain("procesados por IA");
+    expect(sent[0]!.body).toContain("STOP o CANCELAR");
+  });
+
+  it.each(["help", "HELP!", "ayuda", "Ayuda"])("%s is NOT a trigger — normal conversation flow", async (body) => {
+    const sent = await send(OFF, body);
+    expect(sent.some((m) => m.body.includes("processed by AI") || m.body.includes("procesados por IA"))).toBe(false);
+  });
+
+  it("only the whole message counts — 'I need help with my sink' is ordinary conversation", async () => {
+    const sent = await send(OFF, "I need help with my leaking kitchen sink, how much to fix it?");
+    expect(sent[0]!.body).not.toContain("may be processed by AI");
+    expect(getQuoteEstimate).toHaveBeenCalled();
+  });
+
+  it("works for a shop that also switched the notice on for first contact", async () => {
+    const sent = await send({ ...TEST_TENANT, firstContactDisclosure: true }, "privacy");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body.startsWith("Messages and photos sent here may be processed by AI")).toBe(true);
+  });
+
+  it("a bare 'hi' first message gets exactly the greeting — nothing else", async () => {
+    const sent = await send(TEST_TENANT, "hi");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body).toBe("Hi! 👋 Thanks for reaching out to Acme Handyman. How can I help you today?");
   });
 });
 

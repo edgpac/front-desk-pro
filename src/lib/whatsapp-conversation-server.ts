@@ -683,10 +683,12 @@ const RECOMMENDED_GREETING_SHORT_TEMPLATE: Record<"en" | "es", string> = {
   es: "¡Hola! 👋 Gracias por contactar a {business_name}.",
 };
 
-// Appended to EVERY first-contact greeting below — the recommended
-// template (full or short) and a tenant's own custom greeting alike (see
-// resolveFirstContactGreeting) — so every customer's actual first message
-// from a tenant carries this disclosure, with no variant able to skip it.
+// Job It Ready's privacy/AI + opt-out notice. Off by default
+// (tenants.first_contact_disclosure, 0039): the first message is just the
+// greeting, and this notice is sent on request instead — see
+// PRIVACY_INFO_KEYWORDS / handlePrivacyInfoRequest. A tenant that switches
+// it back on gets it appended to EVERY first-contact greeting below — the
+// recommended template (full or short) and a custom greeting alike.
 // Deliberately a separate, always-added sentence rather than baked into
 // each template string or into a tenant's custom text: it's Job It
 // Ready's own standard notice about what THIS platform does with a
@@ -778,11 +780,61 @@ export function resolveFirstContactGreeting(
         ? RECOMMENDED_GREETING_TEMPLATE.es
         : RECOMMENDED_GREETING_TEMPLATE.en;
   const recommended = applyBusinessName(template, tenant.name, language);
+  const custom =
+    tenant.greetingMode === "custom"
+      ? (isEs(language) ? tenant.customGreetingEs : tenant.customGreetingEn)?.trim()
+      : undefined;
+  // Empty or deleted custom greeting -> safe fallback to the recommended one.
+  const greeting = custom ? applyBusinessName(custom, tenant.name, language) : recommended;
+  // With the notice off (the default) it's still available on request —
+  // see PRIVACY_INFO_KEYWORDS / handlePrivacyInfoRequest.
+  if (!tenant.firstContactDisclosure) return greeting;
   const disclosure = isEs(language) ? FIRST_CONTACT_DISCLOSURE.es : FIRST_CONTACT_DISCLOSURE.en;
-  if (tenant.greetingMode !== "custom") return `${recommended} ${disclosure}`;
-  const custom = (isEs(language) ? tenant.customGreetingEs : tenant.customGreetingEn)?.trim();
-  if (!custom) return `${recommended} ${disclosure}`; // empty or deleted custom greeting -> safe fallback
-  return `${applyBusinessName(custom, tenant.name, language)} ${disclosure}`;
+  return `${greeting} ${disclosure}`;
+}
+
+// Whole-message keywords ("help"/"ayuda" deliberately NOT included — they
+// go to the normal conversation flow) that get the privacy/AI + opt-out notice back,
+// for every tenant — whether or not it was also in their first greeting.
+// Exact match only, like the opt-out
+// keywords — "I need help with my sink" is ordinary conversation. The
+// keyword picks the reply language.
+const PRIVACY_INFO_KEYWORDS: Record<string, "en" | "es"> = {
+  privacy: "en",
+  privacidad: "es",
+  "aviso de privacidad": "es",
+};
+
+function privacyInfoLanguage(body: string): "en" | "es" | null {
+  const normalized = body
+    .trim()
+    .toLowerCase()
+    .replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "")
+    .replace(/\s+/g, " ");
+  return PRIVACY_INFO_KEYWORDS[normalized] ?? null;
+}
+
+// Returns true if the message was a privacy/help request and was answered
+// (or suppressed by the loop guard) — the caller stops processing it.
+async function handlePrivacyInfoRequest(params: {
+  admin: ReturnType<typeof getAdminClient>;
+  tenant: InboundWhatsAppTenant;
+  fromPhone: string;
+  body: string;
+  adapter: ChannelAdapter;
+}): Promise<boolean> {
+  const language = privacyInfoLanguage(params.body);
+  if (!language) return false;
+  await sendGuardedReply({
+    admin: params.admin,
+    tenant: params.tenant,
+    fromPhone: params.fromPhone,
+    adapter: params.adapter,
+    leadId: null,
+    signature: { kind: "text", text: "canned:privacy-info" },
+    messageText: FIRST_CONTACT_DISCLOSURE[language],
+  });
+  return true;
 }
 
 function localizedLostPhotoMessage(language: DetectedLanguage): string {
@@ -1336,6 +1388,10 @@ export type InboundWhatsAppTenant = {
   greetingMode: "recommended" | "custom";
   customGreetingEn: string | null;
   customGreetingEs: string | null;
+  // true = the privacy/AI + opt-out notice is also appended to the first
+  // greeting. Default false; it's always available on request
+  // (handlePrivacyInfoRequest).
+  firstContactDisclosure: boolean;
 };
 
 // Raw tenants-table row shape, as selected by meta-whatsapp-server.ts's
@@ -1353,6 +1409,7 @@ export type RawTenantRowForWhatsApp = {
   greeting_mode: string | null;
   custom_greeting_en: string | null;
   custom_greeting_es: string | null;
+  first_contact_disclosure?: boolean | null;
 };
 
 // Single shared mapping from a raw tenants-table row to the curated
@@ -1371,6 +1428,8 @@ export function toInboundWhatsAppTenant(row: RawTenantRowForWhatsApp): InboundWh
     greetingMode: row.greeting_mode === "custom" ? "custom" : "recommended",
     customGreetingEn: row.custom_greeting_en,
     customGreetingEs: row.custom_greeting_es,
+    // Off unless the tenant explicitly switched it on.
+    firstContactDisclosure: row.first_contact_disclosure === true,
   };
 }
 
@@ -1455,6 +1514,8 @@ export async function handleInboundWhatsAppMessage(params: {
     await handleLoopGuardPause({ admin, tenant, fromPhone, adapter, leadId: null });
     return;
   }
+
+  if (await handlePrivacyInfoRequest({ admin, tenant, fromPhone, body, adapter })) return;
 
   // Reinvented "check existing customer" from the original n8n templates —
   // but scoped to this tenant, and against the real leads table instead of

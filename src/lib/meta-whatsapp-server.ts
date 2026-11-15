@@ -424,7 +424,7 @@ export async function resolveActiveMetaConnection(
   const { data, error } = await admin
     .from("whatsapp_connections")
     .select(
-      "id, meta_system_user_token, tenants!inner(id, slug, name, email, currency, labor_rate, service_call_fee, service_call_fee_mode, greeting_mode, custom_greeting_en, custom_greeting_es)",
+      "id, meta_system_user_token, tenants!inner(id, slug, name, email, currency, labor_rate, service_call_fee, service_call_fee_mode, greeting_mode, custom_greeting_en, custom_greeting_es, first_contact_disclosure)",
     )
     .eq("meta_phone_number_id", phoneNumberId)
     .eq("status", "online")
