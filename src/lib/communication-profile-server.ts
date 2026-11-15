@@ -156,7 +156,9 @@ export function validateCommunicationProfileShape(
   return { ok: true, value: raw as CommunicationProfile };
 }
 
-export type ProfileVersionStatus = "pending" | "approved" | "archived" | "rejected";
+// "turned_off": the version that was active when the owner turned the
+// profile off (communication_profile_deactivations, 0040).
+export type ProfileVersionStatus = "pending" | "approved" | "archived" | "rejected" | "turned_off";
 
 export type StoredCommunicationProfileVersion = {
   version: number;
@@ -278,17 +280,20 @@ function deriveStatus(
   version: VersionRow,
   decisions: Map<number, DecisionRow>,
   activeVersion: number | null,
+  turnedOffVersion: number | null = null,
 ): ProfileVersionStatus {
   const decision = decisions.get(version.version);
   if (!decision) return "pending";
   if (decision.decision === "rejected") return "rejected";
-  return version.version === activeVersion ? "approved" : "archived";
+  if (version.version === activeVersion) return "approved";
+  return version.version === turnedOffVersion ? "turned_off" : "archived";
 }
 
 function toStored(
   version: VersionRow,
   decisions: Map<number, DecisionRow>,
   activeVersion: number | null,
+  turnedOffVersion: number | null = null,
 ): StoredCommunicationProfileVersion {
   const decision = decisions.get(version.version) ?? null;
   return {
@@ -297,7 +302,7 @@ function toStored(
     sourceImportIds: version.source_import_ids,
     restoredFromVersion: version.restored_from_version,
     createdAt: version.created_at,
-    status: deriveStatus(version, decisions, activeVersion),
+    status: deriveStatus(version, decisions, activeVersion, turnedOffVersion),
     decidedAt: decision?.decided_at ?? null,
     decidedNote: decision?.note ?? null,
   };
@@ -335,6 +340,55 @@ async function fetchAllDecisions(
   return map;
 }
 
+async function fetchDeactivatedVersions(
+  supabase: Pick<SupabaseClient, "from">,
+  tenantId: string,
+): Promise<Set<number>> {
+  const { data, error } = await supabase
+    .from("communication_profile_deactivations")
+    .select("version")
+    .eq("tenant_id", tenantId);
+  if (error) throw new Error(`Could not load communication profile state: ${error.message}`);
+  return new Set(((data ?? []) as Array<{ version: number }>).map((r) => r.version));
+}
+
+type ProfileState = {
+  versions: VersionRow[];
+  decisions: Map<number, DecisionRow>;
+  activeVersion: number | null;
+  // The latest-approved version, when the owner turned it off.
+  turnedOffVersion: number | null;
+};
+
+// One read of everything the active profile is derived from. The owner
+// turning the profile off is recorded per version (0040): the latest
+// approved version is active unless it was turned off. Each version can
+// be approved at most once (0032), so a newer approval (a new version, or
+// a restored copy of an old one) always supersedes a turn-off — no
+// timestamps compared across clocks.
+async function loadProfileState(
+  supabase: Pick<SupabaseClient, "from">,
+  tenantId: string,
+): Promise<ProfileState> {
+  const [versions, decisions, deactivated] = await Promise.all([
+    fetchAllVersions(supabase, tenantId),
+    fetchAllDecisions(supabase, tenantId),
+    fetchDeactivatedVersions(supabase, tenantId),
+  ]);
+  const latestApproved = findActiveVersion(decisions);
+  const turnedOff = latestApproved !== null && deactivated.has(latestApproved);
+  return {
+    versions,
+    decisions,
+    activeVersion: turnedOff ? null : latestApproved,
+    turnedOffVersion: turnedOff ? latestApproved : null,
+  };
+}
+
+function storedFromState(state: ProfileState, row: VersionRow): StoredCommunicationProfileVersion {
+  return toStored(row, state.decisions, state.activeVersion, state.turnedOffVersion);
+}
+
 function findActiveVersion(decisions: Map<number, DecisionRow>): number | null {
   // "The active profile" is DERIVED — the approved decision with the
   // latest decided_at — never a stored status flag. Mirrors the Phase 1
@@ -361,12 +415,8 @@ export const listCommunicationProfileVersions = createServerOnlyFn(
     supabase: Pick<SupabaseClient, "from">,
     tenantId: string,
   ): Promise<StoredCommunicationProfileVersion[]> => {
-    const [versions, decisions] = await Promise.all([
-      fetchAllVersions(supabase, tenantId),
-      fetchAllDecisions(supabase, tenantId),
-    ]);
-    const activeVersion = findActiveVersion(decisions);
-    return versions.map((v) => toStored(v, decisions, activeVersion));
+    const state = await loadProfileState(supabase, tenantId);
+    return state.versions.map((v) => storedFromState(state, v));
   },
 );
 
@@ -376,14 +426,9 @@ export const getCommunicationProfileVersion = createServerOnlyFn(
     tenantId: string,
     version: number,
   ): Promise<StoredCommunicationProfileVersion | null> => {
-    const [versions, decisions] = await Promise.all([
-      fetchAllVersions(supabase, tenantId),
-      fetchAllDecisions(supabase, tenantId),
-    ]);
-    const row = versions.find((v) => v.version === version);
-    if (!row) return null;
-    const activeVersion = findActiveVersion(decisions);
-    return toStored(row, decisions, activeVersion);
+    const state = await loadProfileState(supabase, tenantId);
+    const row = state.versions.find((v) => v.version === version);
+    return row ? storedFromState(state, row) : null;
   },
 );
 
@@ -392,15 +437,10 @@ export const getActiveCommunicationProfile = createServerOnlyFn(
     supabase: Pick<SupabaseClient, "from">,
     tenantId: string,
   ): Promise<StoredCommunicationProfileVersion | null> => {
-    const [versions, decisions] = await Promise.all([
-      fetchAllVersions(supabase, tenantId),
-      fetchAllDecisions(supabase, tenantId),
-    ]);
-    const activeVersion = findActiveVersion(decisions);
-    if (activeVersion === null) return null;
-    const row = versions.find((v) => v.version === activeVersion);
-    if (!row) return null;
-    return toStored(row, decisions, activeVersion);
+    const state = await loadProfileState(supabase, tenantId);
+    if (state.activeVersion === null) return null;
+    const row = state.versions.find((v) => v.version === state.activeVersion);
+    return row ? storedFromState(state, row) : null;
   },
 );
 
@@ -409,16 +449,11 @@ export const getPendingCommunicationProfileDraft = createServerOnlyFn(
     supabase: Pick<SupabaseClient, "from">,
     tenantId: string,
   ): Promise<StoredCommunicationProfileVersion | null> => {
-    const [versions, decisions] = await Promise.all([
-      fetchAllVersions(supabase, tenantId),
-      fetchAllDecisions(supabase, tenantId),
-    ]);
-    const undecided = versions
-      .filter((v) => !decisions.has(v.version))
+    const state = await loadProfileState(supabase, tenantId);
+    const undecided = state.versions
+      .filter((v) => !state.decisions.has(v.version))
       .sort((a, b) => b.version - a.version);
-    if (undecided.length === 0) return null;
-    const activeVersion = findActiveVersion(decisions);
-    return toStored(undecided[0]!, decisions, activeVersion);
+    return undecided.length === 0 ? null : storedFromState(state, undecided[0]!);
   },
 );
 
@@ -558,13 +593,8 @@ export const recordCommunicationProfileDecision = createServerOnlyFn(
       throw new Error(`Could not record the decision: ${insertError.message}`);
     }
 
-    const [versions, decisions] = await Promise.all([
-      fetchAllVersions(supabase, tenantId),
-      fetchAllDecisions(supabase, tenantId),
-    ]);
-    const row = versions.find((v) => v.version === input.version)!;
-    const activeVersion = findActiveVersion(decisions);
-    return toStored(row, decisions, activeVersion);
+    const state = await loadProfileState(supabase, tenantId);
+    return storedFromState(state, state.versions.find((v) => v.version === input.version)!);
   },
 );
 
@@ -607,6 +637,62 @@ export const reviseCommunicationProfileDraft = createServerOnlyFn(
       note: `Superseded by owner edit (version ${created.version}).`,
     });
     return created;
+  },
+);
+
+// Turns the active profile off: records the currently active version as
+// turned off (0040), so no profile is active until the owner approves a
+// new version or switches back to an older one. History is untouched.
+export const deactivateCommunicationProfile = createServerOnlyFn(
+  async (supabase: Pick<SupabaseClient, "from">, tenantId: string): Promise<void> => {
+    const state = await loadProfileState(supabase, tenantId);
+    if (state.activeVersion === null) {
+      throw new Error("There is no active communication profile to turn off.");
+    }
+    const { error } = await supabase
+      .from("communication_profile_deactivations")
+      .insert({ tenant_id: tenantId, version: state.activeVersion });
+    // A concurrent turn-off of the same version already did the job.
+    if (error && !isUniqueViolation(error)) {
+      throw new Error(`Could not turn off the communication profile: ${error.message}`);
+    }
+  },
+);
+
+export type RestoreCommunicationProfileVersionInput = { version: number };
+
+// Switches back to an older version. Versions and decisions are
+// write-once (0031/0032) and a version can be approved only once, so the
+// older version's profile is copied into a NEW version (restored_from_
+// version set) and that copy is approved — making it the active one,
+// including after a turn-off. Only a version the owner approved at some
+// point can come back; a rejected or undecided draft never can.
+export const restoreCommunicationProfileVersion = createServerOnlyFn(
+  async (
+    supabase: Pick<SupabaseClient, "from">,
+    tenantId: string,
+    input: RestoreCommunicationProfileVersionInput,
+  ): Promise<StoredCommunicationProfileVersion> => {
+    const state = await loadProfileState(supabase, tenantId);
+    const source = state.versions.find((v) => v.version === input.version);
+    if (!source) throw new CommunicationProfileNotFoundError(input.version);
+    if (state.decisions.get(input.version)?.decision !== "approved") {
+      throw new Error("Only a previously approved version can be switched back to.");
+    }
+    if (state.activeVersion === input.version) {
+      throw new Error(`Version ${input.version} is already active.`);
+    }
+
+    const created = await createCommunicationProfileVersion(supabase, tenantId, {
+      profile: source.profile_json,
+      sourceImportIds: source.source_import_ids,
+      restoredFromVersion: input.version,
+    });
+    return recordCommunicationProfileDecision(supabase, tenantId, {
+      version: created.version,
+      decision: "approved",
+      note: `Restored from version ${input.version}.`,
+    });
   },
 );
 
@@ -661,4 +747,20 @@ export const reviseMyCommunicationProfileDraft = createServerFn({ method: "POST"
   .handler(async ({ context, data }) => {
     const tenantId = await getTenantId(context.supabase, context.userId);
     return reviseCommunicationProfileDraft(context.supabase, tenantId, data);
+  });
+
+export const deactivateMyCommunicationProfile = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    const tenantId = await getTenantId(context.supabase, context.userId);
+    await deactivateCommunicationProfile(context.supabase, tenantId);
+    return { ok: true as const };
+  });
+
+export const restoreMyCommunicationProfileVersion = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .validator((input: RestoreCommunicationProfileVersionInput) => input)
+  .handler(async ({ context, data }) => {
+    const tenantId = await getTenantId(context.supabase, context.userId);
+    return restoreCommunicationProfileVersion(context.supabase, tenantId, data);
   });

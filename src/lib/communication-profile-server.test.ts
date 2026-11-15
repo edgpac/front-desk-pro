@@ -12,7 +12,9 @@ import {
   getPendingCommunicationProfileDraft,
   getTenantId,
   listCommunicationProfileVersions,
+  deactivateCommunicationProfile,
   recordCommunicationProfileDecision,
+  restoreCommunicationProfileVersion,
   reviseCommunicationProfileDraft,
   validateCommunicationProfileShape,
 } from "./communication-profile-server";
@@ -51,6 +53,8 @@ function fakeTable(
     // won" — so a subsequent SELECT (the retry's re-read) sees it, the
     // same way a real re-read would see the real winning row.
     insertErrorConflictingRow?: Row;
+    // Column defaults the real table fills on insert (e.g. decided_at).
+    insertDefaults?: () => Row;
   } = {},
 ) {
   const calls: Array<{ op: "select" | "insert"; filters: Record<string, unknown> }> = [];
@@ -111,7 +115,7 @@ function fakeTable(
           insertFailed = true;
           if (opts.insertErrorConflictingRow) rows.push(opts.insertErrorConflictingRow);
         } else {
-          rows.push(row);
+          rows.push(opts.insertDefaults ? { ...opts.insertDefaults(), ...row } : row);
         }
         calls.push({ op: "insert", filters: { ...row } });
         return api;
@@ -153,6 +157,9 @@ function fakeTable(
 function fakeClient(
   tables: Record<string, ReturnType<typeof fakeTable>>,
 ): Pick<SupabaseClient, "from"> {
+  // Every read derives the active profile, which also consults the
+  // turned-off versions; tests that don't care get an empty table.
+  tables["communication_profile_deactivations"] ??= fakeTable([]);
   return {
     from: (table: string) => {
       const t = tables[table];
@@ -824,6 +831,87 @@ describe("reviseCommunicationProfileDraft", () => {
     ).rejects.toThrow(InvalidCommunicationProfileError);
     expect(versions.rows).toHaveLength(1);
     expect(decisions.rows).toHaveLength(0);
+  });
+});
+
+describe("turning the profile off and switching back to an older version", () => {
+  function versionRow(version: number, value: string, extra: Row = {}): Row {
+    return {
+      tenant_id: "tenant-A",
+      version,
+      profile_json: { toneAndStyle: strField(value) },
+      source_import_ids: ["import-1"],
+      restored_from_version: null,
+      created_at: `t${version}`,
+      ...extra,
+    };
+  }
+  // v1 rejected, v2 approved then replaced by v3 (active).
+  function history(deactivated: Row[] = []) {
+    const versions = fakeTable([versionRow(1, "bad"), versionRow(2, "older"), versionRow(3, "current")]);
+    const decisions = fakeTable([
+      { tenant_id: "tenant-A", version: 1, decision: "rejected", note: null, decided_at: "d1" },
+      { tenant_id: "tenant-A", version: 2, decision: "approved", note: null, decided_at: "d2" },
+      { tenant_id: "tenant-A", version: 3, decision: "approved", note: null, decided_at: "d3" },
+    ], { insertDefaults: () => ({ decided_at: `d9-${Date.now()}` }) });
+    const deactivations = fakeTable(deactivated);
+    const client = fakeClient({
+      communication_profile_versions: versions,
+      communication_profile_decisions: decisions,
+      communication_profile_deactivations: deactivations,
+    });
+    return { versions, decisions, deactivations, client };
+  }
+
+  it("turning off leaves no active profile and marks the last active version turned_off", async () => {
+    const { deactivations, client } = history();
+    await deactivateCommunicationProfile(client, "tenant-A");
+    expect(deactivations.rows).toEqual([expect.objectContaining({ tenant_id: "tenant-A", version: 3 })]);
+    expect(await getActiveCommunicationProfile(client, "tenant-A")).toBeNull();
+    const statuses = (await listCommunicationProfileVersions(client, "tenant-A")).map((v) => v.status);
+    expect(statuses).toEqual(["rejected", "archived", "turned_off"]);
+  });
+
+  it("refuses to turn off when no profile is active", async () => {
+    const { client } = history([{ tenant_id: "tenant-A", version: 3 }]);
+    await expect(deactivateCommunicationProfile(client, "tenant-A")).rejects.toThrow(/no active/i);
+  });
+
+  it("switching back copies the older version into a new, active version", async () => {
+    const { versions, decisions, client } = history();
+    const restored = await restoreCommunicationProfileVersion(client, "tenant-A", { version: 2 });
+    expect(restored).toMatchObject({ version: 4, restoredFromVersion: 2, status: "approved" });
+    expect(versions.rows[3]).toMatchObject({
+      version: 4,
+      restored_from_version: 2,
+      profile_json: { toneAndStyle: strField("older") },
+    });
+    expect(decisions.rows.at(-1)).toMatchObject({ version: 4, decision: "approved", note: "Restored from version 2." });
+  });
+
+  it("switching back after turning off makes that version active again", async () => {
+    const { client } = history([{ tenant_id: "tenant-A", version: 3 }]);
+    await restoreCommunicationProfileVersion(client, "tenant-A", { version: 3 });
+    const active = await getActiveCommunicationProfile(client, "tenant-A");
+    expect(active).toMatchObject({ version: 4, restoredFromVersion: 3 });
+  });
+
+  it("never restores a rejected or never-decided version", async () => {
+    const { versions, client } = history();
+    await expect(restoreCommunicationProfileVersion(client, "tenant-A", { version: 1 })).rejects.toThrow(
+      /only a previously approved version/i,
+    );
+    await expect(restoreCommunicationProfileVersion(client, "tenant-A", { version: 9 })).rejects.toThrow(
+      CommunicationProfileNotFoundError,
+    );
+    expect(versions.rows).toHaveLength(3);
+  });
+
+  it("refuses to restore the version that is already active", async () => {
+    const { client } = history();
+    await expect(restoreCommunicationProfileVersion(client, "tenant-A", { version: 3 })).rejects.toThrow(
+      /already active/i,
+    );
   });
 });
 

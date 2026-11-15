@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { useAuth } from "@/lib/use-auth";
 import { ProfileDraftEditor } from "@/components/jir-chat/ProfileDraftEditor";
+import { ProfileVersionHistory } from "@/components/jir-chat/ProfileVersionHistory";
 
 import { getMyWhatsAppOwnerAliases, updateMyWhatsAppOwnerAliases } from "@/lib/tenant-server";
 import {
@@ -37,6 +38,7 @@ import {
   getMyActiveCommunicationProfile,
   getMyPendingCommunicationProfileDraft,
   recordMyCommunicationProfileDecision,
+  deactivateMyCommunicationProfile,
   type StoredCommunicationProfileVersion,
 } from "@/lib/communication-profile-server";
 import {
@@ -50,7 +52,6 @@ import {
 import {
   assessImportPreview,
   describeDeletionImpact,
-  profileVersionStatusLabel,
   roleLabel,
   pluralize,
 } from "@/lib/jir-chat-ui";
@@ -670,6 +671,20 @@ function ProfileSection({
   const [generating, setGenerating] = useState(false);
   const [deciding, setDeciding] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [turningOff, setTurningOff] = useState(false);
+
+  async function handleTurnOff() {
+    setTurningOff(true);
+    try {
+      await deactivateMyCommunicationProfile();
+      toast.success("Profile turned off. Switch to any version below to turn it back on.");
+      onDecided();
+    } catch (err) {
+      toast.error(errorMessage(err, "Could not turn off the profile."));
+    } finally {
+      setTurningOff(false);
+    }
+  }
 
   async function handleGenerate() {
     setGenerating(true);
@@ -790,39 +805,40 @@ function ProfileSection({
 
       {activeProfile && (
         <div className="mb-4">
-          <p className="label-caps mb-2 text-success">Active — version {activeProfile.version}</p>
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <p className="label-caps text-success">Active — version {activeProfile.version}</p>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={handleTurnOff}
+              disabled={turningOff}
+            >
+              {turningOff && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+              Turn off profile
+            </Button>
+          </div>
           <ProfileFieldsDisplay profile={activeProfile.profile} />
         </div>
       )}
 
-      {!activeProfile && !pendingDraft && hasImports && (
+      {!activeProfile && versions.some((v) => v.status === "turned_off") && (
+        <p className="mb-3 text-sm text-muted-foreground">
+          Your communication profile is turned off. Switch to a version below to turn it back on.
+        </p>
+      )}
+
+      {!activeProfile &&
+        !pendingDraft &&
+        hasImports &&
+        !versions.some((v) => v.status === "turned_off") && (
         <p className="mb-3 text-sm text-muted-foreground">
           No communication profile yet. Generate a proposal above once you&apos;ve imported a
           conversation.
         </p>
       )}
 
-      {versions.length > 0 && (
-        <div>
-          <p className="label-caps mb-2 text-muted-foreground">Version history</p>
-          <ul className="space-y-1 text-sm">
-            {versions
-              .slice()
-              .reverse()
-              .map((v) => (
-                <li
-                  key={v.version}
-                  className="flex items-center justify-between border-b border-border py-1"
-                >
-                  <span>Version {v.version}</span>
-                  <span className="text-xs text-muted-foreground">
-                    {profileVersionStatusLabel(v.status)}
-                  </span>
-                </li>
-              ))}
-          </ul>
-        </div>
-      )}
+      <ProfileVersionHistory versions={versions} onRestored={onDecided} />
     </Panel>
   );
 }

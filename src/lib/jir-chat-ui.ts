@@ -60,6 +60,7 @@ const STATUS_LABELS: Record<ProfileVersionStatus, string> = {
   pending: "Awaiting your review",
   approved: "Active",
   archived: "Replaced by a newer version",
+  turned_off: "Turned off",
   rejected: "Rejected",
 };
 

@@ -136,6 +136,7 @@ function emptyGenerationTables() {
     whatsapp_import_messages: fakeTable([]),
     communication_profile_versions: fakeTable([]),
     communication_profile_decisions: fakeTable([]),
+    communication_profile_deactivations: fakeTable([]),
   };
 }
 
