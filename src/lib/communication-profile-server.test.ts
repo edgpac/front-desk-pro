@@ -13,6 +13,7 @@ import {
   getTenantId,
   listCommunicationProfileVersions,
   recordCommunicationProfileDecision,
+  reviseCommunicationProfileDraft,
   validateCommunicationProfileShape,
 } from "./communication-profile-server";
 import type { CommunicationProfile, ProfileFieldValue } from "./communication-profile";
@@ -770,6 +771,59 @@ describe("recordCommunicationProfileDecision", () => {
     await expect(
       recordCommunicationProfileDecision(client, "tenant-A", { version: 1, decision: "approved" }),
     ).rejects.toThrow(/connection reset/);
+  });
+});
+
+describe("reviseCommunicationProfileDraft", () => {
+  function draftTables(decided: Row[] = []) {
+    const versions = fakeTable([
+      {
+        tenant_id: "tenant-A",
+        version: 1,
+        profile_json: VALID_PROFILE,
+        source_import_ids: ["import-1"],
+        restored_from_version: null,
+        created_at: "t1",
+      },
+    ]);
+    const decisions = fakeTable(decided);
+    const client = fakeClient({
+      communication_profile_versions: versions,
+      communication_profile_decisions: decisions,
+    });
+    return { versions, decisions, client };
+  }
+  const EDITED: CommunicationProfile = {
+    toneAndStyle: { value: "Warm", source: "owner_stated", confidence: "high", evidence: [] },
+  };
+
+  it("saves the edit as a new pending version and marks the old draft superseded", async () => {
+    const { versions, decisions, client } = draftTables();
+    const result = await reviseCommunicationProfileDraft(client, "tenant-A", { baseVersion: 1, profile: EDITED });
+    expect(result.version).toBe(2);
+    expect(result.status).toBe("pending");
+    expect(versions.rows[1]).toMatchObject({ version: 2, source_import_ids: ["import-1"] });
+    expect(decisions.rows).toEqual([
+      expect.objectContaining({ version: 1, decision: "rejected", note: "Superseded by owner edit (version 2)." }),
+    ]);
+    expect((await getPendingCommunicationProfileDraft(client, "tenant-A"))?.version).toBe(2);
+  });
+
+  it("refuses to revise a version that is not the current pending draft", async () => {
+    const { versions, client } = draftTables([{ tenant_id: "tenant-A", version: 1, decision: "rejected", decided_at: "t2" }]);
+    await expect(
+      reviseCommunicationProfileDraft(client, "tenant-A", { baseVersion: 1, profile: EDITED }),
+    ).rejects.toThrow(CommunicationProfileAlreadyDecidedError);
+    expect(versions.rows).toHaveLength(1);
+  });
+
+  it("rejects an invalid edited profile without writing anything", async () => {
+    const { versions, decisions, client } = draftTables();
+    await expect(
+      reviseCommunicationProfileDraft(client, "tenant-A", { baseVersion: 1, profile: { bogus: 1 } }),
+    ).rejects.toThrow(InvalidCommunicationProfileError);
+    expect(versions.rows).toHaveLength(1);
+    expect(decisions.rows).toHaveLength(0);
   });
 });
 

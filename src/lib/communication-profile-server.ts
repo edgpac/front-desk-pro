@@ -569,6 +569,47 @@ export const recordCommunicationProfileDecision = createServerOnlyFn(
 );
 
 // ---------------------------------------------------------------------------
+export type ReviseCommunicationProfileDraftInput = {
+  baseVersion: number;
+  profile: unknown;
+};
+
+// The owner edited the pending draft before approving it. Versions are
+// write-once (0031), so the edit becomes a NEW pending version and the
+// draft it replaces is recorded as rejected with a "superseded" note —
+// leaving exactly one pending draft. Only the CURRENT pending draft can
+// be revised; anything else (already decided, or a newer draft exists)
+// throws before writing. The new version is written first: if recording
+// the superseded decision then fails, the newer draft still wins as the
+// pending one (getPendingCommunicationProfileDraft takes the latest
+// undecided version), so nothing is lost.
+export const reviseCommunicationProfileDraft = createServerOnlyFn(
+  async (
+    supabase: Pick<SupabaseClient, "from">,
+    tenantId: string,
+    input: ReviseCommunicationProfileDraftInput,
+  ): Promise<StoredCommunicationProfileVersion> => {
+    const validation = validateCommunicationProfileShape(input.profile);
+    if (!validation.ok) throw new InvalidCommunicationProfileError(validation.errors);
+
+    const pending = await getPendingCommunicationProfileDraft(supabase, tenantId);
+    if (!pending || pending.version !== input.baseVersion) {
+      throw new CommunicationProfileAlreadyDecidedError(input.baseVersion, "superseded");
+    }
+
+    const created = await createCommunicationProfileVersion(supabase, tenantId, {
+      profile: validation.value,
+      sourceImportIds: pending.sourceImportIds,
+    });
+    await recordCommunicationProfileDecision(supabase, tenantId, {
+      version: input.baseVersion,
+      decision: "rejected",
+      note: `Superseded by owner edit (version ${created.version}).`,
+    });
+    return created;
+  },
+);
+
 // createServerFn wrappers — the only client-facing RPC surface. Every one
 // resolves tenantId from the authenticated session via requireSupabaseAuth
 // + getTenantId, exactly like every other dashboard feature in this
@@ -612,4 +653,12 @@ export const recordMyCommunicationProfileDecision = createServerFn({ method: "PO
   .handler(async ({ context, data }) => {
     const tenantId = await getTenantId(context.supabase, context.userId);
     return recordCommunicationProfileDecision(context.supabase, tenantId, data);
+  });
+
+export const reviseMyCommunicationProfileDraft = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .validator((input: ReviseCommunicationProfileDraftInput) => input)
+  .handler(async ({ context, data }) => {
+    const tenantId = await getTenantId(context.supabase, context.userId);
+    return reviseCommunicationProfileDraft(context.supabase, tenantId, data);
   });

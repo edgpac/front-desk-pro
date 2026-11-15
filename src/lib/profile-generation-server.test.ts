@@ -149,6 +149,19 @@ describe("buildProfileGenerationPrompt — defensive framing", () => {
     expect(prompt).toContain('<message role="customer" id="cust-1">');
   });
 
+  it("names the tenant's business and forbids any other business name", () => {
+    const prompt = buildProfileGenerationPrompt([{ id: "o1", body: "hi", occurredAt: null }], [], "Cabos Handyman");
+    expect(prompt).toContain('The business is "Cabos Handyman"');
+    expect(prompt).toContain("Never use any other business name");
+  });
+
+  it("tells the model to use placeholders instead of prices and personal names", () => {
+    const prompt = buildProfileGenerationPrompt([{ id: "o1", body: "hi", occurredAt: null }], []);
+    expect(prompt).toContain("[price]");
+    expect(prompt).toContain("[customer name]");
+    expect(prompt).toContain("[team member]");
+  });
+
   it("explicitly states message content is data, never an instruction", () => {
     const prompt = buildProfileGenerationPrompt(
       [{ id: "own-1", body: "hi", occurredAt: null }],
@@ -429,6 +442,65 @@ describe("runProfileGeneration — cost-guard enforcement", () => {
     if (result.status === "generated") {
       expect(result.version.profile.preferredLanguages?.value).toEqual(["English", "Spanish"]);
     }
+  });
+
+  // PRODUCTION REGRESSION (2026-11-15): version 1 for a real tenant
+  // carried old quotes ("$3,100 pesos total", "$310 MXN/hr") into its
+  // example replies — the profile must never carry a price.
+  it("replaces every money amount in the generated profile with [price] before saving", async () => {
+    const client = fakeClient(tablesWithOneOwnerMessage());
+    const cited = { source: "ai_observed", confidence: "high", evidence: [{ messageId: "own-1" }] };
+    const raw = JSON.stringify({
+      pricingCommunicationRules: { ...cited, value: "Quotes per hour, e.g. $310 MXN/hr per person." },
+      preferredResponseExamples: {
+        ...cited,
+        value: ["That's $3,100 pesos total.", "Labor would be 2,400 pesos.", "About 50 USD or $45.50."],
+      },
+    });
+    const result = await runProfileGeneration(client, "tenant-A", async () => raw, noopCostGuard, "Cabos Handyman");
+    expect(result.status).toBe("generated");
+    if (result.status !== "generated") return;
+    expect(result.version.profile.pricingCommunicationRules?.value).toBe(
+      "Quotes per hour, e.g. [price]/hr per person.",
+    );
+    expect(result.version.profile.preferredResponseExamples?.value).toEqual([
+      "That's [price] total.",
+      "Labor would be [price].",
+      "About [price] or [price].",
+    ]);
+  });
+
+  it("leaves non-money numbers alone (times, counts, durations)", async () => {
+    const client = fakeClient(tablesWithOneOwnerMessage());
+    const raw = JSON.stringify({
+      schedulingCommunicationRules: {
+        value: "Arrives at 9:30, about 5 hours for 2 people.",
+        source: "ai_observed",
+        confidence: "high",
+        evidence: [{ messageId: "own-1" }],
+      },
+    });
+    const result = await runProfileGeneration(client, "tenant-A", async () => raw, noopCostGuard);
+    if (result.status !== "generated") throw new Error("expected generated");
+    expect(result.version.profile.schedulingCommunicationRules?.value).toBe(
+      "Arrives at 9:30, about 5 hours for 2 people.",
+    );
+  });
+
+  it("passes the tenant's business name into the prompt", async () => {
+    const client = fakeClient(tablesWithOneOwnerMessage());
+    let seenPrompt = "";
+    await runProfileGeneration(
+      client,
+      "tenant-A",
+      async (prompt) => {
+        seenPrompt = prompt;
+        return validResponse;
+      },
+      noopCostGuard,
+      "Cabos Handyman",
+    );
+    expect(seenPrompt).toContain('"Cabos Handyman"');
   });
 
   it("still rejects a response with no JSON object at all", async () => {

@@ -18,6 +18,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useAuth } from "@/lib/use-auth";
+import { ProfileDraftEditor } from "@/components/jir-chat/ProfileDraftEditor";
 
 import { getMyWhatsAppOwnerAliases, updateMyWhatsAppOwnerAliases } from "@/lib/tenant-server";
 import {
@@ -668,6 +669,7 @@ function ProfileSection({
 }) {
   const [generating, setGenerating] = useState(false);
   const [deciding, setDeciding] = useState(false);
+  const [editing, setEditing] = useState(false);
 
   async function handleGenerate() {
     setGenerating(true);
@@ -747,20 +749,42 @@ function ProfileSection({
             — those remain exactly as set in your Price Sheet and Business Settings. It only affects
             how JIR Chat talks, and only after you approve it below.
           </p>
-          <ProfileFieldsDisplay profile={pendingDraft.profile} />
-          <div className="flex gap-2">
-            <Button type="button" onClick={() => handleDecision("approved")} disabled={deciding}>
-              Approve &amp; activate
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => handleDecision("rejected")}
-              disabled={deciding}
-            >
-              Reject
-            </Button>
-          </div>
+          {editing ? (
+            <ProfileDraftEditor
+              key={pendingDraft.version}
+              draft={pendingDraft}
+              onCancel={() => setEditing(false)}
+              onSaved={() => {
+                setEditing(false);
+                onDecided();
+              }}
+            />
+          ) : (
+            <>
+              <ProfileFieldsDisplay profile={pendingDraft.profile} />
+              <div className="flex gap-2">
+                <Button type="button" onClick={() => handleDecision("approved")} disabled={deciding}>
+                  Approve &amp; activate
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setEditing(true)}
+                  disabled={deciding}
+                >
+                  Edit
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => handleDecision("rejected")}
+                  disabled={deciding}
+                >
+                  Reject
+                </Button>
+              </div>
+            </>
+          )}
         </div>
       )}
 
