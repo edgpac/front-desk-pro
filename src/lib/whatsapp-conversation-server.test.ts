@@ -958,6 +958,11 @@ function fakeInboundAdmin(config: {
   // genuinely exercise the no-prior-interaction case (together with
   // openLead: null).
   hadPriorInboundInteraction?: boolean;
+  // Whether an automated reply already went out to this phone within the
+  // window hasOutboundInteractionSince asks about — simulates a concurrent
+  // handler for another message from the same phone having just replied.
+  // Defaults to false.
+  recentOutboundReply?: boolean;
   // What attemptConversationResume's own secondary "any lead at all in the
   // 14-day window" existence check should report — independent of
   // resumeCandidates (which is filtered to RESUMABLE_STATUSES only).
@@ -1077,15 +1082,26 @@ function fakeInboundAdmin(config: {
         // code asked for.
         const outboundCount = config.outboundInteractionCount ?? 1;
         const hadPriorInbound = config.hadPriorInboundInteraction ?? true;
+        // Single-row reads are told apart by their direction filter:
+        // inbound is hasPriorInboundInteraction, outbound is
+        // hasOutboundInteractionSince (recentOutboundReply, default false).
+        let direction: unknown = null;
         const chain: Record<string, unknown> = {
-          eq: () => chain,
+          eq: (column: string, value: unknown) => {
+            if (column === "direction") direction = value;
+            return chain;
+          },
           gte: () => chain,
           limit: (n: number) => ({
             ...chain,
             then: (resolve: (v: { data: unknown[]; error: null }) => void) =>
               resolve({ data: Array(Math.min(outboundCount, n)).fill({ id: "evt-1" }), error: null }),
           }),
-          maybeSingle: async () => ({ data: hadPriorInbound ? { id: "evt-1" } : null, error: null }),
+          maybeSingle: async () => {
+            const found =
+              direction === "outbound" ? Boolean(config.recentOutboundReply) : hadPriorInbound;
+            return { data: found ? { id: "evt-1" } : null, error: null };
+          },
         };
         return { select: () => chain };
       }
@@ -2064,6 +2080,74 @@ describe("quote price line wording — industry-neutral diagnosis-fee phrasing (
 // hadPriorInboundInteraction/anyPriorLeadInExtendedWindow fields (Fix 3) to
 // genuinely exercise all three cases, rather than the pre-existing
 // fixture default that made isFirstContact unconditionally false.
+// PRODUCTION REGRESSION (2026-11-15): a forwarded voice note arrived as two
+// separate Meta messages 36 ms apart. Both had no text and no photo, both
+// were handled concurrently, both saw "no prior contact", and the customer
+// got the first-contact greeting twice. The short-message path now takes
+// the same per-phone claim as the new-lead path.
+describe("handleInboundWhatsAppMessage — concurrent short messages from one phone get one reply", () => {
+  const voiceNote = (adapter: ChannelAdapter) =>
+    handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "",
+      mediaRef: undefined,
+      providerMessageId: "wamid.voice-2",
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+  it("another message from the same phone is being answered right now (claim lost) — no second reply", async () => {
+    const { admin, calls } = fakeInboundAdmin({
+      openLead: null,
+      leadSlotClaimSucceeds: false,
+      hadPriorInboundInteraction: false,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    const { adapter, sent } = fakeAdapter();
+
+    await voiceNote(adapter);
+
+    expect(sent).toHaveLength(0);
+    expect(calls.claimAttempts).toBe(1);
+    expect(calls.releaseAttempts).toBe(0);
+  });
+
+  it("the other message's reply already went out seconds ago (claim won after it finished) — no second reply", async () => {
+    const { admin, calls } = fakeInboundAdmin({
+      openLead: null,
+      leadSlotClaimSucceeds: true,
+      hadPriorInboundInteraction: false,
+      recentOutboundReply: true,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    const { adapter, sent } = fakeAdapter();
+
+    await voiceNote(adapter);
+
+    expect(sent).toHaveLength(0);
+    expect(calls.releaseAttempts).toBe(1);
+  });
+
+  it("a lone short message still gets the first-contact greeting, and the claim is released", async () => {
+    const { admin, calls } = fakeInboundAdmin({
+      openLead: null,
+      leadSlotClaimSucceeds: true,
+      hadPriorInboundInteraction: false,
+    });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    const { adapter, sent } = fakeAdapter();
+
+    await voiceNote(adapter);
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body).toContain("How can I help you today?");
+    expect(calls.claimAttempts).toBe(1);
+    expect(calls.releaseAttempts).toBe(1);
+  });
+});
+
 describe("handleInboundWhatsAppMessage — first-contact greeting correctly reflects the 14-day history signal", () => {
   const FIRST_CONTACT_PHRASE = "How can I help you today?";
   const RETURNING_GREETING_PHRASE = "To get you a fast, accurate price";
@@ -4363,6 +4447,14 @@ function fakeOptOutAdmin(config: { row?: FakeOptOutRow } = {}) {
           error: null,
         };
       }
+      // Same permissive posture for the per-phone claim the short-message
+      // and new-lead paths take: always granted.
+      if (name === "claim_whatsapp_lead_slot") {
+        return { data: true, error: null };
+      }
+      if (name === "release_whatsapp_lead_slot") {
+        return { data: null, error: null };
+      }
       throw new Error(`fakeOptOutAdmin: unexpected rpc "${name}"`);
     },
     from: (table: string) => {
@@ -4433,7 +4525,9 @@ function fakeOptOutAdmin(config: { row?: FakeOptOutRow } = {}) {
 // text. Also covers the related evidence-language defect: the closing
 // line claimed "based on the photos" even on a text-only conversation that
 // never sent one.
-function fakeFreshQuoteAdmin(config: { priorInboundInteraction?: boolean } = {}) {
+function fakeFreshQuoteAdmin(
+  config: { priorInboundInteraction?: boolean; recentOutboundReply?: boolean } = {},
+) {
   const calls = {
     leadMessageInserts: [] as Array<{ lead_id: string; role: string; body: string }>,
   };
@@ -4513,12 +4607,22 @@ function fakeFreshQuoteAdmin(config: { priorInboundInteraction?: boolean } = {})
         // this signal exists to close: a phone that already sent a thin,
         // lead-less message (so "leads" above still correctly returns no
         // open lead) but has messaged before within the window.
+        // recentOutboundReply answers hasOutboundInteractionSince (the
+        // outbound-direction read); everything else is the inbound check.
+        let direction: unknown = null;
         const chain: Record<string, unknown> = {
-          eq: () => chain,
+          eq: (column: string, value: unknown) => {
+            if (column === "direction") direction = value;
+            return chain;
+          },
           gte: () => chain,
           limit: () => chain,
           maybeSingle: async () => ({
-            data: config.priorInboundInteraction ? { id: "evt-1" } : null,
+            data: (
+              direction === "outbound" ? config.recentOutboundReply : config.priorInboundInteraction
+            )
+              ? { id: "evt-1" }
+              : null,
             error: null,
           }),
         };
@@ -5352,6 +5456,35 @@ describe("WhatsApp first-contact greeting", () => {
     // Short greeting again — real content was in the first message.
     expect(sent[0]!.body.startsWith("Hi! 👋 Thanks for reaching out to")).toBe(true);
     expect(sent[0]!.body).not.toContain("How can I help you today?");
+  });
+});
+
+describe("WhatsApp first-contact greeting — a concurrent reply already went out", () => {
+  beforeEach(() => {
+    vi.mocked(getQuoteEstimate).mockClear();
+    vi.mocked(createLead).mockClear();
+    vi.mocked(createLead).mockResolvedValue({ id: "new-lead-1" } as any);
+  });
+
+  it("a substantive message handled right after another message from the same phone was answered is not greeted as a first contact again", async () => {
+    const { admin } = fakeFreshQuoteAdmin({ recentOutboundReply: true });
+    vi.mocked(getAdminClient).mockReturnValue(admin);
+    vi.mocked(getQuoteEstimate).mockResolvedValue(PRICED_RESULT as any);
+    const { adapter, sent } = fakeAdapter();
+
+    await handleInboundWhatsAppMessage({
+      tenant: TEST_TENANT,
+      fromPhone: TEST_PHONE,
+      body: "My water heater is leaking from the bottom, how much to replace it?",
+      mediaRef: undefined,
+      providerMessageId: "wamid.second",
+      profileName: undefined,
+      channel: "WhatsApp",
+      adapter,
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.body).not.toContain("Hi! 👋 Thanks for reaching out to");
   });
 });
 

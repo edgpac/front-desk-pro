@@ -197,6 +197,28 @@ export async function hasPriorInboundInteraction(
   return data != null;
 }
 
+// "Did an automated reply already go out to this phone since sinceMs ago?"
+// Checked while holding the per-phone claim, so a handler that won the
+// claim only after a concurrent one finished can see that reply and not
+// send a second greeting. A read error answers false (send as normal).
+export async function hasOutboundInteractionSince(
+  admin: AdminClient,
+  tenantId: string,
+  phone: string,
+  sinceMs: number,
+): Promise<boolean> {
+  const { data } = await admin
+    .from("whatsapp_interaction_events")
+    .select("id")
+    .eq("tenant_id", tenantId)
+    .eq("phone", phone)
+    .eq("direction", "outbound")
+    .gte("occurred_at", new Date(Date.now() - sinceMs).toISOString())
+    .limit(1)
+    .maybeSingle();
+  return data != null;
+}
+
 // Durable, lead-independent count of automated replies already sent to this
 // (tenant, phone) within the current 48-hour window — the enforcement
 // signal for the strict automated-reply cap (see

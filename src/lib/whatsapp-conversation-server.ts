@@ -29,6 +29,7 @@ import { lineItemAmount, money, menuLink, PRIVACY_POLICY_URL } from "@/lib/mock-
 import {
   evaluateInboundInteraction,
   evaluateOutboundInteraction,
+  hasOutboundInteractionSince,
   hasPriorInboundInteraction,
   countRecentOutboundInteractions,
   claimLoopNotice,
@@ -2237,6 +2238,104 @@ export async function handleInboundWhatsAppMessage(params: {
 
   const hasSubstantialDescription = body.trim().length > 10;
   if (!mediaRef && !hasSubstantialDescription) {
+    await replyToShortMessage({
+      admin,
+      tenant,
+      fromPhone,
+      body,
+      adapter,
+      openLead,
+      isFirstContact,
+    });
+    return;
+  }
+
+  // Duplicate-lead race guard (see claimLeadSlot's own comment above): every
+  // path from here on creates a brand-new lead, so the claim covers the
+  // whole block, released in `finally` regardless of which branch returns.
+  const claimed = await claimLeadSlot(admin, tenant.id, fromPhone);
+  if (!claimed) {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      await sleep(750);
+      const existingId = await findRecentLeadId(admin, tenant.id, fromPhone);
+      if (existingId) {
+        await admin.from("lead_messages").insert({ lead_id: existingId, role: "customer", body });
+        return;
+      }
+    }
+    // Nothing appeared within the bound (the other request is taking
+    // unusually long) — proceed without the claim rather than block this
+    // customer's message indefinitely. No worse than before this fix.
+  }
+  // isFirstContact was read before this message's own event was recorded,
+  // so a concurrent message from the same phone can share that answer.
+  // Only the handler holding the claim, with nothing yet sent in this
+  // conversation window, still greets as a first contact.
+  const stillFirstContact =
+    isFirstContact &&
+    claimed &&
+    !(await hasOutboundInteractionSince(admin, tenant.id, fromPhone, CONVERSATION_WINDOW_MS));
+  try {
+    await handleFreshQuote({
+      tenant,
+      fromPhone,
+      body,
+      mediaRef,
+      profileName,
+      channel,
+      adapter,
+      admin,
+      isFirstContact: stillFirstContact,
+      priorContextText: openLead?.problem,
+      openOutOfScopeLeadId:
+        openLead &&
+        openLead.confidence === null &&
+        OUT_OF_SCOPE_FLAG_TYPES.has(openLead.flag_type ?? "")
+          ? openLead.id
+          : undefined,
+    });
+  } finally {
+    if (claimed) await releaseLeadSlot(admin, tenant.id, fromPhone);
+  }
+}
+
+// PRODUCTION REGRESSION (2026-11-15): a forwarded voice note arrived as two
+// separate Meta messages 36 ms apart, both with no text and no photo. Both
+// were handled concurrently, both read "no prior contact" before either
+// recorded its own event, and the customer got the first-contact greeting
+// twice. Short messages now take the same per-phone claim as the new-lead
+// path: a handler that can't get it skips its reply (the one holding it is
+// replying right now), and one that gets it right after a concurrent reply
+// went out skips too, instead of sending a second greeting.
+const SHORT_MESSAGE_BURST_WINDOW_MS = 10_000;
+const CONVERSATION_WINDOW_MS = 48 * 60 * 60 * 1000;
+
+async function replyToShortMessage(params: {
+  admin: ReturnType<typeof getAdminClient>;
+  tenant: InboundWhatsAppTenant;
+  fromPhone: string;
+  body: string;
+  adapter: ChannelAdapter;
+  openLead: { problem?: string } | null;
+  isFirstContact: boolean;
+}): Promise<void> {
+  const { admin, tenant, fromPhone, body, adapter, openLead, isFirstContact } = params;
+  const claimed = await claimLeadSlot(admin, tenant.id, fromPhone);
+  if (!claimed) {
+    console.log(
+      `WhatsApp short message for tenant ${tenant.id}: another message from this phone is being answered right now, skipping a second reply.`,
+    );
+    return;
+  }
+  try {
+    if (
+      await hasOutboundInteractionSince(admin, tenant.id, fromPhone, SHORT_MESSAGE_BURST_WINDOW_MS)
+    ) {
+      console.log(
+        `WhatsApp short message for tenant ${tenant.id}: a reply went out to this phone seconds ago, skipping a second reply.`,
+      );
+      return;
+    }
     // No lead exists yet at this point — leadId: null. This is exactly the
     // path a prior review found entirely unguarded and entirely
     // unrecorded (nothing was ever inserted into lead_messages here
@@ -2267,47 +2366,8 @@ export async function handleInboundWhatsAppMessage(params: {
         ? resolveFirstContactGreeting(tenant, thinDescriptionLanguage)
         : localizedGreeting(thinDescriptionLanguage, tenant.name),
     });
-    return;
-  }
-
-  // Duplicate-lead race guard (see claimLeadSlot's own comment above): every
-  // path from here on creates a brand-new lead, so the claim covers the
-  // whole block, released in `finally` regardless of which branch returns.
-  const claimed = await claimLeadSlot(admin, tenant.id, fromPhone);
-  if (!claimed) {
-    for (let attempt = 0; attempt < 4; attempt++) {
-      await sleep(750);
-      const existingId = await findRecentLeadId(admin, tenant.id, fromPhone);
-      if (existingId) {
-        await admin.from("lead_messages").insert({ lead_id: existingId, role: "customer", body });
-        return;
-      }
-    }
-    // Nothing appeared within the bound (the other request is taking
-    // unusually long) — proceed without the claim rather than block this
-    // customer's message indefinitely. No worse than before this fix.
-  }
-  try {
-    await handleFreshQuote({
-      tenant,
-      fromPhone,
-      body,
-      mediaRef,
-      profileName,
-      channel,
-      adapter,
-      admin,
-      isFirstContact,
-      priorContextText: openLead?.problem,
-      openOutOfScopeLeadId:
-        openLead &&
-        openLead.confidence === null &&
-        OUT_OF_SCOPE_FLAG_TYPES.has(openLead.flag_type ?? "")
-          ? openLead.id
-          : undefined,
-    });
   } finally {
-    if (claimed) await releaseLeadSlot(admin, tenant.id, fromPhone);
+    await releaseLeadSlot(admin, tenant.id, fromPhone);
   }
 }
 
